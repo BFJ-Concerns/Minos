@@ -26,8 +26,21 @@ else
 fi
 
 web_base="${MINOS_WEB_BASE:-${MINOS_API_BASE%/api/v1}}"
-target_url="${web_base%/}/${owner}/${repo}/pulls/${pr}#minos-target-${target}"
-# The details link names the target the status was written against.
+# The details link lands on the newest review this identity left on the
+# reviewed head, at the page anchor the forge reports for it, and on the
+# pull request itself when there is none. The read-back below matches on
+# this same URL, so the lookup settles the status's identity before either
+# read.
+target_url="${web_base%/}/${owner}/${repo}/pulls/${pr}"
+if review_anchor="$(latest_own_review_anchor "$owner" "$repo" "$pr" "$head" "$login")"; then
+  target_url="${target_url}#${review_anchor}"
+else
+  lookup=$?
+  if [ "$lookup" -eq 2 ]; then
+    write_result uncertain "pull-request reviews could not be read for the details link"
+    exit 0
+  fi
+fi
 payload="$(jq -nc --arg state "$state" --arg context "$context" --arg description "$description" --arg target_url "$target_url" '{state:$state,context:$context,description:$description,target_url:$target_url}')"
 
 status_present() {

@@ -31,18 +31,7 @@ payload="$(printf '%s' "$input" | jq --arg head "$head" '
    comments:[.comments[]? | {path, body, new_position, old_position, extra_lines_count}]}')"
 
 review_presence() {
-  reviews='[]'
-  previous=''
-  page=1
-  while :; do
-    current="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews?limit=50&page=${page}" 2>/dev/null)" || return 2
-    count="$(printf '%s' "$current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected reviews array") end')" || return 2
-    ! repeats_previous_page "$current" "$previous" || break
-    [ "$count" -gt 0 ] || break
-    reviews="$(jq -cn --argjson all "$reviews" --argjson page "$current" '$all + $page')" || return 2
-    previous="$current"
-    page=$((page + 1))
-  done
+  reviews="$(pull_request_reviews "$owner" "$repo" "$pr" 2>/dev/null)" || return 2
   ids="$(printf '%s' "$reviews" | jq -r --arg head "$head" --arg state "$forge_state" --arg body "$body" --arg login "$login" '
     .[] | select(.commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // .user.username // "") == $login) | .id')" || return 2
   [ -n "$ids" ] || return 1

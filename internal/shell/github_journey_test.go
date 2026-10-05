@@ -76,6 +76,10 @@ type githubFixtureState struct {
 	// refuseReviewPosts, when non-zero, is the HTTP status the fixture
 	// answers every review submission with, recording nothing.
 	refuseReviewPosts int
+	// refuseReviewReads, when non-zero, is the HTTP status the fixture
+	// answers every review listing with, so a script's read-back sees an
+	// unreadable forge rather than an empty one.
+	refuseReviewReads int
 	reactions         []map[string]any
 	definedLabels     []map[string]any
 	issues            []map[string]any
@@ -281,6 +285,10 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/commits/") && strings.HasSuffix(path, "/statuses"):
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.statuses))
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets/pulls/7/reviews":
+		if s.refuseReviewReads != 0 {
+			http.Error(w, `{"message":"unavailable"}`, s.refuseReviewReads)
+			return
+		}
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.reviews))
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/pulls/7/reviews/") && strings.HasSuffix(path, "/comments"):
 		var id int64
@@ -313,9 +321,12 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		state := map[string]string{"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}[payload["event"].(string)]
 		id := int64(600 + len(s.reviews))
+		// GitHub reports the review's page anchor on its own web host — a
+		// reader of html_url must take the fragment and nothing else.
 		s.reviews = append(s.reviews, map[string]any{
 			"id": id, "state": state, "commit_id": payload["commit_id"], "body": payload["body"],
-			"user": map[string]any{"login": githubFixtureBotLogin},
+			"user":     map[string]any{"login": githubFixtureBotLogin},
+			"html_url": fmt.Sprintf("https://github.example/acme/widgets/pull/7#pullrequestreview-%d", id),
 		})
 		for _, raw := range comments {
 			comment := raw.(map[string]any)
@@ -1056,7 +1067,7 @@ func TestGitHubStatusWritesReadBackAndIgnoreTargetMovement(t *testing.T) {
 			githubApplied(t, adapter.SetProductStatus(t.Context(), guard, stateValue))
 			githubApplied(t, adapter.SetProductStatus(t.Context(), guard, stateValue))
 			writes := state.operationWrites()
-			wantURL := state.server.URL + "/acme/widgets/pull/7#minos-target-" + guard.TargetSHA
+			wantURL := state.server.URL + "/acme/widgets/pull/7"
 			if len(writes) != 1 || writes[0].path != "/repos/acme/widgets/statuses/"+guard.HeadSHA || writes[0].payload["target_url"] != wantURL || writes[0].payload["state"] != string(stateValue.ForgeState()) || writes[0].payload["context"] != "Minos" || writes[0].payload["description"] != stateValue.Description() {
 				t.Fatalf("status writes = %#v", writes)
 			}
@@ -1338,8 +1349,61 @@ func TestGitHubStatusDetailsUseEnterpriseWebBase(t *testing.T) {
 	guard := state.guard()
 	githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Clean()))
 	writes := state.operationWrites()
-	if len(writes) != 1 || writes[0].payload["target_url"] != state.server.URL+"/acme/widgets/pull/7#minos-target-"+guard.TargetSHA {
+	if len(writes) != 1 || writes[0].payload["target_url"] != state.server.URL+"/acme/widgets/pull/7" {
 		t.Fatalf("enterprise details URL = %#v", writes)
+	}
+}
+
+// The Details link lands on the newest review the App left on the reviewed
+// head, at the anchor GitHub reports in that review's html_url
+// (`pullrequestreview-<id>`, on GitHub's own host — only the fragment is
+// taken); the App's earlier review on the same head, the colleague's review
+// the fixture seeds on the head, and the App's review on an earlier head
+// are not it. The link is the status's read-back identity, so a repeat
+// converges, and a forge that cannot list reviews leaves the write
+// uncertain rather than posting a link that may be wrong.
+func TestGitHubStatusDetailsLandOnTheHeadsOwnReview(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	adapter := state.adapter(t)
+	guard := state.guard()
+	state.mu.Lock()
+	state.reviews = append(state.reviews,
+		map[string]any{
+			"id": 502, "state": "CHANGES_REQUESTED", "commit_id": "earlier-head", "body": "Earlier round",
+			"user":     map[string]any{"login": githubFixtureBotLogin},
+			"html_url": "https://github.example/acme/widgets/pull/7#pullrequestreview-502",
+		},
+		map[string]any{
+			"id": 503, "state": "COMMENTED", "commit_id": guard.HeadSHA, "body": "The App's earlier note on this head",
+			"user":     map[string]any{"login": githubFixtureBotLogin},
+			"html_url": "https://github.example/acme/widgets/pull/7#pullrequestreview-503",
+		})
+	state.mu.Unlock()
+	githubApplied(t, adapter.PostReview(t.Context(), guard, forge.ReviewRequestChanges, "Blocking review", nil))
+	state.mu.Lock()
+	posted := state.reviews[len(state.reviews)-1]
+	state.mu.Unlock()
+	if posted["user"].(map[string]any)["login"] != githubFixtureBotLogin || posted["commit_id"] != guard.HeadSHA {
+		t.Fatalf("posted review = %#v, want the App's review on the head", posted)
+	}
+
+	githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Attention()))
+	githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Attention()))
+	writes := state.operationWrites()
+	want := fmt.Sprintf("%s/acme/widgets/pull/7#pullrequestreview-%d", state.server.URL, posted["id"])
+	if len(writes) != 1 || writes[0].payload["target_url"] != want {
+		t.Fatalf("status writes = %#v, want one write with Details %s", writes, want)
+	}
+
+	state.mu.Lock()
+	state.refuseReviewReads = http.StatusServiceUnavailable
+	state.mu.Unlock()
+	result := adapter.SetProductStatus(t.Context(), guard, product.Clean())
+	if result.Outcome != forge.WriteUncertain || !strings.Contains(result.Reason, "reviews could not be read") {
+		t.Fatalf("status with unreadable reviews = %#v, want uncertain naming the review listing", result)
+	}
+	if writes := state.operationWrites(); len(writes) != 1 {
+		t.Fatalf("status writes after unreadable reviews = %d, want the earlier 1 alone", len(writes))
 	}
 }
 

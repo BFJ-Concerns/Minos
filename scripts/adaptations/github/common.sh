@@ -275,6 +275,24 @@ reaction_present() {
   reaction_id "$@" >/dev/null
 }
 
+# The page anchor of the newest review this login left on the given head,
+# as GitHub itself reports it — the fragment of the review's `html_url`
+# (`pullrequestreview-<id>`): returns 0 and prints the fragment without its
+# `#`, 1 when the login has no anchored review on that head, 2 when the
+# reviews could not be read.
+latest_own_review_anchor() {
+  own_reviews="$(collect "/repos/$1/$2/pulls/$3/reviews" 2>/dev/null)" || return 2
+  own_review_anchor="$(printf '%s' "$own_reviews" | jq -er --arg head "$4" --arg login "$5" '
+    if any(.[]; type != "object") then error("expected review objects") else
+      [.[] | select(.commit_id == $head and .user.login == $login)] |
+      if length == 0 then empty else
+        max_by(.id) | (.html_url // "" | if type == "string" then . else error("review html_url is not a string") end) |
+        split("#") | .[1:] | join("#") | if . == "" then empty else . end
+      end
+    end')" || { own_review_status=$?; [ "$own_review_status" -eq 4 ] && return 1; return 2; }
+  printf '%s\n' "$own_review_anchor"
+}
+
 label_id() {
   label_records="$(collect "$1" 2>/dev/null)" || return 2
   label_found="$(printf '%s' "$label_records" | jq -er --arg name "$2" '

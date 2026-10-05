@@ -208,7 +208,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		cfg, repo, facts := state.service(t)
 		state.setStatuses([]map[string]any{{
 			"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(),
-			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/2#minos-target-earlier",
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/2",
 			"creator":    map[string]any{"login": "Minos"},
 		}})
 
@@ -232,7 +232,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.setStatuses([]map[string]any{{
 			"id": 7, "context": "Minos", "status": "failure", "description": product.Clean().Description(),
-			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA(),
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1",
 			"creator":    map[string]any{"login": "Minos"},
 		}})
 		cfg, repo, facts := state.service(t)
@@ -271,7 +271,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		}})
 		state.setStatuses([]map[string]any{{
 			"id": 7, "context": "Minos", "status": "error", "description": "Review incomplete",
-			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA(),
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1",
 			"creator":    map[string]any{"login": "Minos"},
 		}})
 		cfg, repo, facts := state.service(t)
@@ -305,7 +305,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.setStatuses([]map[string]any{{
 			"id": 7, "context": "Minos", "status": "pending", "description": product.Continuation().Description(),
-			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA(),
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1",
 			"creator":    map[string]any{"login": "Minos"},
 		}})
 		cfg, repo, facts := state.service(t)
@@ -597,7 +597,7 @@ func TestForgejoSweepReconciliationKeepsDecisionSnapshotFresh(t *testing.T) {
 		state, environment := sweepAfterPriorityMutation(t, func(state *forgejoFixtureState) {
 			state.setStatuses([]map[string]any{{
 				"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(),
-				"target_url": fmt.Sprintf("%s/minos-e2e-owner/subject/pulls/1#minos-target-%s", state.server.URL, state.targetSHA()),
+				"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1",
 				"creator":    map[string]any{"login": "Minos"},
 			}})
 		})
@@ -1230,7 +1230,7 @@ func TestForgeCompletionMarkerReadsOnlyTheConfiguredContext(t *testing.T) {
 			state := newForgejoFixtureState(t)
 			state.setStatuses([]map[string]any{{
 				"id": 7, "context": test.context, "status": "success", "description": product.Clean().Description(),
-				"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA(),
+				"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1",
 				"creator":    map[string]any{"login": "Minos"},
 			}})
 			cfg, repo, facts := state.service(t)
@@ -1274,14 +1274,14 @@ func TestForgeStatusReadBackIsScopedToPullRequest(t *testing.T) {
 			head, target := state.headSHA(), state.targetSHA()
 			statuses := []map[string]any{{
 				"id": 8, "context": "Minos", "status": "pending", "description": product.Working().Description(),
-				"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/2#minos-target-" + target,
+				"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/2",
 				"creator":    map[string]any{"login": "Minos"},
 			}}
 			if test.includeOwned {
 				statuses = append(statuses, map[string]any{
 					"id": 7, "context": "Minos", "status": "pending", "description": product.Working().Description(),
-					"target_url": fmt.Sprintf("%s/%s/%s/pulls/%s#minos-target-%s",
-						strings.TrimSuffix(cfg.Forges[facts.Forge].APIBase, "/api/v1"), facts.Owner, facts.Repo, facts.PR, target),
+					"target_url": fmt.Sprintf("%s/%s/%s/pulls/%s",
+						strings.TrimSuffix(cfg.Forges[facts.Forge].APIBase, "/api/v1"), facts.Owner, facts.Repo, facts.PR),
 					"creator": map[string]any{"login": "Minos"},
 				})
 			}
@@ -2410,9 +2410,13 @@ type forgejoFixtureState struct {
 	dependencies     []map[string]any
 	dependencyPages  [][]map[string]any
 	dependencyCode   int
-	server           *httptest.Server
-	tokenPath        string
-	adaptationPath   string
+	// refuseReviewReads, when non-zero, is the HTTP status the fixture
+	// answers every review listing with, so a script's read-back sees an
+	// unreadable forge rather than an empty one.
+	refuseReviewReads int
+	server            *httptest.Server
+	tokenPath         string
+	adaptationPath    string
 
 	mu                       sync.Mutex
 	requestedReviewers       []string
@@ -2643,6 +2647,12 @@ func (s *forgejoFixtureState) setDependenciesFailure(status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dependencyCode = status
+}
+
+func (s *forgejoFixtureState) setReviewReadsFailure(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refuseReviewReads = status
 }
 
 // setSecondaryCloneURL publishes minos-e2e-owner/subject-plans, the
@@ -2937,6 +2947,10 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		s.statusPostRequests = append(s.statusPostRequests, statusPostRequest{Head: head, Payload: mapsClone(payload)})
 		writeFixtureJSON(s.t, w, payload)
 	case r.Method == http.MethodGet && path == pullPath+"/reviews":
+		if s.refuseReviewReads != 0 {
+			http.Error(w, "review listing fixture failure", s.refuseReviewReads)
+			return
+		}
 		writeFixtureArray(s.t, w, s.reviews)
 	case r.Method == http.MethodPost && path == pullPath+"/reviews":
 		var payload map[string]any
@@ -2944,9 +2958,13 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			s.t.Error(err)
 		}
 		nextID := int64(len(s.reviews) + 1)
+		// Forgejo anchors a review's timeline entry by its header comment's
+		// id, not the review's, and reports the forge's own web host — a
+		// reader of html_url must take the fragment and nothing else.
 		review := map[string]any{
 			"id": nextID, "state": payload["event"], "commit_id": payload["commit_id"],
 			"body": payload["body"], "user": map[string]any{"login": "Minos"},
+			"html_url": fmt.Sprintf("http://forge-canonical.example/minos-e2e-owner/subject/pulls/1#issuecomment-%d", 1000+nextID),
 		}
 		var comments []map[string]any
 		if requestedComments, ok := payload["comments"].([]any); ok {
@@ -3290,7 +3308,7 @@ func TestForgeStatusDetailsUsesForgeWebBase(t *testing.T) {
 			if test.webBase != "" {
 				wantBase = "https://forge.example/forge"
 			}
-			want := wantBase + "/minos-e2e-owner/subject/pulls/1#minos-target-" + state.targetSHA()
+			want := wantBase + "/minos-e2e-owner/subject/pulls/1"
 			got := posts[0].Payload["target_url"]
 			t.Logf("recorded target_url = %v", got)
 			if got != want {
@@ -3307,6 +3325,68 @@ func TestForgeStatusDetailsUsesForgeWebBase(t *testing.T) {
 				t.Fatalf("repeated status posts = %d, want 1", len(posts))
 			}
 		})
+	}
+}
+
+// The Details link lands on the newest review Minos left on the reviewed
+// head, at the anchor the forge reports in that review's html_url (on
+// Forgejo the header comment's `issuecomment-<id>`, a different number
+// from the review id, on the forge's own host — only the fragment is
+// taken); Minos's earlier review on the same head, a colleague's review on
+// the head, and Minos's review on an earlier head are not it. The link is
+// the status's read-back identity, so a repeat converges, and a forge that
+// cannot list reviews leaves the write uncertain rather than posting a link
+// that may be wrong.
+func TestForgeStatusDetailsLandOnTheHeadsOwnReview(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	configureForgeCommandFixture(t, state)
+	head, target := state.headSHA(), state.targetSHA()
+	page := "http://forge-canonical.example/minos-e2e-owner/subject/pulls/1"
+	state.setReviews([]map[string]any{
+		{"id": 1, "state": "REQUEST_CHANGES", "commit_id": "earlier-head", "body": "Earlier round", "user": map[string]any{"login": "Minos"}, "html_url": page + "#issuecomment-1001"},
+		{"id": 2, "state": "COMMENT", "commit_id": head, "body": "Minos's earlier note on this head", "user": map[string]any{"login": "Minos"}, "html_url": page + "#issuecomment-1002"},
+		{"id": 3, "state": "COMMENT", "commit_id": head, "body": "A colleague's note", "user": map[string]any{"login": "colleague"}, "html_url": page + "#issuecomment-1003"},
+	})
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("Blocking review"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout strings.Builder
+	if err := ForgeCommand(t.Context(), []string{"review", head, target, "request-changes", body}, &stdout); err != nil {
+		t.Fatalf("review write: %v\n%s", err, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"outcome":"applied"`) {
+		t.Fatalf("review read-back = %s, want applied", stdout.String())
+	}
+
+	args := []string{"status", head, target, "attention"}
+	for _, pass := range []string{"first", "repeated"} {
+		stdout.Reset()
+		if err := ForgeCommand(t.Context(), args, &stdout); err != nil {
+			t.Fatalf("%s status write: %v\n%s", pass, err, stdout.String())
+		}
+		if !strings.Contains(stdout.String(), `"outcome":"applied"`) {
+			t.Fatalf("%s status read-back = %s, want applied", pass, stdout.String())
+		}
+	}
+	posts := state.statusPostFacts()
+	if len(posts) != 1 {
+		t.Fatalf("status posts = %d, want 1: %#v", len(posts), posts)
+	}
+	// The posted review is the fixture's fourth, anchored issuecomment-1004.
+	want := state.server.URL + "/minos-e2e-owner/subject/pulls/1#issuecomment-1004"
+	if got := posts[0].Payload["target_url"]; got != want {
+		t.Fatalf("target_url = %v, want %s", got, want)
+	}
+
+	state.setReviewReadsFailure(http.StatusServiceUnavailable)
+	stdout.Reset()
+	err := ForgeCommand(t.Context(), []string{"status", head, target, "clean"}, &stdout)
+	if err == nil || !strings.Contains(err.Error(), "status uncertain") || !strings.Contains(stdout.String(), `"outcome":"uncertain"`) || !strings.Contains(stdout.String(), "reviews could not be read") {
+		t.Fatalf("status with unreadable reviews: error = %v, output = %s; want uncertain naming the review listing", err, stdout.String())
+	}
+	if posts := state.statusPostFacts(); len(posts) != 1 {
+		t.Fatalf("status posts after unreadable reviews = %d, want the earlier 1 alone", len(posts))
 	}
 }
 
