@@ -548,3 +548,30 @@ done
 
 stop_session
 session_id=""
+
+# The unit's exit status says whether this head is spent. A clean or
+# attention outcome leaves a completion marker on the head, so the unit
+# succeeds and its OnSuccess= hook enqueues the sweep pass that re-fills the
+# slot. Anything else — an incomplete outcome, a lead that failed or stopped
+# before its marker, a non-clean stop with no recorded attention status —
+# leaves the head eligible, so the unit exits 75 and triggers no pass: the
+# head waits for the timer, and one that keeps ending incomplete re-runs at
+# timer pace, never at run pace. The lead writes `clean` only after the
+# clean status landed, so that marker alone proves the head spent; any
+# other ending — a `non-clean` marker, which covers attention and
+# incomplete alike, or no marker at all — is judged by the last status
+# `minos forge status` applied, recorded beside the marker: clean or
+# attention on the forge is a spent head whatever the lead did afterwards.
+# A continuation leaves the head eligible by design, and its successor
+# resuming at once is the point of it.
+head_spent=false
+if grep -Eqx 'clean|continuation' "$completion_marker" 2>/dev/null; then
+  head_spent=true
+elif grep -Eqx 'clean|attention' "$MINOS_RUN_DIR/forge-status" 2>/dev/null; then
+  head_spent=true
+fi
+if [ "$head_spent" = false ]; then
+  last_status="$(cat "$MINOS_RUN_DIR/forge-status" 2>/dev/null || printf 'none')"
+  echo "run-body: head ${MINOS_HEAD_SHA:-unknown} stays eligible (last applied status: ${last_status}); exiting 75 so the unit's exit triggers no sweep pass"
+  exit 75
+fi

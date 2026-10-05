@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -115,7 +116,12 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
 		description := state.Description()
-		return emitForgeResult(stdout, "status", adapter.SetProductStatusWithDescription(ctx, guard, state, description))
+		result := adapter.SetProductStatusWithDescription(ctx, guard, state, description)
+		if err := emitForgeResult(stdout, "status", result); err != nil {
+			return err
+		}
+		recordAppliedStatus(args[3])
+		return nil
 	case "review":
 		if len(args) != 5 && len(args) != 6 {
 			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|request-changes|comment BODY_FILE [COMMENTS_FILE]")
@@ -252,6 +258,38 @@ func runForge() (*forge.Adapter, string, error) {
 	}
 	return adapter, cfg.Forges[forgeName].Adaptation, nil
 }
+
+// recordAppliedStatus keeps the last status this run applied to the forge
+// in the run directory — one word, replaced on every applied write — so
+// run-body can tell at exit whether the head is spent: clean and attention
+// leave a completion marker on the head, any other last status leaves it
+// eligible, and only a spent head's unit may succeed and trigger a sweep
+// pass. The forge write is the durable effect and has already been
+// reported; a record that cannot be written is said on stderr, and the
+// run then exits as if its head were not spent — the direction that
+// cannot loop. Outside a run there is no directory and nothing to record.
+func recordAppliedStatus(state string) {
+	runDir := os.Getenv("MINOS_RUN_DIR")
+	if runDir == "" {
+		return
+	}
+	path := filepath.Join(runDir, appliedStatusFile)
+	staging := path + ".next"
+	if err := os.WriteFile(staging, []byte(state+"\n"), 0o600); err == nil {
+		err = os.Rename(staging, path)
+		if err == nil {
+			return
+		}
+		_ = os.Remove(staging)
+		fmt.Fprintf(os.Stderr, "minos: the applied %s status could not be recorded at %s: %v; the run will exit as if its head were not spent\n", state, path, err)
+		return
+	} else {
+		fmt.Fprintf(os.Stderr, "minos: the applied %s status could not be recorded at %s: %v; the run will exit as if its head were not spent\n", state, path, err)
+	}
+}
+
+// appliedStatusFile is the run-directory file run-body reads at exit.
+const appliedStatusFile = "forge-status"
 
 func namedProductState(name string) (product.State, bool) {
 	for _, state := range product.States() {

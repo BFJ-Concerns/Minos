@@ -301,9 +301,17 @@ stays loaded, so a hook on the sweep service itself kept every exited run
 unit loaded and refused the pull request's next run as already loaded — and
 the template must be installed (step 5) on any box that spawns runs. A failed
 exit does not trigger a sweep; an operator's `systemctl --user stop` of a run
-unit ends it cleanly and does. A clean exit that lands while a pass is already
-running joins that pass rather than starting another, so a pull request the
-running pass has already walked waits for the timer.
+unit ends it cleanly and does. The unit's exit status says whether the head is
+spent: run-body exits successfully after a `clean` marker (the lead writes it
+only once the clean status landed), after a continuation, or when the last
+status the run applied — `minos forge status` records it in the run
+directory — is `clean` or `attention`. An incomplete outcome, or a lead that
+failed or stopped with neither status applied, exits 75 and triggers no pass
+— that head waits for the timer, so one that keeps ending incomplete re-runs
+at timer pace, never at run pace. A clean exit that
+lands while a pass is already running joins that pass rather than starting
+another, so a pull request the running pass has already walked waits for the
+timer.
 
 Each run launches the lead on the configured engine and model. `run-body`
 keeps resumable `done` and `blocked` turns alive after useful run activity has
