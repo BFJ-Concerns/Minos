@@ -153,7 +153,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 
 func TestRunBodyExportsSocketSafeTempDirectoryForLongRunName(t *testing.T) {
 	fixture := newRunBodyFixtureWithShortRoot(t).withRun(
-		"minos-run-BFJ-Concerns-Gizmo-pr85-123456789",
+		"minos-run-Example-Corp-Gizmo-pr85-123456789",
 		"socket-safe-temp-record",
 	)
 	fixture.run(t, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})

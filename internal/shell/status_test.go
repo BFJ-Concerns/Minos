@@ -374,7 +374,7 @@ func writeStatusFile(t *testing.T, path, content string) {
 func TestRecentRunsReportsArchivedRecords(t *testing.T) {
 	cfg := statusTestConfig(t)
 	cfg.Runs.RecentTimingsCommand = archiveListingScript(t, map[string]string{
-		"20260821T213617Z-BFJ-Concerns-Gizmo-pr106-minos-run-BFJ-Concerns-Gizmo-pr106-3124491702.timings.json": `{"kind":"minos-timing-record-v1","pull_request":{"owner":"BFJ-Concerns","repository":"Gizmo","number":"106"},"workers":[{"label":"setup"}]}`,
+		"20260821T213617Z-Example-Corp-Gizmo-pr106-minos-run-Example-Corp-Gizmo-pr106-3124491702.timings.json": `{"kind":"minos-timing-record-v1","pull_request":{"owner":"Example-Corp","repository":"Gizmo","number":"106"},"workers":[{"label":"setup"}]}`,
 		"20260821T200140Z-example-Relay-pr96-minos-run-example-Relay-pr96-527798279.timings.json":              `{"kind":"minos-timing-record-v1","pull_request":{"owner":"example","repository":"Relay","number":"96"},"workers":[]}`,
 	})
 
@@ -390,13 +390,13 @@ func TestRecentRunsReportsArchivedRecords(t *testing.T) {
 		t.Fatalf("runs = %d, want 2; %+v", len(document.Runs), document.Runs)
 	}
 	run := document.Runs[0]
-	if run.Owner != "BFJ-Concerns" || run.Repo != "Gizmo" || run.PR != "106" {
-		t.Fatalf("identity = %s/%s#%s, want BFJ-Concerns/Gizmo#106", run.Owner, run.Repo, run.PR)
+	if run.Owner != "Example-Corp" || run.Repo != "Gizmo" || run.PR != "106" {
+		t.Fatalf("identity = %s/%s#%s, want Example-Corp/Gizmo#106", run.Owner, run.Repo, run.PR)
 	}
 	if run.ArchivedAt != "2026-08-21T21:36:17Z" {
 		t.Fatalf("archived_at = %q, want the archive's own timestamp", run.ArchivedAt)
 	}
-	if run.Unit != "minos-run-BFJ-Concerns-Gizmo-pr106" {
+	if run.Unit != "minos-run-Example-Corp-Gizmo-pr106" {
 		t.Fatalf("unit = %q, want the run's unit without its directory suffix", run.Unit)
 	}
 	if !json.Valid(run.Timings) {
@@ -407,7 +407,7 @@ func TestRecentRunsReportsArchivedRecords(t *testing.T) {
 func TestRecentRunsSkipsAnUnreadableSidecar(t *testing.T) {
 	cfg := statusTestConfig(t)
 	cfg.Runs.RecentTimingsCommand = archiveListingScript(t, map[string]string{
-		"20260821T213617Z-BFJ-Concerns-Gizmo-pr106-minos-run-BFJ-Concerns-Gizmo-pr106-3124491702.timings.json": `{"pull_request":{"owner":"BFJ-Concerns","repository":"Gizmo","number":"106"}}`,
+		"20260821T213617Z-Example-Corp-Gizmo-pr106-minos-run-Example-Corp-Gizmo-pr106-3124491702.timings.json": `{"pull_request":{"owner":"Example-Corp","repository":"Gizmo","number":"106"}}`,
 		"20260821T200140Z-example-Relay-pr96-minos-run-example-Relay-pr96-527798279.timings.json":              `{"truncated":`,
 	})
 

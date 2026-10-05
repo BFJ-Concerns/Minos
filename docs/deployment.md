@@ -40,7 +40,9 @@ so no repository toolchains are needed.
 4. Copy `deploy/etc/minos` to `/etc/minos`, replace the placeholder values,
    and add one repository TOML file per opted-in repository. In `run-body.env`:
 
-   - set `MINOS_CLAUDE` to the installed Claude executable;
+   - set `MINOS_CLAUDE` to the installed Claude executable — install Claude
+     Code natively, not as an npm package, whose shim a lead can migrate
+     away from mid-run;
    - set `MINOS_LEAD_ENGINE` to `claude` or `codex` (`claude` by default)
      and `MINOS_LEAD_MODEL` to the model the lead runs on — `claude-opus-5-5`
      by default for Claude, `gpt-6-sol` for Codex; a Codex lead needs
