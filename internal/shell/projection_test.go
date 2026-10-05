@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 func projectionJSON(t *testing.T, path string) map[string]any {

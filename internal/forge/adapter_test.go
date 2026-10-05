@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 func TestSnapshotNormalisesEmptyDependenciesForEncoding(t *testing.T) {

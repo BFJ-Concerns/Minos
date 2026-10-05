@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"bfj/minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 // requestedReviewComment is the finding location workflows know before the

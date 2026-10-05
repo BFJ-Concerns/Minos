@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"bfj/minos/internal/forge"
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 func currentSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts) (forge.Snapshot, error) {

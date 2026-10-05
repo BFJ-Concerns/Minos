@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"bfj/minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 // The GitHub adaptation is proved against a fixture GitHub the way the

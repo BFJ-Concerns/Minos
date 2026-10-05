@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"bfj/minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 const testServiceConfig = `[service]

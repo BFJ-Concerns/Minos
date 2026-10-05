@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"bfj/minos/internal/shell"
+	"github.com/BFJ-Concerns/Minos/internal/shell"
 )
 
 func main() {

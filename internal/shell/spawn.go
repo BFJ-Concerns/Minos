@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"bfj/minos/internal/forge"
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 var unitSafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)

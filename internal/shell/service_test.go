@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"bfj/minos/internal/forge"
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 func TestTerminalCurrentReviewMarksCompletion(t *testing.T) {

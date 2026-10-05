@@ -13,7 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"bfj/minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 const DefaultConfigRoot = "/etc/minos"

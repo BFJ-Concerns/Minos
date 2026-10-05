@@ -17,8 +17,8 @@ import (
 	"sync"
 	"testing"
 
-	"bfj/minos/internal/forge"
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {

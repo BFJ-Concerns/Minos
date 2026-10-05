@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"bfj/minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 func TestContinuationProgressBoundaryStopsOnlyAStalledSuccessor(t *testing.T) {

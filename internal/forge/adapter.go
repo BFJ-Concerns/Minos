@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 type Adapter struct {

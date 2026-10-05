@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"bfj/minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 // A repo skipped this many consecutive sweep passes earns an operator alert:
