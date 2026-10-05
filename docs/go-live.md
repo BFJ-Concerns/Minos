@@ -184,7 +184,23 @@ so no repository toolchains are needed.
    prompt. A review-panel-style walkthrough is the model, not a literal
    installed skill.
 
-   Create the webhook secret and forge token files separately.
+   Create the webhook secret and forge credential files separately. For a
+   Forgejo forge the credential file holds the service account's access
+   token. For a GitHub forge, register a GitHub App (permissions: pull
+   requests and commit statuses read and write, contents read, issues read
+   and write where a filing destination or alert needs them; subscribe it
+   to pull request, pull request review and issue comment events; one
+   webhook pointing at `/hooks/github` with the secret), install it on each
+   repository Minos reviews, and write the credential file as JSON:
+   `{"app-id": "<App id>", "installation-id": "<installation id>",
+   "private-key-file": "/etc/minos/github-app.pem"}` beside the downloaded
+   private key. The adaptation mints an installation token from it for each
+   invocation and caches the token until it nears expiry; the box needs
+   `openssl` for the App JWT. Set `service.bot-login` to the App's slug with
+   the `[bot]` suffix (`minos-review[bot]`) — that is the login GitHub shows
+   on every write the App makes, and the guards compare against it. A
+   GitHub App cannot be a requested reviewer, so the claim on GitHub is the
+   in-flight marker alone.
 5. Install `minos-sweep-alert.service` (the sweep's `OnFailure=` hook, which
    files an operator alert issue on the repository named by the `[service]`
    `alert-forge`/`alert-owner`/`alert-repo` keys; the sweep files the same
@@ -192,8 +208,9 @@ so no repository toolchains are needed.
    install and enable `minos-receiver.service` and `minos-sweep.timer` from
    `deploy/systemd/user` for the deployment user, and install
    `minos-runs.slice` alongside them so runs share the memory envelope.
-6. Configure the forge webhook to post to `/hooks/forgejo` using the matching
-   secret.
+6. Configure the forge webhook to post to `/hooks/<forge key>` —
+   `/hooks/forgejo` for the shipped Forgejo table, `/hooks/github` for a
+   GitHub App — using the matching secret.
 
 Each run launches the lead on the configured engine and model. `run-body`
 keeps resumable `done` and `blocked` turns alive after useful run activity has

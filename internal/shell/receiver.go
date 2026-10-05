@@ -104,9 +104,7 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 		http.Error(w, "forge unavailable", http.StatusInternalServerError)
 		return err
 	}
-	facts, err := adaptation.NormaliseEvent(ctx, body, map[string]string{
-		"X-Forgejo-Event": r.Header.Get("X-Forgejo-Event"), "X-Forgejo-Delivery": r.Header.Get("X-Forgejo-Delivery"),
-	})
+	facts, err := adaptation.NormaliseEvent(ctx, body, forgeHeaders(r.Header))
 	if err != nil {
 		http.Error(w, "bad event", http.StatusBadRequest)
 		return err
@@ -135,4 +133,18 @@ func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = fmt.Fprintln(w, result.Decision)
 	return nil
+}
+
+// forgeHeaders is every extension header the delivery carried, handed to the
+// adaptation as MINOS_HEADER_* so each forge reads its own event and
+// delivery names (X-Forgejo-Event, X-GitHub-Event) without the receiver
+// knowing them.
+func forgeHeaders(header http.Header) map[string]string {
+	headers := make(map[string]string)
+	for name, values := range header {
+		if len(values) > 0 && strings.HasPrefix(strings.ToUpper(name), "X-") {
+			headers[name] = values[0]
+		}
+	}
+	return headers
 }

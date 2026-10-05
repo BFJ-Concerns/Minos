@@ -13,12 +13,31 @@ bot-login = "REPLACE_WITH_FORGEJO_BOT_LOGIN"
 [listener]
 bind = ":8919"
 
+# One [forges.<key>] table per forge Minos reviews on; the key is the
+# webhook route suffix (/hooks/<key>) and the "forge" value of each
+# repository file. The credential file's content is handed whole to the
+# adaptation: a Forgejo access token, or a GitHub App registration.
 [forges.forgejo]
 adaptation = "/opt/minos/adaptations/forgejo"
 api-base = "REPLACE_WITH_FORGEJO_BASE_URL"
 webhook-secret-file = "/etc/minos/webhook.secret"
 credential-file = "/etc/minos/forgejo.token"
 signature-header = "X-Forgejo-Signature"
+
+# GitHub: Minos acts as a GitHub App installed on each reviewed repository.
+# The credential file is a JSON object naming the App's id, the
+# installation id on the reviewed repositories and the path of the App's
+# private key; the adaptation mints short-lived installation tokens from
+# it. The App's webhook posts every installed repository's events to
+# /hooks/github with the secret in webhook-secret-file, signed in
+# X-Hub-Signature-256. The service's bot-login is the App's slug with
+# GitHub's "[bot]" suffix, for example "minos-review[bot]".
+# [forges.github]
+# adaptation = "/opt/minos/adaptations/github"
+# api-base = "https://api.github.com"
+# webhook-secret-file = "/etc/minos/github-webhook.secret"
+# credential-file = "/etc/minos/github-app.json"
+# signature-header = "X-Hub-Signature-256"
 
 # Per-repository knobs, set once here for every opted-in repository; any
 # repository's own file under repos/ overrides a knob whole. Unset at both

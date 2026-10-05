@@ -1,0 +1,101 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"
+input="$(cat)"
+
+# The consolidated review payload is the protocol's: each inline comment
+# anchors by new_position or old_position (a file line, one side) and
+# covers extra_lines_count lines after it. GitHub anchors a review comment
+# by line and side, and a range by start_line to line, so the translation
+# happens here and nowhere upstream.
+if ! printf '%s' "$input" | jq -e '
+  (.state == "APPROVE" or .state == "REQUEST_CHANGES" or .state == "COMMENT") and
+  (.body | type) == "string" and
+  all(.comments[]?; (.path | type) == "string" and (.path | length) > 0 and (.body | type) == "string" and (.body | length) > 0 and ((.new_position > 0 and .old_position == 0) or (.old_position > 0 and .new_position == 0)) and (.extra_lines_count // 0) >= 0)' >/dev/null; then
+  write_result rejected "invalid consolidated review payload"
+  exit 0
+fi
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+requested_state="$(printf '%s' "$input" | jq -r '.state')"
+case "$requested_state" in
+  APPROVE) forge_state="APPROVED" ;;
+  REQUEST_CHANGES) forge_state="CHANGES_REQUESTED" ;;
+  *) forge_state="COMMENTED" ;;
+esac
+body="$(printf '%s' "$input" | jq -r '.body')"
+payload="$(printf '%s' "$input" | jq --arg head "$head" '
+  {event: .state, body, commit_id: $head,
+   comments: [.comments[]? |
+     (if .new_position > 0 then {anchor: .new_position, side: "RIGHT"} else {anchor: .old_position, side: "LEFT"} end) as $at |
+     {path, body, side: $at.side, line: ($at.anchor + (.extra_lines_count // 0))} +
+     (if (.extra_lines_count // 0) > 0 then {start_line: $at.anchor, start_side: $at.side} else {} end)]}')"
+
+review_presence() {
+  reviews="$(collect "/repos/${owner}/${repo}/pulls/${pr}/reviews" 2>/dev/null)" || return 2
+  ids="$(printf '%s' "$reviews" | jq -r --arg head "$head" --arg state "$forge_state" --arg body "$body" --arg login "$login" '
+    .[] | select(.commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // "") == $login) | .id')" || return 2
+  [ -n "$ids" ] || return 1
+  for id in $ids; do
+    comments="$(collect "/repos/${owner}/${repo}/pulls/${pr}/reviews/${id}/comments" 2>/dev/null)" || return 2
+    # Path and body are the durable content Minos owns; the forge may
+    # restate geometry (an outdated line, a moved side) as the branch moves.
+    if printf '%s' "$comments" | json_match --argjson requested "$input" '
+      if type != "array" or any(.[]; type != "object") then error("expected review comments array") else
+      (($requested.comments // []) | map({path, body}) | sort_by(.path, .body)) ==
+      (. | map({path, body}) | sort_by(.path, .body)) end' >/dev/null; then
+      return 0
+    else
+      comparison=$?
+      [ "$comparison" -eq 1 ] || return 2
+    fi
+  done
+  return 3
+}
+
+if review_presence; then
+  write_result applied "review already present"
+  exit 0
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "review read-back could not be confirmed"
+    exit 0
+  fi
+  if [ "$presence" -eq 3 ]; then
+    write_result uncertain "matching review has different inline comments"
+    exit 0
+  fi
+fi
+
+# GitHub validates every anchor on submission and refuses the whole review
+# when one comment names a line outside the diff. The declared capability
+# (no out-of-hunk anchoring) keeps such a line from reaching here; a
+# refusal that arrives anyway is the forge's verdict on this payload, not
+# an uncertainty, and its message is what the lead needs to see.
+if api_with_status POST "/repos/${owner}/${repo}/pulls/${pr}/reviews" -H "Content-Type: application/json" --data "$payload"; then
+  case "$api_status_code" in
+    2??) ;;
+    4??)
+      refusal="$(printf '%s' "$api_status_body" | jq -r '[.message // "", ((.errors // [])[] | if type == "string" then . else (.message // tojson) end)] | map(select(. != "")) | join("; ")' 2>/dev/null)" || refusal=""
+      write_result rejected "GitHub refused the review (HTTP ${api_status_code})${refusal:+: $refusal}"
+      exit 0
+      ;;
+  esac
+fi
+
+if review_presence; then
+  write_result applied
+else
+  write_result uncertain "review write could not be discovered"
+fi

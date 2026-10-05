@@ -36,7 +36,7 @@ fmt-check:
 shell-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    for script in scripts/install-review-runtime scripts/provision-* scripts/adaptations/forgejo/* scripts/run-body/*; do
+    for script in scripts/install-review-runtime scripts/provision-* scripts/adaptations/forgejo/* scripts/adaptations/github/* scripts/run-body/*; do
         case "$script" in
             *.mjs) node --check "$script" || exit 1 ;;
             *.json) jq empty "$script" || exit 1 ;;

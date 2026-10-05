@@ -10,5 +10,6 @@ jq	jq --version	jq-1.8.2
 node	node --version	v24.14.0
 go	go version	go1.27.0
 git	git --version	any
+openssl	openssl version	any
 claude	claude --version	2.1.251
 codex	codex --version	codex-cli 0.151.0

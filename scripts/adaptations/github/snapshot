@@ -1,0 +1,65 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+pr="$3"
+
+pr_json="$(api GET "/repos/${owner}/${repo}/pulls/${pr}")"
+base_ref="$(printf '%s' "$pr_json" | jq -r '.base.ref')"
+# The pull request's own base.sha is the base as it stood when the pull
+# request was opened; the target the review binds is the branch's tip now.
+base_json="$(api GET "/repos/${owner}/${repo}/branches/$(urlencode "$base_ref")")"
+head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
+
+statuses="$(collect "/repos/${owner}/${repo}/commits/${head_sha}/statuses")"
+reviews="$(collect "/repos/${owner}/${repo}/pulls/${pr}/reviews")"
+
+# head_branch names a same-repository source branch; a fork's branch is
+# not a branch of the reviewed repository and stays blank, as on Forgejo.
+head_branch="$(printf '%s' "$pr_json" | jq -r --arg repository "${owner}/${repo}" \
+  'if (.head.repo.full_name // "") == $repository then (.head.ref // "") else "" end')"
+
+# GitHub has no dependency link between pull requests: a stack is a child
+# based on its parent's branch, reviewed as its own increment, so the
+# dependency facts are always available and always empty.
+jq -nc \
+  --arg login "$MINOS_GITHUB_LOGIN" \
+  --argjson pr "$pr_json" \
+  --argjson base "$base_json" \
+  --argjson statuses "$statuses" \
+  --argjson reviews "$reviews" \
+  --arg head_branch "$head_branch" \
+  --arg provider "github" '
+  # GitHub names review states differently from the protocol, whose
+  # vocabulary Forgejo happens to share: the sweep recognises a terminal
+  # review by APPROVED or REQUEST_CHANGES.
+  def protocol_review_state:
+    if . == "CHANGES_REQUESTED" then "REQUEST_CHANGES"
+    elif . == "COMMENTED" then "COMMENT"
+    else . end;
+  {
+    authenticated_user: $login,
+    repository: $pr.base.repo.full_name,
+    pull_request: $pr.number,
+    state: (if ($pr.merged // false) then "merged" else $pr.state end),
+    merged: ($pr.merged // false),
+    draft: ($pr.draft // false),
+    author: ($pr.user.login // ""),
+    head_sha: $pr.head.sha,
+    head_branch: $head_branch,
+    target_sha: ($base.commit.sha // ""),
+    target_branch: $pr.base.ref,
+    target_repository: $pr.base.repo.full_name,
+    statuses: [$statuses[] |
+      if ((.id | type) != "number" or .id <= 0) then error("GitHub status is missing a positive id") else
+        {id, provider:$provider, context, state, creator:(.creator.login // ""), description:(.description // ""), target_url:(.target_url // "")}
+      end] | sort_by(.id) | reverse,
+    labels: [($pr.labels // [])[] | .name] | sort,
+    reviews: [$reviews[] | {id, state: (.state | protocol_review_state), commit_id, body:(.body // ""), user:(.user.login // "")}],
+    dependencies_available: true,
+    dependency_error: "",
+    open_dependencies: []
+  }'

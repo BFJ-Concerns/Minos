@@ -2,7 +2,7 @@
 set -eu
 
 : "${MINOS_API_BASE:?MINOS_API_BASE is required}"
-: "${MINOS_FORGE_TOKEN:?MINOS_FORGE_TOKEN is required}"
+: "${MINOS_FORGE_CREDENTIAL:?MINOS_FORGE_CREDENTIAL is required}"
 
 api() {
   method="$1"
@@ -10,7 +10,7 @@ api() {
   shift 2
   curl -fsS \
     -X "$method" \
-    -H "Authorization: token ${MINOS_FORGE_TOKEN}" \
+    -H "Authorization: token ${MINOS_FORGE_CREDENTIAL}" \
     -H "Accept: application/json" \
     "$@" \
     "${MINOS_API_BASE%/}${path}"
@@ -28,7 +28,7 @@ api_with_status() {
     -o "$api_status_file" \
     -w '%{http_code}' \
     -X "$method" \
-    -H "Authorization: token ${MINOS_FORGE_TOKEN}" \
+    -H "Authorization: token ${MINOS_FORGE_CREDENTIAL}" \
     -H "Accept: application/json" \
     "$@" \
     "${MINOS_API_BASE%/}${path}")"; then
