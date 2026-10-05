@@ -1,11 +1,12 @@
 # Minos
 
-Minos reviews pull requests. A webhook or periodic sweep starts one lead
-session on a disposable box — Claude Code on `claude-opus-5-5` by default, or
-Codex on `gpt-6-sol`. The lead claims the pull request — requesting a review
-from the bot account and adding the configured in-flight marker — clones the
-repository, and invokes the shipped review workflows through the
-installed Ensemble CLI and adjudication wrapper. Independent reviewers cover the
+Minos reviews pull requests on Forgejo and GitHub. A webhook or periodic sweep
+starts one lead session on a disposable box — Claude Code on `claude-opus-5-5` by
+default, or Codex on `gpt-6-sol`. The lead claims the pull request — requesting a
+review from the bot account (Forgejo) or adding the configured in-flight marker
+(both forges) — clones the repository through the forge-neutral
+`repository-metadata` and `clone-credential` operations, and invokes the shipped
+review workflows through the installed Ensemble CLI and adjudication wrapper. Independent reviewers cover the
 whole diff, with breadth scaled to the diff and the repository's `.review/`
 briefs honoured; by default, the opposite model family verifies every proposed
 finding — proposing and planning roles run on Codex (`gpt-6-sol`) while the
@@ -27,7 +28,9 @@ ledger, review bar or review-of-review loop. The forge is the durable record and
 the systemd unit for a pull request is the only live-run coordination. How many
 leads may run at once is `runs.max-concurrent` in `service.toml`; run units share a
 whole-box memory envelope live through a systemd slice, so a lone run may use
-all of it and concurrent runs can never together exceed the envelope.
+all of it and concurrent runs can never together exceed the envelope. A run that
+exits cleanly triggers one sweep pass, so the freed slot is filled without
+waiting for the next periodic cycle.
 
 ## Commands
 
@@ -38,8 +41,8 @@ minos sweep --config /etc/minos
 ```
 
 The lead uses `minos forge claim`, `snapshot`, `status`, `review`,
-`marker` and `file-issue`.
-Forge adaptations live in `scripts/adaptations/forgejo`. The review entry point
+`marker`, `file-issue`, `repository-metadata` and `clone-credential`.
+Forge adaptations live in `scripts/adaptations/`, one directory per forge. The review entry point
 is `workflows/adjudicated-review`; it runs `workflows/review.js` through the
 vendored Ensemble launcher and passes the result to
 `workflows/run-record-adjudicator.mjs`. Ahead of the first review,
@@ -56,6 +59,9 @@ clean marker and a clean status, and delivers the confirmed advisory findings
 to the repository's
 configured filing destination — a file in a repository's default branch, an
 issue filed on a named repository, a comment on the pull request, or nowhere.
+The default is `pull-request-comment`: one comment-review carrying the advisory
+entries with deduplication markers, posted only when entries remain after
+deduplication — a clean run with nothing new to file posts no comment.
 Unverified observations stay in the internal run record. If delivery is
 unavailable, the run report records the failure without posting a fallback
 comment. Configuration diagnostics — brief misconfigurations and unreadable
@@ -64,7 +70,9 @@ guidance sources — take the same destination.
 Published review comments carry model provenance: each finding is tagged with
 `Proposed by:` and `Verified by:` lines naming the models that proposed and
 verified it, and the forge review command appends a `Reviewed by:` line naming
-the lead model (`MINOS_LEAD_MODEL`) to the review body.
+the lead model (`MINOS_LEAD_MODEL`) to the review body. Finding prose carries
+only the finding's own anchor location; other model-written file and line
+references are stripped before publication.
 
 At the end of each completed pass the sweep writes `.sweep-deferrals.json`
 atomically into the runs directory, recording every pull request the pass
