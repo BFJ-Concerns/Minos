@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/BFJ-Concerns/Minos/deploy"
 	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
@@ -824,7 +826,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=43200.000000000s")
 	assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
 	assertArgument(t, systemdArgs, "--property=MemoryMax=22G")
-	assertArgument(t, systemdArgs, "--property=OnSuccess=minos-sweep.service")
+	assertArgument(t, systemdArgs, "--property=OnSuccess=minos-sweep-after-run@minos-run-forgejo-owner-repo-pr7.service")
 	for _, argument := range systemdArgs {
 		if strings.HasPrefix(argument, "--property=OnFailure=") {
 			t.Fatalf("run unit must not trigger reconciliation on failure: %q", argument)
@@ -997,6 +999,34 @@ func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {
 				t.Fatalf("systemd starts = %d, want %d", len(active), test.maxConcurrent)
 			}
 		})
+	}
+}
+
+// The exit hook names an instance of a template the binary ships. The user
+// manager keeps a unit loaded while it is active or failed, and while an
+// exit hook it fired names a unit that stays loaded; the exited run unit is
+// collected only once the instance is, so the template must unload when it
+// fails and must fire no exit hook of its own.
+func TestSpawnRunExitHookNamesTheShippedSweepTemplate(t *testing.T) {
+	hook := sweepAfterRunUnit("minos-run-forgejo-owner-repo-pr7")
+	template, instance, found := strings.Cut(hook, "@")
+	if !found || instance != "minos-run-forgejo-owner-repo-pr7.service" {
+		t.Fatalf("exit hook %q is not an instance named after the run unit", hook)
+	}
+	content, err := fs.ReadFile(deploy.Units, "systemd/user/"+template+"@.service")
+	if err != nil {
+		t.Fatalf("the exit hook names a template the binary does not ship: %v", err)
+	}
+	if !strings.Contains(string(content), "\nExecStart=/usr/bin/systemctl --user start --no-block minos-sweep.service\n") {
+		t.Fatalf("the shipped template does not enqueue the canonical sweep and return:\n%s", content)
+	}
+	if !strings.Contains(string(content), "\nCollectMode=inactive-or-failed\n") {
+		t.Fatalf("the shipped template keeps a failed instance loaded, and the exited run unit with it:\n%s", content)
+	}
+	for _, directive := range []string{"OnSuccess=", "OnFailure="} {
+		if strings.Contains(string(content), "\n"+directive) {
+			t.Fatalf("the shipped template declares %s; a fired exit hook naming a unit that stays loaded keeps the instance, and through it the exited run unit, loaded:\n%s", directive, content)
+		}
 	}
 }
 

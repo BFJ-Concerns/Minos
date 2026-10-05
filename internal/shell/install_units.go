@@ -17,11 +17,11 @@ const runsSliceUnit = "minos-runs.slice"
 
 // InstallUnitsCommand writes the shipped systemd user units into the
 // directory the user manager reads, rendered for this deployment: every
-// service names the configured root, and the runs slice carries the
-// memory envelope from runs.memory-envelope-gib — MemoryMax at the
-// envelope, MemoryHigh two GiB below it — so a box's ceiling is the knob's
-// value, never the shipped default by accident. Re-run it after changing
-// the envelope, then reload the user manager.
+// service that runs the binary names the configured root, and the runs
+// slice carries the memory envelope from runs.memory-envelope-gib —
+// MemoryMax at the envelope, MemoryHigh two GiB below it — so a box's
+// ceiling is the knob's value, never the shipped default by accident.
+// Re-run it after changing the envelope, then reload the user manager.
 func InstallUnitsCommand(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("install-units", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -70,13 +70,29 @@ func installUnits(cfg ServiceConfig, directory string, stdout io.Writer) error {
 	return nil
 }
 
+// shippedBinary is the path the shipped units run the service from. A
+// service whose Exec line runs it passes the configuration root, which the
+// render substitutes; a shipped unit that runs something else (the
+// sweep-after-run template runs systemctl) carries no root and installs
+// verbatim, whatever its comments mention.
+const shippedBinary = "/usr/local/bin/minos"
+
+func runsShippedBinary(content []byte) bool {
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.HasPrefix(line, "Exec") && strings.Contains(line, shippedBinary) {
+			return true
+		}
+	}
+	return false
+}
+
 // renderUnit substitutes this deployment's values into a shipped unit: the
-// configuration root every service passes to the binary, and the runs
-// slice's two memory ceilings. A shipped unit missing a line the render
-// expects is a template that drifted from this code, reported rather than
-// installed half-rendered.
+// configuration root every service running the binary passes to it, and
+// the runs slice's two memory ceilings. A shipped unit missing a line the
+// render expects is a template that drifted from this code, reported rather
+// than installed half-rendered.
 func renderUnit(name string, content []byte, cfg ServiceConfig) ([]byte, error) {
-	if strings.HasSuffix(name, ".service") {
+	if strings.HasSuffix(name, ".service") && runsShippedBinary(content) {
 		marker := []byte("--config " + DefaultConfigRoot)
 		if !bytes.Contains(content, marker) {
 			return nil, fmt.Errorf("shipped %s carries no %q to render", name, string(marker))

@@ -274,9 +274,11 @@ toolchains are needed.
    deployment user, then `systemctl --user daemon-reload` and enable
    `minos-receiver.service` and `minos-sweep.timer`. The units are embedded
    in the binary (the sources are `deploy/systemd/user`); the command
-   writes every service with the configuration root it was given and
-   `minos-runs.slice` with the configured memory envelope, so runs share
-   that envelope rather than a copied default.
+   writes every service whose Exec line runs the binary with the
+   configuration root it was given, `minos-runs.slice` with the configured
+   memory envelope, so runs share that envelope rather than a copied
+   default, and the timer and the `minos-sweep-after-run@.service` template
+   verbatim.
 6. Configure the forge webhook to post to `/hooks/<forge key>` —
    `/hooks/forgejo` for the shipped Forgejo table, `/hooks/github` for a
    GitHub App — using the matching secret. The path suffix after `/hooks/`
@@ -289,9 +291,19 @@ two forges reviewing the same owner/repository namespace cannot collide. Deploy
 with no live run units and no preserved handoff directories carrying the
 older names without the forge key.
 
-A run that exits cleanly triggers one sweep pass (`OnSuccess=minos-sweep.service`),
-so the freed slot is filled without waiting for the next periodic cycle. A
-failed exit does not trigger a sweep.
+A run that exits cleanly triggers one sweep pass, so the freed slot is filled
+without waiting for the next periodic cycle: each run unit carries
+`OnSuccess=minos-sweep-after-run@minos-run-<forge>-<owner>-<repo>-pr<n>.service`
+(systemd 249 or later), and that instance enqueues `minos-sweep.service` and
+exits. The indirection is what lets the user manager collect the exited run
+unit — a unit stays loaded while an exit hook it fired names a unit that
+stays loaded, so a hook on the sweep service itself kept every exited run
+unit loaded and refused the pull request's next run as already loaded — and
+the template must be installed (step 5) on any box that spawns runs. A failed
+exit does not trigger a sweep; an operator's `systemctl --user stop` of a run
+unit ends it cleanly and does. A clean exit that lands while a pass is already
+running joins that pass rather than starting another, so a pull request the
+running pass has already walked waits for the timer.
 
 Each run launches the lead on the configured engine and model. `run-body`
 keeps resumable `done` and `blocked` turns alive after useful run activity has

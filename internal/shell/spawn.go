@@ -54,6 +54,20 @@ func preserveStaleReviewResult(path, stalePath string) error {
 // MemoryMax is also the backstop on a box without the slice installed.
 const runsSliceName = "minos-runs.slice"
 
+// sweepAfterRunTemplate is the shipped template
+// (deploy/systemd/user/minos-sweep-after-run@.service) whose per-run
+// instance a run unit's clean exit starts. The instance enqueues the
+// canonical sweep and exits, so the user manager collects the exited run
+// unit, the instance and the link between them at once. Naming
+// minos-sweep.service directly would leave every exited run unit loaded as
+// that long-lived unit's dependency, and the pull request's next run refused
+// as already loaded.
+const sweepAfterRunTemplate = "minos-sweep-after-run"
+
+func sweepAfterRunUnit(unit string) string {
+	return sweepAfterRunTemplate + "@" + unit + ".service"
+}
+
 func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnResult, error) {
 	unit := UnitName(facts)
 	unlock, err := lockAdmission(cfg.Runs.Dir)
@@ -278,7 +292,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--property=RuntimeMaxSec=" + cfg.runDurationCeiling(),
 		"--slice=" + runsSliceName,
 		"--property=MemoryMax=" + fmt.Sprintf("%dG", cfg.runMemoryEnvelopeGiB()),
-		"--property=OnSuccess=minos-sweep.service",
+		"--property=OnSuccess=" + sweepAfterRunUnit(unit),
 	}
 	for key, value := range env {
 		args = append(args, "--setenv", key+"="+value)

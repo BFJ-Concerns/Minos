@@ -1,0 +1,25 @@
+# The target of every run unit's OnSuccess= hook; SpawnRun names the instance
+# after the run unit. The instance only enqueues the canonical sweep and
+# exits. The user manager keeps a unit loaded while it is active or failed,
+# and while an exit hook it fired names a unit that stays loaded — so a run
+# unit hooked straight to minos-sweep.service, which the timer keeps loaded,
+# was never collected, and its pull request's next run was refused as already
+# loaded. A per-run instance is referenced by nothing long-lived, so the run
+# unit, the instance and the link between them are collected once the
+# instance has exited, milliseconds after the enqueue returns. Three things
+# keep it that way: the instance declares no exit hook of its own (an
+# OnSuccess= or OnFailure= naming a long-lived unit would pin the instance,
+# and through it the run unit, when it fired); CollectMode= lets a failed
+# enqueue unload instead of staying loaded as failed; and the instance never
+# performs the sweep itself, which would keep it active, and the run unit
+# loaded, for the whole pass — including the pass meant to respawn that pull
+# request. Ordering and wants (After=, Wants=) do not pin; the unit simply has
+# no use for them.
+[Unit]
+Description=Enqueue a Minos reconciliation sweep after run unit %i exited cleanly
+Documentation=file:/opt/minos/docs/deployment.md
+CollectMode=inactive-or-failed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user start --no-block minos-sweep.service
