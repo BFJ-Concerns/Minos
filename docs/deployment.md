@@ -81,10 +81,10 @@ so no repository toolchains are needed.
    repository's default branch), `issue` (repository required — the
    owner/name that takes the issues; no path), `pull-request-comment`, or
    `none`. Unset at both levels, it defaults to `pull-request-comment`.
-   The `pull-request-comment` kind posts one comment-review carrying the
-   remaining advisory entries after deduplication against the service
-   account's existing review bodies on the pull request; when no entries
-   remain, nothing is posted. It never posts an all-clear comment. A
+   The `pull-request-comment` kind deduplicates against the service
+   account's existing review bodies on the pull request, then posts one
+   comment-review with the remaining advisory entries; when none remain,
+   nothing is posted — there is no all-clear comment. A
    file-kind destination is a separate write path committed as
    `service.commit-author-name` (default: the bot login) and
    `service.commit-author-email` (default: the bot login at
@@ -105,12 +105,12 @@ so no repository toolchains are needed.
    Every commit status Minos writes carries `service.status-context`
    (default `Minos`), and the sweep's completion marker is read under
    that context only. Status Details links point at the pull request with
-   a target-SHA fragment; `[forges.<key>] web-base` sets their host and
-   optional path prefix as an absolute HTTP(S) URL. Unset for a Forgejo
-   forge, the link derives the web host from `api-base` by stripping a
-   trailing `/api/v1`. GitHub links derive the web host from the API base
-   (`https://github.com` for the public API, the Enterprise host
-   otherwise).
+   a target-SHA fragment. For a Forgejo forge, `[forges.<key>] web-base`
+   sets the link's host and optional path prefix as an absolute HTTP(S)
+   URL; unset, the link derives the web host from `api-base` by stripping
+   a trailing `/api/v1`. GitHub links always derive the web host from the
+   API base (`https://github.com` for the public API, the Enterprise host
+   otherwise) and ignore `web-base`.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset; it must not exceed `runs.memory-envelope-gib`.
@@ -133,10 +133,10 @@ so no repository toolchains are needed.
    A healthy run's unreclaimable footprint is around 1.2 GiB,
    but each run also paces `ensemble.concurrency-claude` and
    `concurrency-codex` workers of its own (the loader defaults both to 2
-   when neither is set; the shipped example sets 10 and 6).
+   when neither is set; the shipped example comments both at 2).
    `ensemble.agent-ceiling` optionally caps a workflow's agents across
    both engines together; unset, the runtime applies no combined cap (the
-   shipped example sets 12).
+   shipped example comments an illustrative value of 4).
 
    `[routing]` maps each workflow role — `exploration`, `proposer`,
    `verifier`, `engagement-gate`, `brief-planner` — to an engine, model
@@ -290,7 +290,10 @@ and directories named by valid pending continuation handoffs are preserved.
 Each digest is limited to 256 KiB and reads only the run-local report and
 failure log, Claude transcripts, Codex rollouts and exact Ensemble record tree.
 The sweep fetches and rebases its append-only commit onto `origin/main` before
-pushing with the configured Forgejo token header.
+pushing. The push authenticates through the selected forge adaptation's
+`clone-credential` operation using `runs.failures-credential-file` — a
+separate credential from the reviewed-forge file — and reaches git as a
+Basic authorisation header via `GIT_CONFIG_*`, never on argv.
 
 The receiver handles new events immediately. The sweep periodically starts any
 open, non-draft pull request whose current head carries no completion marker.
