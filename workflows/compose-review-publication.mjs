@@ -29,7 +29,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { findingComment, reviewBody } from "./finding-presentation.mjs";
-import { SEVERITY, findingKey, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
+import { SEVERITY, findingKey, normalisedTitle, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
 
 const argv = process.argv.slice(2);
 if (argv.length !== 5 && argv.length !== 7) {
@@ -95,10 +95,6 @@ const guidanceMisconfigurations = orientation.misconfigurations;
 
 const main = loadGroup("main", mainVerdictPath, mainDecisionPath);
 const brief = briefVerdictPath ? loadGroup("brief", briefVerdictPath, briefDecisionPath) : null;
-
-function normalisedTitle(finding) {
-  return String(finding.title || "").trim().toLowerCase().replace(/\s+/g, " ");
-}
 
 // Keys are JSON-encoded tuples: a path may contain any character, so a
 // delimiter-joined string could make two distinct sites read as one.

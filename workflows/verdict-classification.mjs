@@ -24,14 +24,17 @@ export function atOrAboveThreshold(finding, threshold) {
   return SEVERITY[finding.severity] >= SEVERITY[threshold];
 }
 
+export function normalisedTitle(finding) {
+  return String(finding.title || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 // The adjudicated verdict's own finding ids are the identity vocabulary:
 // unique by construction, so two specialists confirming the same defect at
 // the same site stay two disposable findings. The content key is only the
 // fallback for a verdict without ids.
 export function findingKey(finding) {
   if (typeof finding.id === "string" && finding.id !== "") return finding.id;
-  const title = String(finding.title || "").trim().toLowerCase().replace(/\s+/g, " ");
-  return JSON.stringify([finding.path, finding.line, title]);
+  return JSON.stringify([finding.path, finding.line, normalisedTitle(finding)]);
 }
 
 function invalidDigestInputReason(input) {

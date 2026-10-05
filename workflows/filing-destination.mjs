@@ -11,6 +11,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 
+import { normalisedTitle } from "./verdict-classification.mjs";
 import { issueLogEntry } from "./finding-presentation.mjs";
 
 const PUSH_ATTEMPTS = 2;
@@ -23,7 +24,7 @@ export const FILING_KINDS = ["file", "issue", "pull-request-comment", "none"];
 // reviewed repository is part of the identity because one destination may
 // serve several repositories, whose sites are only relative paths.
 export function filingMarker(entry, reviewedRepository) {
-  const title = String(entry.title || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const title = normalisedTitle(entry);
   const identity = entry.kind === "review-brief-misconfiguration"
     ? [entry.kind, reviewedRepository, entry.brief, title]
     : entry.kind === "guidance-source-misconfiguration"
