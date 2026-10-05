@@ -808,8 +808,12 @@ func TestGitHubClaimWritesOnlyTheConfiguredMarker(t *testing.T) {
 		name := marker.Reaction + marker.Label
 		t.Run(name, func(t *testing.T) {
 			state := newGitHubFixtureState(t)
+			state.mu.Lock()
 			state.pullRequest["draft"] = false
+			state.mu.Unlock()
+			state.mu.Lock()
 			state.definedLabels = []map[string]any{{"id": 42, "name": "review active"}}
+			state.mu.Unlock()
 			data, _ := json.Marshal(map[string]forge.Marker{"in-flight": marker})
 			t.Setenv("MINOS_MARKERS", string(data))
 			adapter := state.adapter(t)
@@ -856,7 +860,9 @@ func TestGitHubClaimRefusesMissingLabelAndWrongIdentity(t *testing.T) {
 func TestGitHubListOpenPullRequestsPagesFacts(t *testing.T) {
 	state := newGitHubFixtureState(t)
 	for i := 1; i <= 101; i++ {
+		state.mu.Lock()
 		state.pullRequests = append(state.pullRequests, map[string]any{"number": i, "head": map[string]any{"sha": fmt.Sprintf("head-%d", i)}, "base": map[string]any{"ref": "parent"}})
+		state.mu.Unlock()
 	}
 	// Exercise the service consumer as well as the protocol runner.
 	adaptation := Adaptation{Dir: state.adaptationPath, APIBase: state.server.URL, Credential: state.credential}
@@ -916,9 +922,13 @@ func TestGitHubMarkersWriteAndRemoveTheirOwnState(t *testing.T) {
 	for _, marker := range []forge.Marker{{Reaction: "+1"}, {Label: "review done"}} {
 		t.Run(marker.Reaction+marker.Label, func(t *testing.T) {
 			state := newGitHubFixtureState(t)
+			state.mu.Lock()
 			state.definedLabels = []map[string]any{{"id": 43, "name": "review done"}}
+			state.mu.Unlock()
 			// A colleague's reaction must neither satisfy the bot's write nor be removed.
+			state.mu.Lock()
 			state.reactions = []map[string]any{{"id": 22, "content": "+1", "user": map[string]any{"login": "colleague"}}}
+			state.mu.Unlock()
 			adapter := state.adapter(t)
 			guard := state.guard()
 			githubApplied(t, adapter.AddMarker(t.Context(), guard, marker))
@@ -958,7 +968,9 @@ func TestGitHubHeadBoundWritesRefuseMovedHeads(t *testing.T) {
 			marker := forge.Marker{Reaction: "eyes"}
 			if strings.Contains(op, "label") {
 				marker = forge.Marker{Label: "review active"}
+				state.mu.Lock()
 				state.definedLabels = []map[string]any{{"id": 42, "name": marker.Label}}
+				state.mu.Unlock()
 			}
 			if strings.HasPrefix(op, "remove") {
 				githubApplied(t, adapter.AddMarker(t.Context(), guard, marker))
@@ -989,7 +1001,9 @@ func TestGitHubMarkerCleanupAcceptsOnlyMatchingMergedHeads(t *testing.T) {
 		for _, moved := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s%s/moved=%t", marker.Reaction, marker.Label, moved), func(t *testing.T) {
 				state := newGitHubFixtureState(t)
+				state.mu.Lock()
 				state.definedLabels = []map[string]any{{"id": 42, "name": "review active"}}
+				state.mu.Unlock()
 				adapter := state.adapter(t)
 				guard := state.guard()
 				githubApplied(t, adapter.AddMarker(t.Context(), guard, marker))
@@ -1023,7 +1037,9 @@ func TestGitHubFilingDeduplicatesOpenAndClosedIssuesButNotPullRequests(t *testin
 	repository := state.guard().Repository
 	body := "Finding. <!-- minos:entry_1 -->"
 	// A pull request with the same marker is not a filed issue.
+	state.mu.Lock()
 	state.issues = []map[string]any{{"number": 7, "state": "open", "title": "Finding", "body": body, "pull_request": map[string]any{"url": "pull"}}}
+	state.mu.Unlock()
 	result := adapter.FileIssue(t.Context(), repository, "Finding", body)
 	githubApplied(t, result)
 	if result.Written == nil || *result.Written != 1 {
@@ -1061,7 +1077,9 @@ func TestGitHubAlertsUseIssuesAndRepeatAsComments(t *testing.T) {
 	state := newGitHubFixtureState(t)
 	adapter := state.adapter(t)
 	repository := state.guard().Repository
+	state.mu.Lock()
 	state.issues = []map[string]any{{"number": 7, "state": "open", "title": "Sweep failed", "pull_request": map[string]any{"url": "pull"}}}
+	state.mu.Unlock()
 	githubApplied(t, adapter.Alert(t.Context(), repository, "Sweep failed", "First alert"))
 	githubApplied(t, adapter.Alert(t.Context(), repository, "Sweep failed", "Repeat alert"))
 	writes := state.operationWrites()
@@ -1072,8 +1090,12 @@ func TestGitHubAlertsUseIssuesAndRepeatAsComments(t *testing.T) {
 
 func TestGitHubStackedChildClaimSurvivesRetarget(t *testing.T) {
 	state := newGitHubFixtureState(t)
+	state.mu.Lock()
 	state.pullRequest["draft"] = false
+	state.mu.Unlock()
+	state.mu.Lock()
 	state.pullRequest["base"].(map[string]any)["ref"] = "parent"
+	state.mu.Unlock()
 	t.Setenv("MINOS_MARKERS", `{"in-flight":{"reaction":"eyes"}}`)
 	adapter := state.adapter(t)
 	guard := state.guard()
@@ -1126,8 +1148,12 @@ func TestGitHubWritesPreserveUncertainty(t *testing.T) {
 			state := newGitHubFixtureState(t)
 			adapter := state.adapter(t)
 			guard := state.guard()
+			state.mu.Lock()
 			state.refuseMutation = true
+			state.mu.Unlock()
+			state.mu.Lock()
 			state.definedLabels = []map[string]any{{"id": 42, "name": "review active"}}
+			state.mu.Unlock()
 			var result forge.WriteResult
 			switch op {
 			case "status":
@@ -1202,10 +1228,14 @@ func TestGitHubUnreadableMarkerStateNeverBecomesAbsence(t *testing.T) {
 			guard := state.guard()
 			marker := forge.Marker{Reaction: "eyes"}
 			t.Setenv("MINOS_MARKERS", `{"in-flight":{"reaction":"eyes"}}`)
+			state.mu.Lock()
 			state.unreadablePath = "/repos/acme/widgets/issues/7/reactions"
+			state.mu.Unlock()
 			if strings.Contains(op, "label") {
 				marker = forge.Marker{Label: "review active"}
+				state.mu.Lock()
 				state.unreadablePath = "/repos/acme/widgets/issues/7/labels"
+				state.mu.Unlock()
 			}
 			var result forge.WriteResult
 			switch {
