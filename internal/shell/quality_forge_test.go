@@ -144,7 +144,7 @@ func runQualityAdaptation(t *testing.T, verb string, read func(*http.Request) (s
 		input = `{"title":"operator alert","body":"diagnostic"}`
 	}
 	cmd := exec.CommandContext(t.Context(), script, args...)
-	cmd.Env = append(os.Environ(), "HOME="+t.TempDir(), "MINOS_API_BASE="+server.URL, "MINOS_FORGE_TOKEN=fixture-token", "MINOS_STATUS_CONTEXT=Minos", `MINOS_MARKERS={"in-flight":{"reaction":"eyes"}}`)
+	cmd.Env = append(os.Environ(), "HOME="+t.TempDir(), "MINOS_API_BASE="+server.URL, "MINOS_FORGE_CREDENTIAL=fixture-token", "MINOS_STATUS_CONTEXT=Minos", `MINOS_MARKERS={"in-flight":{"reaction":"eyes"}}`)
 	cmd.Stdin = strings.NewReader(input)
 	output, err := cmd.Output()
 	if err != nil {

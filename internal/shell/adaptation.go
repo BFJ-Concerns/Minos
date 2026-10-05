@@ -28,7 +28,7 @@ func NewAdaptation(forge ForgeConfig) (Adaptation, error) {
 func (a Adaptation) Run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, filepath.Join(a.Dir, name), args...)
 	cmd.Stdin = stdin
-	cmd.Env = append(os.Environ(), "MINOS_API_BASE="+a.APIBase, "MINOS_FORGE_TOKEN="+a.Credential)
+	cmd.Env = append(os.Environ(), "MINOS_API_BASE="+a.APIBase, "MINOS_FORGE_CREDENTIAL="+a.Credential)
 	for key, value := range extraEnv {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}

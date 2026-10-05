@@ -30,7 +30,7 @@ func (r ScriptRunner) Run(ctx context.Context, request RunRequest) ([]byte, erro
 	cmd.Stdin = request.Stdin
 	cmd.Env = append(os.Environ(),
 		"MINOS_API_BASE="+r.APIBase,
-		"MINOS_FORGE_TOKEN="+r.Credential,
+		"MINOS_FORGE_CREDENTIAL="+r.Credential,
 	)
 	for key, value := range request.Env {
 		cmd.Env = append(cmd.Env, key+"="+value)
