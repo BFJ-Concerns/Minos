@@ -3,12 +3,10 @@ package shell
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
+
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 type Adaptation struct {
@@ -26,19 +24,9 @@ func NewAdaptation(forge ForgeConfig) (Adaptation, error) {
 }
 
 func (a Adaptation) Run(ctx context.Context, name string, stdin io.Reader, extraEnv map[string]string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, filepath.Join(a.Dir, name), args...)
-	cmd.Stdin = stdin
-	cmd.Env = append(os.Environ(), "MINOS_API_BASE="+a.APIBase, "MINOS_FORGE_CREDENTIAL="+a.Credential)
-	for key, value := range extraEnv {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return out, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
-	}
-	return out, nil
+	return (forge.ScriptRunner{Directory: a.Dir, APIBase: a.APIBase, Credential: a.Credential}).Run(ctx, forge.RunRequest{
+		Operation: name, Arguments: args, Stdin: stdin, Env: extraEnv,
+	})
 }
 
 func (a Adaptation) NormaliseEvent(ctx context.Context, body []byte, headers map[string]string) (Facts, error) {

@@ -64,14 +64,11 @@ type Snapshot struct {
 	Merged                bool         `json:"merged"`
 	Draft                 bool         `json:"draft"`
 	Author                string       `json:"author"`
-	Mergeable             bool         `json:"mergeable"`
 	HeadSHA               string       `json:"head_sha"`
 	HeadBranch            string       `json:"head_branch"`
 	TargetSHA             string       `json:"target_sha"`
 	TargetBranch          string       `json:"target_branch"`
 	TargetRepository      string       `json:"target_repository"`
-	SourceProtected       bool         `json:"source_protected"`
-	CanMerge              bool         `json:"can_merge"`
 	Statuses              []Status     `json:"statuses"`
 	Labels                []string     `json:"labels"`
 	Reviews               []Review     `json:"reviews"`
