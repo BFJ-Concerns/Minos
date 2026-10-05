@@ -3,6 +3,7 @@ package shell
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -201,6 +202,7 @@ func validateRouting(routing Routing) error {
 type ForgeConfig struct {
 	Adaptation        string `toml:"adaptation"`
 	APIBase           string `toml:"api-base"`
+	WebBase           string `toml:"web-base"`
 	WebhookSecretFile string `toml:"webhook-secret-file"`
 	CredentialFile    string `toml:"credential-file"`
 	SignatureHeader   string `toml:"signature-header"`
@@ -318,6 +320,12 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 		return ServiceConfig{}, err
 	}
 	for name, forge := range cfg.Forges {
+		if forge.WebBase != "" {
+			webURL, err := url.Parse(forge.WebBase)
+			if err != nil || (webURL.Scheme != "http" && webURL.Scheme != "https") || webURL.Hostname() == "" {
+				return ServiceConfig{}, fmt.Errorf("service.toml: forge %s web-base must be an absolute http(s) URL", name)
+			}
+		}
 		if forge.Adaptation == "" || forge.APIBase == "" || forge.WebhookSecretFile == "" || forge.CredentialFile == "" {
 			return ServiceConfig{}, fmt.Errorf("service.toml: forge %s is incomplete", name)
 		}

@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -481,6 +482,47 @@ func TestRunCeilingConfiguration(t *testing.T) {
 			}
 			if cfg.Runs.MemoryEnvelopeGiB != test.envelope || cfg.Runs.DurationCeiling != test.duration || cfg.Runs.PressureThresholdPercent != test.threshold {
 				t.Fatalf("run ceilings = %d / %s / %d, want %d / %s / %d", cfg.Runs.MemoryEnvelopeGiB, cfg.Runs.DurationCeiling, cfg.Runs.PressureThresholdPercent, test.envelope, test.duration, test.threshold)
+			}
+		})
+	}
+}
+
+func TestForgeWebBaseConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name, value  string
+		set, invalid bool
+	}{
+		{name: "unset"},
+		{name: "empty", set: true},
+		{name: "https", value: "https://forge.example/forge/", set: true},
+		{name: "http", value: "http://forge.example:3000", set: true},
+		{name: "relative", value: "/forge", set: true, invalid: true},
+		{name: "scheme relative", value: "//forge.example", set: true, invalid: true},
+		{name: "missing host", value: "https:///forge", set: true, invalid: true},
+		{name: "unsupported scheme", value: "ftp://forge.example", set: true, invalid: true},
+		{name: "malformed", value: "https://forge.example/%zz", set: true, invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			body := testServiceConfig
+			if test.set {
+				body = strings.Replace(body, "[forges.local]\n", fmt.Sprintf("[forges.local]\nweb-base = %q\n", test.value), 1)
+			}
+			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadServiceConfig(root)
+			if test.invalid {
+				if err == nil || !strings.Contains(err.Error(), "forge local web-base") {
+					t.Fatalf("error = %v, want web-base refusal naming forge local", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Forges["local"].WebBase; got != test.value {
+				t.Fatalf("web-base = %q, want %q", got, test.value)
 			}
 		})
 	}

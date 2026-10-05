@@ -1226,3 +1226,40 @@ func TestCaptureStderrRestoresAfterGoexit(t *testing.T) {
 		}
 	}
 }
+
+func TestSpawnRunExportsForgeWebBase(t *testing.T) {
+	for _, webBase := range []string{"https://forge.example/forge/", ""} {
+		t.Run(fmt.Sprintf("web-base=%q", webBase), func(t *testing.T) {
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			var systemdArgs []string
+			commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+				switch name {
+				case "systemctl":
+					return nil, nil
+				case "systemd-run":
+					systemdArgs = append([]string(nil), args...)
+					return nil, nil
+				default:
+					t.Fatalf("unexpected command %q", name)
+					return nil, nil
+				}
+			}
+			cfg := loadServiceConfigWith(t, t.TempDir(), "")
+			cfg.Runs.Dir = t.TempDir()
+			forge := cfg.Forges["local"]
+			forge.WebBase = webBase
+			cfg.Forges["local"] = forge
+			repo := RepoConfig{}
+			repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+			facts := Facts{Forge: "local", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head", BaseSHA: "target"}
+			if _, err := SpawnRun(t.Context(), cfg, repo, facts); err != nil {
+				t.Fatal(err)
+			}
+			env := systemdEnvironment(t, systemdArgs)
+			if got, present := env["MINOS_WEB_BASE"]; !present || got != webBase {
+				t.Fatalf("MINOS_WEB_BASE = %q, present = %t; want %q", got, present, webBase)
+			}
+		})
+	}
+}

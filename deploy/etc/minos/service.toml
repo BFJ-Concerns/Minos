@@ -20,6 +20,9 @@ bind = ":8919"
 [forges.forgejo]
 adaptation = "/opt/minos/adaptations/forgejo"
 api-base = "REPLACE_WITH_FORGEJO_BASE_URL"
+# Canonical web base for status Details links (absolute http(s) URL).
+# Unset, links use api-base with a trailing /api/v1 removed.
+# web-base = "https://forge.example"
 webhook-secret-file = "/etc/minos/webhook.secret"
 credential-file = "/etc/minos/forgejo.token"
 signature-header = "X-Forgejo-Signature"
