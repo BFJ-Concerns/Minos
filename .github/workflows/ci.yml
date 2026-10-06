@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: 24
       - uses: extractions/setup-just@v4
-      # jq ships on the hosted Ubuntu image. The same command a dev box and
-      # the Forgejo gate run: what the gate checks lives in the justfile.
+      # jq ships on the hosted Ubuntu image. The same command a dev box
+      # runs: what the gate checks lives in the justfile.
       - name: Verify
         run: just verify
