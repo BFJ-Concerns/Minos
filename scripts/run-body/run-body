@@ -185,10 +185,19 @@ on_exit() {
 }
 trap 'on_exit $?' 0
 
-failure_cause="MINOS_CONFIG is required"
-: "${MINOS_CONFIG:?MINOS_CONFIG is required}"
-failure_cause="MINOS_RUN_DIR is required"
-: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
+# Exit 1 naming the variable when it is unset or empty. `${VAR:?}` would
+# leave the exit status to the shell: bash exits 1, dash exits 2.
+require_variable() {
+  failure_cause="${2:-$1 is required}"
+  eval "required_value=\${$1:-}"
+  if [ -z "$required_value" ]; then
+    echo "run-body: $failure_cause" >&2
+    exit 1
+  fi
+}
+
+require_variable MINOS_CONFIG
+require_variable MINOS_RUN_DIR
 
 unset_gateway_environment() {
   unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_DEFAULT_HAIKU_MODEL
@@ -205,8 +214,7 @@ failure_cause="could not load ${MINOS_CONFIG%/}/run-body.env"
 set +a
 
 if [ -n "${MINOS_ANTHROPIC_CREDENTIAL_FILE:-}" ]; then
-  failure_cause="ANTHROPIC_BASE_URL is required in gateway mode"
-  : "${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL is required in gateway mode}"
+  require_variable ANTHROPIC_BASE_URL "ANTHROPIC_BASE_URL is required in gateway mode"
   if [ ! -f "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ] ||
     [ ! -r "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ]; then
     failure_cause="gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is missing or unreadable"
@@ -233,14 +241,12 @@ fi
 MINOS_LEAD_ENGINE="${MINOS_LEAD_ENGINE:-claude}"
 case "$MINOS_LEAD_ENGINE" in
   claude)
-    failure_cause="MINOS_CLAUDE is required"
-    : "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
+    require_variable MINOS_CLAUDE
     lead_seed_variable="MINOS_CLAUDE_CONFIG_SEED"
     lead_default_model="claude-opus-5-5"
     ;;
   codex)
-    failure_cause="MINOS_CODEX is required"
-    : "${MINOS_CODEX:?MINOS_CODEX is required}"
+    require_variable MINOS_CODEX
     lead_seed_variable="MINOS_CODEX_CONFIG_SEED"
     lead_default_model="gpt-6-sol"
     ;;
@@ -264,13 +270,10 @@ case " $provisioned_engines " in
 esac
 MINOS_PROVISIONED_ENGINES="$provisioned_engines"
 export MINOS_PROVISIONED_ENGINES
-failure_cause="MINOS_LIFECYCLE_INSTRUCTION is required"
-: "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
+require_variable MINOS_LIFECYCLE_INSTRUCTION
 instruction_path="$MINOS_LIFECYCLE_INSTRUCTION"
-failure_cause="MINOS_SETUP_WORKSPACE is required"
-: "${MINOS_SETUP_WORKSPACE:?MINOS_SETUP_WORKSPACE is required}"
-failure_cause="MINOS_ORIENTATION is required"
-: "${MINOS_ORIENTATION:?MINOS_ORIENTATION is required}"
+require_variable MINOS_SETUP_WORKSPACE
+require_variable MINOS_ORIENTATION
 
 FORCE_COLOR=0
 export FORCE_COLOR
@@ -402,7 +405,7 @@ elif ! [ "$silence_timeout" -ge 0 ] 2>/dev/null; then
   exit 1
 fi
 
-: "${MINOS_PRESSURE_THRESHOLD_PERCENT:?MINOS_PRESSURE_THRESHOLD_PERCENT is required}"
+require_variable MINOS_PRESSURE_THRESHOLD_PERCENT
 pressure_enabled=true
 pressure_latched=false
 pressure_samples=0
