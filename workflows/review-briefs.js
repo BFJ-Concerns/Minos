@@ -1,6 +1,6 @@
 export const meta = {
   name: "minos-repository-review-briefs",
-  description: "Run applicable repository review briefs after the main review loop",
+  description: "Run applicable repository review briefs after the main pull-request review",
   phases: [
     { title: "Relevance", detail: "select the briefs this change gives work to" },
     { title: "Partition", detail: "divide broad brief scopes into coherent review units" },
@@ -9,90 +9,70 @@ export const meta = {
   ],
 };
 
-const GPT_PLANNER_MODEL = "gpt-5.6-terra";
-const PROPOSER_MODEL = "gpt-5.6-terra";
-const VERIFIER_MODEL = "claude-opus-5";
-const MAX_FINDINGS_PER_VERIFIER = 6;
 
 function slug(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "review";
 }
 
-function parseFrontmatter(content) {
-  const front = { title: null, extent: "diff", sweep: "per-file", occasion: [], relevance: null };
-  if (typeof content !== "string") return front;
-  const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
-  if (!match) return front;
-  for (const line of match[1].split("\n")) {
-    const pair = line.match(/^(\w+):\s*(.*)$/);
-    if (!pair) continue;
-    const key = pair[1].toLowerCase();
-    let value = pair[2];
-    if (key !== "title" && key !== "relevance") value = value.replace(/#.*$/, "");
-    value = value.trim();
-    if (key === "title" && value) front.title = value;
-    if (key === "extent" && value === "full") front.extent = "full";
-    if (key === "sweep" && value === "whole-tree") front.sweep = "whole-tree";
-    if (key === "occasion") front.occasion = value.split(",").map((token) => token.trim()).filter(Boolean);
-    if (key === "relevance" && value) front.relevance = value;
+// The deterministic brief pass arrives computed: the input builder parsed
+// each brief's frontmatter, named it and settled its path-scope and
+// occasion triggers through workflows/brief-dispositions.mjs, the one
+// source the scope workflow's engagement reads too. This workflow adds the
+// judged legs and re-derives nothing; a brief missing any of it fails the
+// workflow before dispatch.
+// The finding, observation and verifier contracts arrive as `contracts`,
+// built once in workflows/review-contracts.mjs by the input builder; this
+// script keeps no copy, and a missing or malformed set fails the workflow
+// before dispatch.
+function contractsFromInput(input) {
+  const contracts = input && input.contracts;
+  if (!contracts || typeof contracts !== "object" || Array.isArray(contracts)) return null;
+  if (!Number.isInteger(contracts.verifierBatchSize) || contracts.verifierBatchSize < 1) return null;
+  for (const name of [
+    "findingShape",
+    "outOfScopeObservationShape",
+    "applicabilityShape",
+    "specialistSchema",
+    "verifierVerdictShape",
+    "verifierSchema",
+  ]) {
+    const shape = contracts[name];
+    if (
+      !shape || typeof shape !== "object" || Array.isArray(shape) ||
+      shape.type !== "object" ||
+      !Array.isArray(shape.required) ||
+      !shape.properties || typeof shape.properties !== "object" || Array.isArray(shape.properties)
+    ) return null;
   }
-  return front;
+  return contracts;
 }
 
-function briefTitle(path, front) {
-  if (front.title) return front.title;
-  const stem = path.replace(/^.*\//, "").replace(/\.md$/, "");
-  return stem.split("-").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
-}
-
-function deterministicDisposition(brief, front, occasion, changedPaths) {
-  const hasOccasion = front.occasion.length > 0;
-  const hasRelevance = Boolean(front.relevance);
-  const hasPathScope = typeof brief.scope === "string" && brief.scope !== "";
-  const misconfiguration = hasPathScope && brief.scopeExists === false
-    ? {
-        skipKind: "misconfigured-scope",
-        reason: `brief scope ${brief.scope}/ matches no repository directory`,
-      }
-    : null;
-  if (!hasOccasion && !hasRelevance && !hasPathScope) {
-    return {
-      status: "skipped",
-      skipKind: "no-trigger",
-      reason: "brief declares no relevance, occasion, or path-scope trigger",
-    };
+function briefsFromInput(input) {
+  const briefs = input && input.briefs;
+  if (!Array.isArray(briefs)) return null;
+  for (const brief of briefs) {
+    const front = brief && brief.front;
+    const disposition = brief && brief.disposition;
+    if (
+      !brief ||
+      typeof brief.path !== "string" || brief.path === "" ||
+      typeof brief.content !== "string" ||
+      (brief.scope !== null && typeof brief.scope !== "string") ||
+      typeof brief.title !== "string" || brief.title === "" ||
+      !front || typeof front !== "object" ||
+      (front.extent !== "diff" && front.extent !== "full") ||
+      (front.sweep !== "per-file" && front.sweep !== "whole-tree") ||
+      !Array.isArray(front.occasion) ||
+      (front.relevance !== null && typeof front.relevance !== "string") ||
+      !disposition || typeof disposition !== "object" ||
+      !(disposition.status === "skipped"
+        ? typeof disposition.skipKind === "string" && typeof disposition.reason === "string"
+        : typeof disposition.triggered === "boolean") ||
+      (disposition.misconfiguration !== undefined && disposition.misconfiguration !== null &&
+        (typeof disposition.misconfiguration.skipKind !== "string" || typeof disposition.misconfiguration.reason !== "string"))
+    ) return null;
   }
-  // Occasion is a veto: a brief that names occasions runs only on a run that
-  // names a matching one, whatever else it declares — it selects which runs the
-  // brief applies to. A brief naming no occasion is unrestricted by occasion.
-  if (hasOccasion) {
-    if (!occasion)
-      return {
-        status: "skipped",
-        skipKind: "occasion",
-        reason: `brief applies on occasion ${front.occasion.join(", ")}; this run names none`,
-        misconfiguration,
-      };
-    if (!front.occasion.includes(occasion))
-      return {
-        status: "skipped",
-        skipKind: "occasion",
-        reason: `brief applies on occasion ${front.occasion.join(", ")}, not ${occasion}`,
-        misconfiguration,
-      };
-    // A matched occasion is itself a satisfied trigger; a path-scope or relevance
-    // it also carries only refines width, it does not further gate a brief the
-    // occasion has already opted in.
-    return { triggered: true, misconfiguration };
-  }
-  // No occasion declared: run on a satisfied positive trigger — a touched
-  // path-scope, or a relevance condition judged in the relevance phase.
-  const scopeSatisfied =
-    hasPathScope && changedPaths.some((path) => path === brief.scope || path.startsWith(brief.scope + "/"));
-  if (scopeSatisfied) return { triggered: true, misconfiguration };
-  if (hasRelevance) return { triggered: false, misconfiguration };
-  if (misconfiguration) return { status: "skipped", ...misconfiguration, misconfiguration };
-  return { status: "skipped", skipKind: "empty", reason: `nothing changed under scope ${brief.scope}/` };
+  return briefs;
 }
 
 function instructionBriefsFromInput(input) {
@@ -101,16 +81,58 @@ function instructionBriefsFromInput(input) {
     .map((entry) => [entry.path, entry]));
 }
 
-function guidanceFromInput(input) {
+const ROUTING_ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner"];
+const ROUTING_ENGINES = ["claude", "codex"];
+
+// The resolved routing the input builder attached: every role's engine,
+// model and effort, already defaulted for what the deployment provisioned.
+// Nothing here is fixed in source; a missing or malformed table fails the
+// workflow before any dispatch.
+function routingFromInput(input) {
+  const routing = input && input.routing;
+  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
+  for (const role of ROUTING_ROLES) {
+    const entry = routing[role];
+    if (
+      !entry ||
+      !ROUTING_ENGINES.includes(entry.engine) ||
+      typeof entry.model !== "string" || entry.model === "" ||
+      typeof entry.effort !== "string" || entry.effort === ""
+    ) return null;
+  }
+  return routing;
+}
+
+function projectGuidanceFromInput(input) {
   const guidance = input && input.guidance;
-  if (!guidance || typeof guidance.path !== "string" || typeof guidance.content !== "string" || guidance.content.trim() === "") return null;
-  return { grounding: guidance.grounding || "repository", path: guidance.path, content: guidance.content };
+  if (!Array.isArray(guidance) || guidance.length === 0) return null;
+  for (const entry of guidance) {
+    if (
+      !entry ||
+      typeof entry.path !== "string" ||
+      entry.path === "" ||
+      (entry.repository !== null && (typeof entry.repository !== "string" || entry.repository === "")) ||
+      (entry.origin !== "configured" && entry.origin !== "checked-in") ||
+      typeof entry.content !== "string" ||
+      entry.content.trim() === ""
+    ) return null;
+  }
+  return guidance;
+}
+
+// One block per guidance document, in the configured order: the reviewed
+// project's declared intent, as the repository owner names it.
+function projectGuidanceSection(guidance) {
+  return guidance.map((entry) =>
+    `<project-guidance origin="${entry.origin}"${entry.repository === null ? "" : ` repository="${entry.repository}"`} path="${entry.path}">\n` +
+    `${entry.content}\n</project-guidance>\n`
+  ).join("\n") + "\n";
 }
 
 function groundedPrompt(instruction, guidance, assignment) {
   return `Read and follow the Markdown role brief at ${instruction.readPath}.\n\n` +
     `<role-brief path="${instruction.path}">\n${instruction.content}\n</role-brief>\n\n` +
-    `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
+    projectGuidanceSection(guidance) +
     assignment;
 }
 
@@ -131,73 +153,6 @@ function emptyEnvelope(input) {
     reviewers: [],
   };
 }
-
-const findingShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["title", "severity", "confidence", "path", "line", "explanation"],
-  properties: {
-    title: { type: "string" },
-    severity: { type: "string", enum: ["Critical", "High", "Medium", "Low"] },
-    confidence: { type: "integer", minimum: 0, maximum: 100 },
-    path: { type: "string" },
-    line: { type: "integer", minimum: 1 },
-    explanation: { type: "string" },
-  },
-};
-
-const outOfScopeObservationShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["title", "path", "line", "explanation"],
-  properties: {
-    title: { type: "string" },
-    path: { type: "string" },
-    line: { type: "integer", minimum: 1 },
-    explanation: { type: "string" },
-  },
-};
-
-const specialistSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["applicability", "findings"],
-  properties: {
-    applicability: {
-      type: "object",
-      additionalProperties: false,
-      required: ["status", "reason"],
-      properties: {
-        status: { type: "string", enum: ["applicable", "inapplicable"] },
-        reason: { type: "string" },
-      },
-    },
-    findings: { type: "array", items: findingShape },
-    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
-  },
-};
-
-const verifierVerdictShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["findingId", "verdict", "confidence", "reason"],
-  properties: {
-    findingId: { type: "string" },
-    verdict: { type: "string", enum: ["upheld", "refuted"] },
-    confidence: { type: "integer", minimum: 0, maximum: 100 },
-    reason: { type: "string" },
-  },
-};
-
-const verifierSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["verdicts"],
-  properties: {
-    verdicts: { type: "array", items: verifierVerdictShape },
-    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
-  },
-};
 
 const relevanceSchema = {
   type: "object",
@@ -269,33 +224,47 @@ function normalisePartition(plan, inventory) {
 
 const input = args && typeof args === "object" && !Array.isArray(args) ? args : null;
 if (!input || typeof input.target !== "string" || typeof input.head !== "string")
-  throw new Error("brief workflow needs args {target, head, workspace, briefs, changedPaths, trackedFiles, guidance, instructionBriefs}");
+  throw new Error("brief workflow needs args {target, head, briefs, changedPaths, trackedFiles, guidance, instructionBriefs, contracts}");
+const contracts = contractsFromInput(input);
+if (!contracts) throw new Error("deterministic input omitted or malformed the review contracts");
 if (input.hasReviewDirectory === false) return emptyEnvelope(input);
-if (!Array.isArray(input.briefs) || !Array.isArray(input.changedPaths) || !Array.isArray(input.trackedFiles))
-  throw new Error("deterministic brief enumeration is incomplete");
+const briefs = briefsFromInput(input);
+if (!briefs || !Array.isArray(input.changedPaths) || !Array.isArray(input.trackedFiles))
+  throw new Error("deterministic brief enumeration is incomplete: every brief carries its frontmatter, title and disposition");
 
 const instructions = instructionBriefsFromInput(input);
 const repositoryInstruction = instructions.get("workflows/review-briefs/repository.md");
 const verifierInstruction = instructions.get("workflows/review-briefs/verifier.md");
-const guidance = guidanceFromInput(input);
+const guidance = projectGuidanceFromInput(input);
 if (!repositoryInstruction || !verifierInstruction)
   throw new Error("deterministic input omitted shipped repository or verifier brief");
 if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
+const routing = routingFromInput(input);
+if (!routing) throw new Error("deterministic input omitted the role routing");
+
+const incomplete = [];
+function legOutput(result, label) {
+  if (!result || result.failure !== null) {
+    incomplete.push(`agent ${result?.label || label} failed: ${result?.failure?.message || "no failure account returned"}`);
+    return null;
+  }
+  if (result.output === null)
+    incomplete.push(`agent ${result.label || label} answered without usable output`);
+  return result.output;
+}
 
 const legs = [];
 const addLeg = (label, role, pinnedModel, findingIds = null) => {
   const leg = { label, role, pinnedModel };
   if (findingIds) leg.findingIds = findingIds;
   legs.push(leg);
-  return leg;
 };
 const reports = new Map();
 const misconfigurations = [];
 const candidates = [];
-for (const brief of input.briefs) {
-  const front = parseFrontmatter(brief.content);
-  const base = { brief: brief.path, title: briefTitle(brief.path, front) };
-  const disposition = deterministicDisposition(brief, front, input.occasion || null, input.changedPaths);
+for (const brief of briefs) {
+  const { front, disposition } = brief;
+  const base = { brief: brief.path, title: brief.title };
   const { misconfiguration, ...recordedDisposition } = disposition;
   if (disposition.status === "skipped") reports.set(brief.path, { ...base, ...recordedDisposition });
   else
@@ -303,7 +272,6 @@ for (const brief of input.briefs) {
   if (misconfiguration)
     misconfigurations.push({
       ...base,
-      member: "primary",
       kind: misconfiguration.skipKind,
       reason: misconfiguration.reason,
     });
@@ -315,18 +283,19 @@ const relevanceCandidates = candidates.filter((candidate) => candidate.front.rel
 const relevanceDecisions = new Map();
 if (relevanceCandidates.length > 0) {
   phase("Relevance");
-  addLeg("brief-relevance", "relevance", GPT_PLANNER_MODEL);
+  addLeg("brief-relevance", "relevance", routing["brief-planner"].model);
   const relevanceResult = await agent(
-    `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
+    projectGuidanceSection(guidance) +
       `Judge which repository concerns ${input.target}...${input.head} gives work to. Inspect the actual diff when paths alone do not settle it. ` +
       `Mark a concern inapplicable only when the diff clearly gives it nothing to judge. Return one decision for every entry and preserve each brief path.\n` +
       `Changed paths: ${JSON.stringify(input.changedPaths)}\n` +
       `Concerns: ${JSON.stringify(relevanceCandidates.map(({ brief, front }) => ({ brief: brief.path, relevance: front.relevance })))}`,
     {
-      engine: "codex",
+      engine: routing["brief-planner"].engine,
       schema: relevanceSchema,
-      model: GPT_PLANNER_MODEL,
-      effort: "high",
+      model: routing["brief-planner"].model,
+      effort: routing["brief-planner"].effort,
+      strip: ["skills", "agents"],
       label: "brief-relevance",
       phase: "Relevance",
     },
@@ -367,7 +336,7 @@ function makeUnit(candidate, files, suffix, concern) {
     scope: brief.scope,
     files,
     concern,
-    label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-gpt`,
+    label: `repository-${slug(brief.path)}${suffix ? `-${suffix}` : ""}-${routing.proposer.engine}`,
   };
 }
 
@@ -382,7 +351,7 @@ const partitionRequests = runnable.map((candidate, index) => {
   return {
     candidate,
     inventory,
-    label: `brief-partition-${index + 1}-${slug(brief.path)}-gpt`,
+    label: `brief-partition-${index + 1}-${slug(brief.path)}-${routing["brief-planner"].engine}`,
   };
 }).filter(Boolean);
 
@@ -390,25 +359,27 @@ const partitions = new Map();
 if (partitionRequests.length > 0) {
   phase("Partition");
   for (const request of partitionRequests)
-    addLeg(request.label, "partition", GPT_PLANNER_MODEL);
+    addLeg(request.label, "partition", routing["brief-planner"].model);
   const partitionResults = await parallel(partitionRequests.map((request) => () => agent(
-      `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n${guidance.content}\n</project-guidance>\n\n` +
+      projectGuidanceSection(guidance) +
       `<repository-brief path="${request.candidate.brief.path}">\n${request.candidate.brief.content}\n</repository-brief>\n\n` +
       `Create a lossless partition of the assigned file inventory into coherent review units for this brief. Group paths by module, directory, or concern, whichever reflects the repository's actual structure. ` +
       `Each dispatched unit has a real cost, so the partition is the minimal one whose units each need a genuinely distinct reading for this brief's concern — merge groups one reading covers, and never split a unit to mirror directory structure for its own sake. ` +
       `Assign every listed path to exactly one unit; include no unlisted paths. Use no skills for this planning judgement.\n` +
       `Assigned file inventory: ${JSON.stringify(request.inventory.map((entry) => entry.path))}`,
     {
-      engine: "codex",
+      engine: routing["brief-planner"].engine,
       schema: partitionSchema,
-      model: GPT_PLANNER_MODEL,
-      effort: "high",
+      model: routing["brief-planner"].model,
+      effort: routing["brief-planner"].effort,
+      strip: ["skills", "agents"],
+      identity: true,
       label: request.label,
       phase: "Partition",
     },
   )));
   partitionRequests.forEach((request, index) => {
-    const result = partitionResults[index];
+    const result = legOutput(partitionResults[index], request.label);
     if (!result || !Array.isArray(result.units)) {
       reports.set(request.candidate.brief.path, {
         ...request.candidate.base,
@@ -440,7 +411,7 @@ for (const candidate of runnable) {
 }
 
 phase("Review");
-for (const unit of dispatched) addLeg(unit.label, "specialist", PROPOSER_MODEL);
+for (const unit of dispatched) addLeg(unit.label, "specialist", routing.proposer.model);
 const specialistResults = await parallel(dispatched.map((unit) => () => {
   const scope = unit.scope ? `${unit.scope}/` : "the whole repository";
   const files = unit.files.length > 0 ? `\nAssigned files: ${unit.files.join(", ")}` : "";
@@ -452,10 +423,12 @@ const specialistResults = await parallel(dispatched.map((unit) => () => {
       `Assigned scope: ${scope}.${concern}${files}\n` +
       (unit.extent === "full" ? "Audit the assigned scope regardless of what the diff changed." : `Judge only what ${input.target}...${input.head} changed in the assigned scope.`),
   ), {
-    engine: "codex",
-    schema: specialistSchema,
-    model: PROPOSER_MODEL,
-    effort: "high",
+    engine: routing.proposer.engine,
+    schema: contracts.specialistSchema,
+    model: routing.proposer.model,
+    effort: routing.proposer.effort,
+    strip: ["skills", "agents"],
+    identity: true,
     label: unit.label,
     phase: "Review",
   });
@@ -466,14 +439,15 @@ const proposed = [];
 const outOfScopeObservations = [];
 const inapplicableByBrief = new Map();
 dispatched.forEach((unit, unitIndex) => {
-  const result = specialistResults[unitIndex];
+  const settlement = specialistResults[unitIndex];
+  const result = legOutput(settlement, unit.label);
   reviewerStates.push({
     label: unit.label,
     role: "specialist",
     brief: unit.brief,
-    family: "gpt",
-    pinnedModel: PROPOSER_MODEL,
-    status: result ? "done" : "no-result",
+    family: routing.proposer.engine,
+    pinnedModel: routing.proposer.model,
+    status: settlement && settlement.failure === null ? "done" : "no-result",
   });
   if (!result) {
     reports.set(unit.brief, {
@@ -491,7 +465,6 @@ dispatched.forEach((unit, unitIndex) => {
     outOfScopeObservations.push({
       id: `${unit.label}:observation:${observationIndex + 1}`,
       source: unit.title,
-      member: "primary",
       ...observation,
       observingLabel: unit.label,
       verified: false,
@@ -544,43 +517,50 @@ for (const [brief, inapplicable] of inapplicableByBrief) {
 
 phase("Verify");
 const verifierGroups = [];
-for (const unit of dispatched) {
-  const unitFindings = proposed.filter((item) => item.unit === unit);
-  for (let offset = 0; offset < unitFindings.length; offset += MAX_FINDINGS_PER_VERIFIER) {
-    const items = unitFindings.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
-    const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
-    const label = `verify-brief-${items[0].unitIndex + 1}-${groupIndex}-claude`;
-    const findingIds = items.map(findingId);
-    const group = { items, label, findingIds };
-    verifierGroups.push(group);
-    items.forEach((item) => { item.verifyLabel = label; });
-    addLeg(label, "verifier", VERIFIER_MODEL, findingIds);
-  }
+for (let offset = 0; offset < proposed.length; offset += contracts.verifierBatchSize) {
+  const items = proposed.slice(offset, offset + contracts.verifierBatchSize);
+  const groupIndex = Math.floor(offset / contracts.verifierBatchSize) + 1;
+  const label = `verify-brief-${groupIndex}-${routing.verifier.engine}`;
+  const findingIds = items.map(findingId);
+  const group = { items, label, findingIds };
+  verifierGroups.push(group);
+  items.forEach((item) => { item.verifyLabel = label; });
+  addLeg(label, "verifier", routing.verifier.model, findingIds);
 }
 const verifierResults = await parallel(verifierGroups.map((group) => () => agent(
   groundedPrompt(
     verifierInstruction,
     guidance,
     `Try to disprove each repository-brief finding against ${input.target}...${input.head} and the cited code.\n` +
-      `Concern: ${group.items[0].unit.title}\nProposing specialist: ${group.items[0].unit.label}\n` +
-      `Findings: ${JSON.stringify(group.items.map((item, index) => ({ id: group.findingIds[index], ...item.finding })))}`,
+      `Findings: ${JSON.stringify(group.items.map((item, index) => ({
+        id: group.findingIds[index],
+        concern: item.unit.concern,
+        unit: item.unit.concern || item.unit.title,
+        proposingSpecialist: item.unit.label,
+        ...item.finding,
+      })))}`,
   ),
   {
-    engine: "claude",
-    schema: verifierSchema,
-    model: VERIFIER_MODEL,
-    effort: "high",
+    engine: routing.verifier.engine,
+    schema: contracts.verifierSchema,
+    model: routing.verifier.model,
+    effort: routing.verifier.effort,
+    strip: ["skills", "agents"],
+    identity: true,
     label: group.label,
     phase: "Verify",
   },
 )));
+
+const verifierOutputs = verifierResults.map((result, index) =>
+  legOutput(result, verifierGroups[index].label));
 
 const verifierByFinding = new Map(proposed.map((item) => [findingId(item), null]));
 // The observation channel is independent of verdict validity: what a
 // verifier established while checking survives even when its verdict set
 // is discarded as malformed.
 verifierGroups.forEach((group, groupIndex) => {
-  const response = verifierResults[groupIndex];
+  const response = verifierOutputs[groupIndex];
   const observations = response && Array.isArray(response.outOfScopeObservations)
     ? response.outOfScopeObservations
     : [];
@@ -588,7 +568,6 @@ verifierGroups.forEach((group, groupIndex) => {
     outOfScopeObservations.push({
       id: `${group.label}:observation:${observationIndex + 1}`,
       source: "verification",
-      member: "primary",
       ...observation,
       observingLabel: group.label,
       verified: false,
@@ -596,7 +575,7 @@ verifierGroups.forEach((group, groupIndex) => {
   });
 });
 verifierGroups.forEach((group, groupIndex) => {
-  const response = verifierResults[groupIndex];
+  const response = verifierOutputs[groupIndex];
   if (!response || !Array.isArray(response.verdicts)) return;
   const expected = new Set(group.findingIds);
   if (response.verdicts.some((verdict) => !expected.has(verdict && verdict.findingId))) return;
@@ -618,7 +597,6 @@ const proposedFindings = proposed.map((item) => ({
   id: findingId(item),
   source: item.unit.title,
   ...item.finding,
-  member: "primary",
   proposingLabel: item.unit.label,
   verifyLabel: item.verifyLabel,
   rawVerifier: verifierByFinding.get(findingId(item)),
@@ -627,7 +605,7 @@ const proposedFindings = proposed.map((item) => ({
 return {
   reviewed: { target: input.target, head: input.head, occasion: input.occasion || null },
   stage: "present",
-  members: [{ id: "primary" }],
+  ...(incomplete.length > 0 ? { incomplete } : {}),
   requiredModelEvidence: legs,
   proposedFindings,
   outOfScopeObservations,

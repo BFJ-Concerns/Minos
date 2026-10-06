@@ -6,7 +6,6 @@ export const meta = {
   ],
 };
 
-const GATE_MODEL = "gpt-5.6-terra";
 const SCOPE_BRIEF_PATH = "workflows/review-briefs/scope.md";
 
 const scopeSchema = {
@@ -35,15 +34,58 @@ const scopeBrief = (Array.isArray(input.instructionBriefs) ? input.instructionBr
 );
 if (!scopeBrief) throw new Error("deterministic input omitted the shipped scope brief");
 
-const guidance = input.guidance;
-if (
-  !guidance ||
-  typeof guidance.path !== "string" ||
-  guidance.path === "" ||
-  typeof guidance.content !== "string" ||
-  guidance.content.trim() === "" ||
-  typeof guidance.grounding !== "string"
-) throw new Error("deterministic input omitted reviewed-project guidance");
+function projectGuidanceFromInput(input) {
+  const guidance = input && input.guidance;
+  if (!Array.isArray(guidance) || guidance.length === 0) return null;
+  for (const entry of guidance) {
+    if (
+      !entry ||
+      typeof entry.path !== "string" ||
+      entry.path === "" ||
+      (entry.repository !== null && (typeof entry.repository !== "string" || entry.repository === "")) ||
+      (entry.origin !== "configured" && entry.origin !== "checked-in") ||
+      typeof entry.content !== "string" ||
+      entry.content.trim() === ""
+    ) return null;
+  }
+  return guidance;
+}
+
+// One block per guidance document, in the configured order: the reviewed
+// project's declared intent, as the repository owner names it.
+function projectGuidanceSection(guidance) {
+  return guidance.map((entry) =>
+    `<project-guidance origin="${entry.origin}"${entry.repository === null ? "" : ` repository="${entry.repository}"`} path="${entry.path}">\n` +
+    `${entry.content}\n</project-guidance>\n`
+  ).join("\n") + "\n";
+}
+
+const ROUTING_ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner"];
+const ROUTING_ENGINES = ["claude", "codex"];
+
+// The resolved routing the input builder attached: every role's engine,
+// model and effort, already defaulted for what the deployment provisioned.
+// Nothing here is fixed in source; a missing or malformed table fails the
+// workflow before any dispatch.
+function routingFromInput(input) {
+  const routing = input && input.routing;
+  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
+  for (const role of ROUTING_ROLES) {
+    const entry = routing[role];
+    if (
+      !entry ||
+      !ROUTING_ENGINES.includes(entry.engine) ||
+      typeof entry.model !== "string" || entry.model === "" ||
+      typeof entry.effort !== "string" || entry.effort === ""
+    ) return null;
+  }
+  return routing;
+}
+
+const guidance = projectGuidanceFromInput(input);
+if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
+const routing = routingFromInput(input);
+if (!routing) throw new Error("deterministic input omitted the role routing");
 
 if (typeof input.briefsEngage !== "boolean")
   throw new Error("deterministic input omitted the brief engagement pre-branch");
@@ -84,25 +126,24 @@ if (input.briefsEngage) {
   });
 }
 
-const legs = [{ label: "review-scope", role: "scope", pinnedModel: GATE_MODEL }];
+const legs = [{ label: "review-scope", role: "scope", pinnedModel: routing["engagement-gate"].model }];
 
 phase("Scope");
 const result = await agent(
   `Read and follow the Markdown role brief at ${scopeBrief.readPath}. ` +
     `The deterministic input enumerator supplied the same content below so this workflow can bind the dispatched prompt to the shipped brief without reading files itself.\n\n` +
     `<role-brief path="${SCOPE_BRIEF_PATH}">\n${scopeBrief.content}\n</role-brief>\n\n` +
-    `Judge the change against the reviewed project's checked-in commission or guidance below. ` +
-    `This project intent governs whether behaviour is correct.\n\n` +
-    `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n` +
-    `${guidance.content}\n</project-guidance>\n\n` +
+    `Judge the change against the reviewed project's declared intent below — every guidance document its owner configured, ` +
+    `or its own checked-in guidance where none is configured. This project intent governs whether behaviour is correct.\n\n` +
+    projectGuidanceSection(guidance) +
     `Judge ${target}...${head}. Changed files: ${JSON.stringify(changedFiles)}\n` +
     `Every repository review brief has already settled deterministically as not applying to this change. ` +
     `Decide only whether the change itself gives any reviewable concern real work.`,
   {
-    engine: "codex",
+    engine: routing["engagement-gate"].engine,
     schema: scopeSchema,
-    model: GATE_MODEL,
-    effort: "medium",
+    model: routing["engagement-gate"].model,
+    effort: routing["engagement-gate"].effort,
     label: "review-scope",
     phase: "Scope",
   }

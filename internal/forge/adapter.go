@@ -8,22 +8,28 @@ import (
 	"strconv"
 	"strings"
 
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 type Adapter struct {
-	runner       Runner
-	serviceLogin string
+	runner        Runner
+	serviceLogin  string
+	statusContext string
 }
 
-func NewAdapter(runner Runner, serviceLogin string) (*Adapter, error) {
+// NewAdapter binds the adapter to the service's identity: the login its
+// guarded writes are checked against and the context its statuses carry.
+func NewAdapter(runner Runner, serviceLogin, statusContext string) (*Adapter, error) {
 	if runner == nil {
 		return nil, fmt.Errorf("forge runner is required")
 	}
 	if strings.TrimSpace(serviceLogin) == "" {
 		return nil, fmt.Errorf("service login is required")
 	}
-	return &Adapter{runner: runner, serviceLogin: serviceLogin}, nil
+	if strings.TrimSpace(statusContext) == "" {
+		return nil, fmt.Errorf("status context is required")
+	}
+	return &Adapter{runner: runner, serviceLogin: serviceLogin, statusContext: statusContext}, nil
 }
 
 func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullRequest int64) (Snapshot, error) {
@@ -41,36 +47,58 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 	if err := validateSnapshot(snapshot, repository, pullRequest); err != nil {
 		return Snapshot{}, err
 	}
-	snapshot.CheckDecision = ReduceRequiredChecks(snapshot.RequiredChecks, snapshot.Statuses)
-	snapshot.FailedChecks = FailedRequiredChecks(snapshot.RequiredChecks, snapshot.Statuses)
 	return snapshot, nil
 }
 
-func (a *Adapter) IssueComments(ctx context.Context, repository Repository, pullRequest int64) ([]IssueComment, error) {
-	out, err := a.runner.Run(ctx, RunRequest{
-		Operation: "issue-comments",
-		Arguments: []string{repository.Owner, repository.Name, strconv.FormatInt(pullRequest, 10)},
-	})
+// RepositoryMetadata reads a repository's clone URL and default branch.
+func (a *Adapter) RepositoryMetadata(ctx context.Context, repository Repository) (RepositoryMetadata, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "repository-metadata", Arguments: []string{repository.Owner, repository.Name}})
 	if err != nil {
-		return nil, err
+		return RepositoryMetadata{}, err
 	}
-	var comments []IssueComment
-	if err := json.Unmarshal(out, &comments); err != nil {
-		return nil, fmt.Errorf("decode forge issue comments: %w", err)
+	var metadata struct {
+		RepositoryMetadata
+		LookupStatus int `json:"lookup_status"`
 	}
-	return comments, nil
+	if err := json.Unmarshal(out, &metadata); err != nil {
+		return RepositoryMetadata{}, fmt.Errorf("decode repository metadata: %w", err)
+	}
+	if metadata.LookupStatus != 0 {
+		return RepositoryMetadata{}, &RepositoryLookupError{Repository: repository, Status: metadata.LookupStatus}
+	}
+	if metadata.CloneURL == "" || metadata.DefaultBranch == "" {
+		return RepositoryMetadata{}, fmt.Errorf("repository metadata for %s/%s omitted its clone URL or default branch", repository.Owner, repository.Name)
+	}
+	return metadata.RepositoryMetadata, nil
 }
 
-func (a *Adapter) PullRequestCommits(ctx context.Context, repository Repository, pullRequest int64) ([]Commit, error) {
-	out, err := a.runner.Run(ctx, RunRequest{Operation: "pull-request-commits", Arguments: []string{repository.Owner, repository.Name, strconv.FormatInt(pullRequest, 10)}})
+// RepositoryLookupError is the forge's own answer to a repository lookup
+// other than success: the HTTP status it gave.
+type RepositoryLookupError struct {
+	Repository Repository
+	Status     int
+}
+
+func (e *RepositoryLookupError) Error() string {
+	return fmt.Sprintf("repository lookup for %s/%s returned HTTP %d", e.Repository.Owner, e.Repository.Name, e.Status)
+}
+
+// CloneCredential asks the adaptation for the HTTPS git credential its
+// credential file stands for. Decoding errors never quote the output, which
+// carries the secret.
+func (a *Adapter) CloneCredential(ctx context.Context) (CloneCredential, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "clone-credential"})
 	if err != nil {
-		return nil, err
+		return CloneCredential{}, err
 	}
-	var commits []Commit
-	if err := json.Unmarshal(out, &commits); err != nil {
-		return nil, fmt.Errorf("decode forge pull-request commits: %w", err)
+	var credential CloneCredential
+	if json.Unmarshal(out, &credential) != nil {
+		return CloneCredential{}, fmt.Errorf("decode clone credential: output is not a credential object")
 	}
-	return commits, nil
+	if credential.Username == "" || credential.Password == "" {
+		return CloneCredential{}, fmt.Errorf("clone credential omitted its username or password")
+	}
+	return credential, nil
 }
 
 func (a *Adapter) CommitStatuses(ctx context.Context, repository Repository, sha string) ([]Status, error) {
@@ -83,41 +111,6 @@ func (a *Adapter) CommitStatuses(ctx context.Context, repository Repository, sha
 		return nil, fmt.Errorf("decode forge commit statuses: %w", err)
 	}
 	return statuses, nil
-}
-
-// OwnMovement reports whether later is reachable from earlier through only
-// commits attributed by the forge to the configured service identity.
-func OwnMovement(commits []Commit, earlier, later, serviceLogin string) bool {
-	if earlier == later {
-		return true
-	}
-	foundEarlier := false
-	for _, commit := range commits {
-		if commit.SHA == earlier {
-			foundEarlier = true
-			continue
-		}
-		if !foundEarlier {
-			continue
-		}
-		if commit.Author != serviceLogin {
-			return false
-		}
-		if commit.SHA == later {
-			return true
-		}
-	}
-	return false
-}
-
-// CheckLogs returns forge-provided job logs associated with check statuses on
-// the guarded pull-request head. The adaptation owns provider-specific URL and
-// Actions API handling; callers receive its evidence object unchanged.
-func (a *Adapter) CheckLogs(ctx context.Context, guard Guard) ([]byte, error) {
-	return a.runner.Run(ctx, RunRequest{
-		Operation: "guarded-check-logs",
-		Arguments: a.guardArguments(guard),
-	})
 }
 
 func (a *Adapter) Claim(ctx context.Context, repository Repository, pullRequest int64) WriteResult {
@@ -134,32 +127,19 @@ func (a *Adapter) Claim(ctx context.Context, repository Repository, pullRequest 
 }
 
 func (a *Adapter) SetProductStatus(ctx context.Context, guard Guard, state product.State) WriteResult {
+	return a.SetProductStatusWithDescription(ctx, guard, state, state.Description())
+}
+
+// SetProductStatusWithDescription carries the condition behind a product outcome
+// through the same guarded, read-back-confirmed write as the default description.
+func (a *Adapter) SetProductStatusWithDescription(ctx context.Context, guard Guard, state product.State, description string) WriteResult {
 	if !state.Valid() {
 		return WriteResult{Outcome: WriteRejected, Reason: "invalid product state"}
 	}
 	out, err := a.runner.Run(ctx, RunRequest{
 		Operation: "guarded-set-status",
-		Arguments: append(a.guardArguments(guard), OwnedStatusContext, state.ForgeState(), state.Description()),
-	})
-	return decodeWriteResult(out, err)
-}
-
-// SetTargetBroken marks the guard's target commit as one whose own gate is
-// broken, so pull requests reconciling with it defer rather than each proving
-// the same breakage again. The write binds the target rather than the head:
-// the adaptation rejects it once the target branch has advanced past the
-// commit the breakage was proven against.
-func (a *Adapter) SetTargetBroken(ctx context.Context, guard Guard, reason string) WriteResult {
-	if guard.TargetSHA == "" || reason == "" {
-		return WriteResult{Outcome: WriteRejected, Reason: "target status needs a target commit and a reason"}
-	}
-	out, err := a.runner.Run(ctx, RunRequest{
-		Operation: "set-target-status",
-		Arguments: []string{
-			guard.Repository.Owner, guard.Repository.Name,
-			strconv.FormatInt(guard.PullRequest, 10),
-			guard.TargetSHA, a.serviceLogin, reason,
-		},
+		Arguments: append(a.guardArguments(guard), a.statusContext, state.ForgeState(), description),
+		Env:       map[string]string{"MINOS_STATUS_CONTEXT": a.statusContext},
 	})
 	return decodeWriteResult(out, err)
 }
@@ -180,81 +160,54 @@ func (a *Adapter) PostReview(ctx context.Context, guard Guard, verdict ReviewVer
 // Alert files an operator alert as a repository issue: one open issue per
 // title, with repeat alerts arriving as comments on it.
 func (a *Adapter) Alert(ctx context.Context, repository Repository, title, body string) WriteResult {
+	return a.writeIssue(ctx, "alert", []string{repository.Owner, repository.Name}, title, body)
+}
+
+// AddMarker writes one marker in its configured form under the guard.
+func (a *Adapter) AddMarker(ctx context.Context, guard Guard, marker Marker) WriteResult {
+	return a.markerWrite(ctx, guard, marker, "guarded-add-reaction", "guarded-add-label")
+}
+
+// FileIssue delivers one marked entry to its configured repository. Its
+// identity survives reviewed-head movement and closed destination issues.
+func (a *Adapter) FileIssue(ctx context.Context, repository Repository, title, body string) WriteResult {
+	return a.writeIssue(ctx, "guarded-file-issue", []string{repository.Owner, repository.Name, a.serviceLogin}, title, body)
+}
+
+// writeIssue carries the shared title/body payload across issue operations;
+// each adaptation owns its own identity and deduplication contract.
+func (a *Adapter) writeIssue(ctx context.Context, operation string, arguments []string, title, body string) WriteResult {
 	payload, err := json.Marshal(struct {
 		Title string `json:"title"`
 		Body  string `json:"body"`
 	}{Title: title, Body: body})
 	if err != nil {
-		return WriteResult{Outcome: WriteRejected, Reason: "encode alert: " + err.Error()}
+		return WriteResult{Outcome: WriteRejected, Reason: "encode " + operation + ": " + err.Error()}
 	}
 	out, runErr := a.runner.Run(ctx, RunRequest{
-		Operation: "alert",
-		Arguments: []string{repository.Owner, repository.Name},
+		Operation: operation,
+		Arguments: arguments,
 		Stdin:     bytes.NewReader(payload),
 	})
 	return decodeWriteResult(out, runErr)
 }
 
-func (a *Adapter) PostComment(ctx context.Context, guard Guard, body string) WriteResult {
-	payload, err := json.Marshal(struct {
-		Body string `json:"body"`
-	}{Body: body})
-	if err != nil {
-		return WriteResult{Outcome: WriteRejected, Reason: "encode comment: " + err.Error()}
-	}
-	out, runErr := a.runner.Run(ctx, RunRequest{
-		Operation: "guarded-post-comment",
-		Arguments: a.guardArguments(guard),
-		Stdin:     bytes.NewReader(payload),
-	})
-	return decodeWriteResult(out, runErr)
+// RemoveMarker removes one marker in its configured form under the guard.
+func (a *Adapter) RemoveMarker(ctx context.Context, guard Guard, marker Marker) WriteResult {
+	return a.markerWrite(ctx, guard, marker, "guarded-remove-reaction", "guarded-remove-label")
 }
 
-func (a *Adapter) AddReaction(ctx context.Context, guard Guard, content string) WriteResult {
-	if strings.TrimSpace(content) == "" {
-		return WriteResult{Outcome: WriteRejected, Reason: "reaction content is required"}
+func (a *Adapter) markerWrite(ctx context.Context, guard Guard, marker Marker, reactionOperation, labelOperation string) WriteResult {
+	operation, value := reactionOperation, marker.Reaction
+	if marker.Label != "" {
+		operation, value = labelOperation, marker.Label
+	}
+	if err := marker.Validate(); err != nil {
+		return WriteResult{Outcome: WriteRejected, Reason: err.Error()}
 	}
 	out, err := a.runner.Run(ctx, RunRequest{
-		Operation: "guarded-add-reaction",
-		Arguments: append(a.guardArguments(guard), content),
-	})
-	return decodeWriteResult(out, err)
-}
-
-func (a *Adapter) RemoveReaction(ctx context.Context, guard Guard, content string) WriteResult {
-	if strings.TrimSpace(content) == "" {
-		return WriteResult{Outcome: WriteRejected, Reason: "reaction content is required"}
-	}
-	out, err := a.runner.Run(ctx, RunRequest{
-		Operation: "guarded-remove-reaction",
-		Arguments: append(a.guardArguments(guard), content),
-	})
-	return decodeWriteResult(out, err)
-}
-
-func (a *Adapter) RemoveLabel(ctx context.Context, guard Guard, label string) WriteResult {
-	if strings.TrimSpace(label) == "" {
-		return WriteResult{Outcome: WriteRejected, Reason: "label is required"}
-	}
-	out, err := a.runner.Run(ctx, RunRequest{
-		Operation: "guarded-remove-label",
-		Arguments: append(a.guardArguments(guard), label),
-	})
-	return decodeWriteResult(out, err)
-}
-
-func (a *Adapter) Merge(ctx context.Context, guard Guard, method MergeMethod) WriteResult {
-	out, err := a.runner.Run(ctx, RunRequest{Operation: "guarded-merge", Arguments: append(a.guardArguments(guard), string(method))})
-	return decodeWriteResult(out, err)
-}
-
-func (a *Adapter) DeleteSourceBranch(ctx context.Context, guard Guard, branch string) WriteResult {
-	if strings.TrimSpace(branch) == "" {
-		return WriteResult{Outcome: WriteRejected, Reason: "source branch is required"}
-	}
-	out, err := a.runner.Run(ctx, RunRequest{
-		Operation: "guarded-delete-source-branch",
-		Arguments: append(a.guardArguments(guard), branch),
+		Operation: operation,
+		Arguments: append(a.guardArguments(guard), value),
 	})
 	return decodeWriteResult(out, err)
 }

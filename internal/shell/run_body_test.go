@@ -1,9 +1,11 @@
 package shell
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,11 +13,24 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// The run contract carries no skill provisioning: a deployment sets no
+// MINOS_SKILLS_DIR and the run body has no vendored-skills stage to fail at.
+func TestRunBodyCarriesNoSkillProvisioningStage(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", "run-body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, retired := range []string{"MINOS_SKILLS_DIR", "vendored-skills"} {
+		if strings.Contains(string(script), retired) {
+			t.Fatalf("run body still carries %q; skill provisioning was retired from the run contract", retired)
+		}
+	}
+}
 
 func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	fixture := newRunBodyFixture(t)
@@ -26,7 +41,6 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	codexConfigDir := filepath.Join(homeDir, ".codex")
 	projectsDir := filepath.Join(homeDir, ".claude", "projects")
 	stateDir := filepath.Join(fixture.runDir, "state")
-	cacheDir := fixture.cacheDir("forgejo", "owner", "repository")
 	info, err := os.Stat(configDir)
 	if err != nil {
 		t.Fatal(err)
@@ -34,10 +48,13 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	if info.Mode().Perm() != 0o700 {
 		t.Fatalf("CLAUDE_CONFIG_DIR mode = %o, want 700", info.Mode().Perm())
 	}
-	assertContainsFile(t, filepath.Join(configDir, "skills", "root-cause", "SKILL.md"), "casting: claude-code")
-	assertContainsFile(t, filepath.Join(configDir, "skills", "playwright", "SKILL.md"), "casting: claude-code")
-	assertContainsFile(t, filepath.Join(codexConfigDir, "skills", "root-cause", "SKILL.md"), "casting: codex")
-	assertContainsFile(t, filepath.Join(codexConfigDir, "skills", "playwright", "SKILL.md"), "casting: codex")
+	// The lead needs no skills and the workers run with theirs stripped, so
+	// the run body installs none into either home.
+	for _, skills := range []string{filepath.Join(configDir, "skills"), filepath.Join(codexConfigDir, "skills")} {
+		if _, err := os.Stat(skills); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("run body created %s (err=%v); no skills belong in a run-private home", skills, err)
+		}
+	}
 	assertContainsFile(t, filepath.Join(configDir, ".claude.json"), `"hasCompletedOnboarding":true`)
 	assertContainsFile(t, filepath.Join(configDir, ".claude.json"), `"bypassPermissionsModeAccepted":true`)
 	assertRegularFile(t, filepath.Join(configDir, ".credentials.json"))
@@ -55,38 +72,9 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	if stateInfo.Mode().Perm() != 0o700 {
 		t.Fatalf("XDG_STATE_HOME mode = %o, want 700", stateInfo.Mode().Perm())
 	}
-	for _, path := range []string{
-		filepath.Join(homeDir, ".cargo", "bin"),
-		filepath.Join(homeDir, ".local", "bin"),
-	} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != 0o700 {
-			t.Fatalf("provisioned tool directory %s mode = %o, want 700", path, info.Mode().Perm())
-		}
-	}
 	assertContainsFile(t, filepath.Join(stateDir, "worker-state"), "worker wrote state")
 	assertContainsFile(t, fixture.record+".worker-tool", filepath.Join(homeDir, ".local", "bin", "minos-worker-probe"))
 	assertContainsFile(t, fixture.record+".worker-env", "XDG_STATE_HOME="+stateDir)
-	for name, path := range map[string]string{
-		"MINOS_SHARED_CACHE_DIR":   cacheDir,
-		"SCCACHE_DIR":              filepath.Join(cacheDir, "rust", "sccache"),
-		"GOCACHE":                  filepath.Join(cacheDir, "go", "build"),
-		"GOMODCACHE":               filepath.Join(cacheDir, "go", "modules"),
-		"npm_config_cache":         filepath.Join(cacheDir, "node", "npm"),
-		"PLAYWRIGHT_BROWSERS_PATH": filepath.Join(cacheDir, "playwright", "browsers"),
-	} {
-		assertContainsFile(t, fixture.record+".worker-env", name+"="+path)
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !info.IsDir() || info.Mode().Perm() != 0o700 {
-			t.Fatalf("shared cache directory %s mode = %s, want directory 700", path, info.Mode())
-		}
-	}
 	tempDir := environmentValue(t, fixture.record+".worker-env", "TMPDIR")
 	if filepath.Dir(tempDir) != filepath.Join(fixture.root, "tmp") {
 		t.Fatalf("TMPDIR = %q, want child of disk-backed Minos temp root %q", tempDir, filepath.Join(fixture.root, "tmp"))
@@ -96,15 +84,10 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
 		t.Fatalf("TMPDIR survived run-body exit: %v", err)
 	}
-	assertContainsFile(
-		t,
-		fixture.record+".worker-env",
-		"PATH="+filepath.Join(homeDir, ".cargo", "bin")+":"+filepath.Join(homeDir, ".local", "bin")+":",
-	)
 	assertContainsFile(t, fixture.record+".setup", "setup invoked")
 	assertContainsFile(t, fixture.record+".argv", "--bg")
 	assertContainsFile(t, fixture.record+".argv", "--model")
-	assertContainsFile(t, fixture.record+".argv", "claude-opus-5")
+	assertContainsFile(t, fixture.record+".argv", "claude-opus-5-5")
 	assertContainsFile(t, fixture.record+".argv", "Follow the Minos lifecycle exactly.")
 	assertContainsFile(t, fixture.record+".calls", "agents")
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
@@ -120,12 +103,6 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 		"MINOS_FORGE=forgejo",
 		"MINOS_WORKSPACE=" + filepath.Join(fixture.runDir, "workspace"),
 		"MINOS_ORIENTATION=" + filepath.Join(fixture.runDir, "orientation.json"),
-		"MINOS_GIT_AUTHOR_NAME=Minos",
-		"MINOS_GIT_AUTHOR_EMAIL=minos@example.invalid",
-		"GIT_AUTHOR_NAME=Minos",
-		"GIT_AUTHOR_EMAIL=minos@example.invalid",
-		"GIT_COMMITTER_NAME=Minos",
-		"GIT_COMMITTER_EMAIL=minos@example.invalid",
 		"MINOS_OWNER=owner",
 		"MINOS_REPO_NAME=repository",
 		"MINOS_PR=17",
@@ -138,9 +115,6 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 		"MINOS_HEAD_BRANCH=feature",
 		"MINOS_API_BASE=http://forge.test",
 		"MINOS_CREDENTIAL_FILE=/etc/minos/forge.token",
-		"MINOS_BUILD_CMD=make build",
-		"MINOS_TEST_CMD=make test",
-		"MINOS_AUTO_MERGE=true",
 	} {
 		assertContainsFile(t, fixture.record+".env", value)
 	}
@@ -155,6 +129,12 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS",
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW",
 		"MINOS_ANTHROPIC_CREDENTIAL_FILE",
+		"MINOS_GIT_AUTHOR_NAME",
+		"MINOS_GIT_AUTHOR_EMAIL",
+		"GIT_AUTHOR_NAME",
+		"GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME",
+		"GIT_COMMITTER_EMAIL",
 	})
 	if after := snapshotDirectory(t, fixture.ambientHome); !reflect.DeepEqual(after, fixture.ambientHomeBefore) {
 		t.Fatalf("ambient home changed\nbefore: %#v\nafter:  %#v", fixture.ambientHomeBefore, after)
@@ -171,34 +151,9 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 	fixture.assertProcessesStopped(t)
 }
 
-func TestRunBodySelectsGuideForRunClassAndRejectsMissingMaintenanceGuide(t *testing.T) {
-	t.Run("maintenance uses the maintenance guide", func(t *testing.T) {
-		fixture := newRunBodyFixture(t)
-		maintenanceGuide := filepath.Join(fixture.root, "maintenance.md")
-		if err := os.WriteFile(maintenanceGuide, []byte("Follow the maintenance playbook exactly.\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		fixture.appendConfig(t, map[string]string{"MINOS_MAINTENANCE_INSTRUCTION": maintenanceGuide})
-
-		fixture.run(t, map[string]string{"MINOS_RUN_CLASS": "maintenance"})
-		assertContainsFile(t, fixture.record+".argv", "Follow the maintenance playbook exactly.")
-	})
-
-	t.Run("missing maintenance guide fails before launch", func(t *testing.T) {
-		fixture := newRunBodyFixture(t)
-		fixture.appendConfig(t, map[string]string{"MINOS_MAINTENANCE_INSTRUCTION": ""})
-
-		output, err := fixture.execute(map[string]string{"MINOS_RUN_CLASS": "maintenance"})
-		if err == nil {
-			t.Fatalf("run-body accepted a maintenance run without a maintenance guide\n%s", output)
-		}
-		assertFailureLine(t, fixture.failureLog, "stage=configuration", "cause=MINOS_MAINTENANCE_INSTRUCTION is required")
-	})
-}
-
 func TestRunBodyExportsSocketSafeTempDirectoryForLongRunName(t *testing.T) {
 	fixture := newRunBodyFixtureWithShortRoot(t).withRun(
-		"minos-run-BFJ-Concerns-Gizmo-pr85-123456789",
+		"minos-run-Example-Corp-Gizmo-pr85-123456789",
 		"socket-safe-temp-record",
 	)
 	fixture.run(t, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
@@ -219,212 +174,20 @@ func TestRunBodyExportsSocketSafeTempDirectoryForLongRunName(t *testing.T) {
 	}
 }
 
-func TestRunBodyUsesPublishedSetupMergeAsCurrentHead(t *testing.T) {
-	fixture := newRunBodyFixture(t)
-	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
-set -eu
-mkdir -p "$MINOS_WORKSPACE"
-install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
-printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
-printf '%s\n' '{"outcome":"reconciled","publish":true,"merge":"setup-merge-sha"}' >"$MINOS_RUN_DIR/reconciliation.json"
-`)
+func TestRunBodyExportsTheProvisionedEnginesFromTheSeedsItNames(t *testing.T) {
+	both := newRunBodyFixture(t)
+	both.run(t, nil)
+	assertContainsFile(t, both.record+".worker-env", "MINOS_PROVISIONED_ENGINES=claude codex")
+	assertContainsFile(t, both.record+".worker-env", "MINOS_LEAD_ENGINE=claude")
 
-	fixture.run(t, nil)
-	assertContainsFile(t, fixture.record+".worker-env", "MINOS_HEAD_SHA=setup-merge-sha")
-}
-
-func TestRunBodyUsesTheHeadSetupActuallyCheckedOut(t *testing.T) {
-	fixture := newRunBodyFixture(t)
-	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
-set -eu
-mkdir -p "$MINOS_WORKSPACE"
-install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
-printf '%s\n' '{"head":"own-moved-head","grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
-printf '%s\n' '{"outcome":"unchanged","publish":false}' >"$MINOS_RUN_DIR/reconciliation.json"
-`)
-
-	fixture.run(t, nil)
-	assertContainsFile(t, fixture.record+".worker-env", "MINOS_HEAD_SHA=own-moved-head")
-}
-
-func TestRunBodyKeepsAdmittedHeadForLocalOnlySetup(t *testing.T) {
-	for _, geometry := range []string{"fork", "agit"} {
-		t.Run(geometry, func(t *testing.T) {
-			fixture := newRunBodyFixture(t)
-			writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
-set -eu
-mkdir -p "$MINOS_WORKSPACE"
-install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
-printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
-printf '%s\n' '{"outcome":"reconciled","publish":false,"merge":"local-merge-sha"}' >"$MINOS_RUN_DIR/reconciliation.json"
-`)
-
-			fixture.run(t, nil)
-			assertContainsFile(t, fixture.record+".worker-env", "MINOS_HEAD_SHA=head-sha")
-		})
-	}
-}
-
-func TestRunBodySharesPersistentCachesOnlyWithinARepository(t *testing.T) {
-	fixture := newRunBodyFixture(t)
-	first := fixture.withRun("first", "first-record")
-	second := fixture.withRun("second", "second-record")
-
-	first.run(t, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
-	cacheDir := environmentValue(t, first.record+".worker-env", "MINOS_SHARED_CACHE_DIR")
-	wantCacheDir := first.cacheDir("forgejo", "owner", "repository")
-	if cacheDir != wantCacheDir {
-		t.Fatalf("persistent cache = %q, want repository-scoped path %q", cacheDir, wantCacheDir)
-	}
-	if strings.HasPrefix(cacheDir, filepath.Clean(filepath.Join(fixture.root, "runs"))+string(os.PathSeparator)) {
-		t.Fatalf("persistent cache %q is inside runs directory %q", cacheDir, filepath.Join(fixture.root, "runs"))
-	}
-	assertContainsFile(t, first.record+".setup", "setup invoked")
-	if err := os.WriteFile(filepath.Join(cacheDir, "warm-marker"), []byte("first run cache\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	second.run(t, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
-	assertContainsFile(t, second.record+".worker-env", "MINOS_SHARED_CACHE_DIR="+cacheDir)
-	assertContainsFile(t, second.record+".setup", "setup invoked")
-	assertContainsFile(t, filepath.Join(cacheDir, "warm-marker"), "first run cache")
-
-	otherRepository := fixture.withRun("other-repository", "other-record")
-	otherRepository.run(t, map[string]string{
-		"MINOS_REPO_NAME":              "another-repository",
-		"MINOS_TEST_COMPLETION_MARKER": "clean",
-	})
-	otherCacheDir := environmentValue(t, otherRepository.record+".worker-env", "MINOS_SHARED_CACHE_DIR")
-	assertContainsFile(t, otherRepository.record+".worker-env", "MINOS_SHARED_CACHE_DIR="+otherCacheDir)
-	if otherCacheDir == cacheDir {
-		t.Fatalf("repositories resolved to the same persistent cache %q", cacheDir)
-	}
-	if _, err := os.Stat(filepath.Join(otherCacheDir, "warm-marker")); !os.IsNotExist(err) {
-		t.Fatalf("other repository inherited cache marker: %v", err)
-	}
-}
-
-func TestRunBodyRejectsCachePathTraversal(t *testing.T) {
-	fixture := newRunBodyFixture(t)
-	escapeDir := filepath.Join(fixture.root, "cache", "escape")
-	out, err := fixture.execute(map[string]string{
-		"MINOS_OWNER": "../escape",
-	})
-	if err == nil {
-		t.Fatalf("run-body accepted a traversing cache identity\n%s", out)
-	}
-	if !strings.Contains(string(out), "cache path components must not equal dot or dot-dot, or contain a slash") {
-		t.Fatalf("run-body output did not explain rejected cache identity\n%s", out)
-	}
-	if _, err := os.Stat(escapeDir); !os.IsNotExist(err) {
-		t.Fatalf("traversing cache identity created %s: %v", escapeDir, err)
-	}
-	assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause=forge, owner and repository cache path components must not equal dot or dot-dot, or contain a slash")
-}
-
-func TestRunBodyRejectsExactDotCachePathComponents(t *testing.T) {
-	for _, variable := range []string{"MINOS_FORGE", "MINOS_OWNER", "MINOS_REPO_NAME"} {
-		for _, component := range []string{".", ".."} {
-			t.Run(variable+"="+component, func(t *testing.T) {
-				fixture := newRunBodyFixture(t)
-				out, err := fixture.execute(map[string]string{variable: component})
-				if err == nil {
-					t.Fatalf("run-body accepted %s=%q\n%s", variable, component, out)
-				}
-				if !strings.Contains(string(out), "cache path components must not equal dot or dot-dot, or contain a slash") {
-					t.Fatalf("run-body output did not explain rejected cache identity\n%s", out)
-				}
-				if _, err := os.Stat(fixture.record + ".worker-env"); !os.IsNotExist(err) {
-					t.Fatalf("rejected cache identity launched worker: %v", err)
-				}
-				assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause=forge, owner and repository cache path components must not equal dot or dot-dot, or contain a slash")
-			})
-		}
-	}
-}
-
-func TestRunBodyAllowsDotNamedRepository(t *testing.T) {
-	fixture := newRunBodyFixture(t)
-	fixture.run(t, map[string]string{"MINOS_REPO_NAME": ".github"})
-
-	cacheDir := fixture.cacheDir("forgejo", "owner", ".github")
-	assertContainsFile(t, fixture.record+".worker-env", "MINOS_SHARED_CACHE_DIR="+cacheDir)
-	assertFileEmpty(t, fixture.failureLog)
-}
-
-func TestRunBodyRecordsMissingCacheIdentity(t *testing.T) {
-	for _, variable := range []string{"MINOS_FORGE", "MINOS_OWNER", "MINOS_REPO_NAME"} {
-		t.Run(variable, func(t *testing.T) {
-			fixture := newRunBodyFixture(t)
-			out, err := fixture.execute(map[string]string{variable: ""})
-			if err == nil {
-				t.Fatalf("run-body accepted missing %s\n%s", variable, out)
-			}
-			assertContainsFile(t, fixture.failureLog, "stage=runtime-home cause="+variable+" is required for the shared cache path")
-		})
-	}
-}
-
-func TestRunBodyCreatesPersistentCacheSafelyForConcurrentRuns(t *testing.T) {
-	fixture := newRunBodyFixture(t)
-	first := fixture.withRun("concurrent-first", "concurrent-first-record")
-	second := fixture.withRun("concurrent-second", "concurrent-second-record")
-	cacheDir := first.cacheDir("forgejo", "owner", "repository")
-	if err := os.RemoveAll(cacheDir); err != nil {
-		t.Fatal(err)
-	}
-
-	type result struct {
-		name string
-		out  []byte
-		err  error
-	}
-	results := make(chan result, 2)
-	var ready sync.WaitGroup
-	ready.Add(2)
-	start := make(chan struct{})
-	for name, current := range map[string]runBodyFixture{"first": first, "second": second} {
-		go func(name string, current runBodyFixture) {
-			ready.Done()
-			<-start
-			out, err := current.execute(map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
-			results <- result{name: name, out: out, err: err}
-		}(name, current)
-	}
-	ready.Wait()
-	close(start)
-	for range 2 {
-		result := <-results
-		if result.err != nil {
-			t.Fatalf("concurrent %s run failed: %v\n%s", result.name, result.err, result.out)
-		}
-	}
-
-	for _, path := range []string{
-		filepath.Join(cacheDir, "rust", "sccache"),
-		filepath.Join(cacheDir, "go", "build"),
-		filepath.Join(cacheDir, "go", "modules"),
-		filepath.Join(cacheDir, "node", "npm"),
-	} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !info.IsDir() || info.Mode().Perm() != 0o700 {
-			t.Fatalf("concurrent cache directory %s mode = %s, want directory 700", path, info.Mode())
-		}
-	}
-	assertContainsFile(t, first.record+".setup", "setup invoked")
-	assertContainsFile(t, second.record+".setup", "setup invoked")
-	firstTemp := environmentValue(t, first.record+".worker-env", "TMPDIR")
-	secondTemp := environmentValue(t, second.record+".worker-env", "TMPDIR")
-	if firstTemp == secondTemp {
-		t.Fatalf("concurrent runs shared TMPDIR %q", firstTemp)
-	}
-	for _, tempDir := range []string{firstTemp, secondTemp} {
-		if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
-			t.Fatalf("concurrent run TMPDIR survived exit: %s: %v", tempDir, err)
-		}
+	// A deployment that seeds no Codex auth is a single-engine deployment:
+	// the run proceeds with Claude alone and says so to the workflows.
+	claudeOnly := newRunBodyFixture(t)
+	claudeOnly.appendConfig(t, map[string]string{"MINOS_CODEX_CONFIG_SEED": ""})
+	claudeOnly.run(t, nil)
+	assertContainsFile(t, claudeOnly.record+".worker-env", "MINOS_PROVISIONED_ENGINES=claude")
+	if _, err := os.Stat(filepath.Join(claudeOnly.runDir, "home", ".codex", "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("an unprovisioned engine's home still received seed state: %v", err)
 	}
 }
 
@@ -455,44 +218,6 @@ func TestRunBodyUsesConfiguredGatewayCredentials(t *testing.T) {
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":            "180000",
 	})
 	fixture.assertProcessesStopped(t)
-}
-
-func TestRunBodyLeavesSharedSccacheServerRunningForConcurrentRuns(t *testing.T) {
-	fixture := newRunBodyFixture(t)
-	sccacheSource := filepath.Join(fixture.root, "sccache")
-	writeScript(t, sccacheSource, `#!/usr/bin/env sh
-set -eu
-case "${1:-}" in
-  --start-server)
-    sleep 300 </dev/null >/dev/null 2>&1 &
-    printf '%s\n' "$!" >"$MINOS_TEST_RECORD.sccache-server"
-    ;;
-  --stop-server)
-    kill "$(cat "$MINOS_TEST_RECORD.sccache-server")"
-    ;;
-esac
-`)
-	serverEnv := environmentWithOverrides(map[string]string{"MINOS_TEST_RECORD": fixture.record})
-	start := exec.Command(sccacheSource, "--start-server")
-	start.Env = serverEnv
-	if out, err := start.CombinedOutput(); err != nil {
-		t.Fatalf("start shared sccache server: %v\n%s", err, out)
-	}
-	serverPID, err := os.ReadFile(fixture.record + ".sccache-server")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(serverPID)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
-
-	fixture.run(t, map[string]string{"MINOS_TEST_SCCACHE_SOURCE": sccacheSource})
-
-	if err := syscall.Kill(pid, 0); err != nil {
-		t.Fatalf("run-body stopped the shared sccache server used by concurrent runs: %v", err)
-	}
 }
 
 func TestRunBodyRejectsInvalidGatewayConfigurationBeforeLaunchingClaude(t *testing.T) {
@@ -586,11 +311,20 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 		{
 			name: "missing required variable",
 			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
-				fixture.appendConfig(t, map[string]string{"MINOS_CODEX_CONFIG_SEED": ""})
+				fixture.appendConfig(t, map[string]string{"MINOS_CLAUDE_CONFIG_SEED": ""})
 				return nil
 			},
 			wantStage: "configuration",
-			wantCause: "MINOS_CODEX_CONFIG_SEED is required",
+			wantCause: "MINOS_CLAUDE_CONFIG_SEED is required: the lead runs on claude",
+		},
+		{
+			name: "lead engine this build cannot run",
+			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
+				fixture.appendConfig(t, map[string]string{"MINOS_LEAD_ENGINE": "unsupported"})
+				return nil
+			},
+			wantStage: "configuration",
+			wantCause: "MINOS_LEAD_ENGINE must be claude or codex; the unsupported lead is not available in this build",
 		},
 		{
 			name: "Claude seed copy",
@@ -626,18 +360,7 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 				return nil
 			},
 			wantStage: "runtime-home",
-			wantCause: "could not create isolated runtime home, state, cache and tool directories",
-		},
-		{
-			name: "vendored skills copy",
-			configure: func(t *testing.T, fixture runBodyFixture) map[string]string {
-				fixture.appendConfig(t, map[string]string{
-					"MINOS_SKILLS_DIR": filepath.Join(fixture.root, "missing-skills"),
-				})
-				return nil
-			},
-			wantStage: "vendored-skills",
-			wantCause: "could not copy the vendored Claude Code skills",
+			wantCause: "could not create isolated runtime home and state directories",
 		},
 		{
 			name: "workspace setup",
@@ -667,7 +390,7 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 				return map[string]string{"MINOS_TEST_CLAUDE_LAUNCH_FAIL": "1"}
 			},
 			wantStage: "lead-launch",
-			wantCause: "Claude lead launch failed",
+			wantCause: "claude lead launch failed",
 		},
 		{
 			name: "missing Claude session ID",
@@ -689,6 +412,132 @@ func TestRunBodyReportsPrelaunchFailures(t *testing.T) {
 			assertFailureLine(t, fixture.failureLog, "stage="+test.wantStage, "cause="+test.wantCause)
 		})
 	}
+}
+
+func TestRunBodyRecordsRealSetupTargetRefusal(t *testing.T) {
+	server, head, target, environment := refusedTargetForge(t)
+	fixture := realSetupRunBodyFixture(t, server.Bin, head, target, environment)
+	output, err := fixture.execute(environment)
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+		t.Fatalf("run-body exit = %v, want refused fetch exit 1; output = %s", err, output)
+	}
+	for _, want := range []string{"stage=workspace-setup", "head=" + head, "cause=target fetch refused: the forge would not serve target sha " + target, "likely because the base branch moved", "the next sweep re-derives"} {
+		assertContainsFile(t, fixture.failureLog, want)
+	}
+	if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
+		t.Fatalf("lead launch exists or stat failed after setup refusal: %v", err)
+	}
+	if _, err := os.Stat(fixture.record + ".terminal"); !os.IsNotExist(err) {
+		t.Fatalf("terminal lead record exists or stat failed after setup refusal: %v", err)
+	}
+}
+
+func TestRunBodyRecordsProtocolV2TargetRefusal(t *testing.T) {
+	server, head, target, environment := missingTargetForge(t)
+	fixture := realSetupRunBodyFixture(t, server.Bin, head, target, environment)
+	output, err := fixture.execute(environment)
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 128 {
+		t.Fatalf("run-body exit = %v, want protocol v2 refusal exit 128; output = %s", err, output)
+	}
+	if !strings.Contains(string(output), "upload-pack: not our ref "+target) {
+		t.Fatalf("real upload-pack refusal missing from stderr: %s", output)
+	}
+	for _, want := range []string{"stage=workspace-setup", "head=" + head, "cause=target fetch refused: the forge would not serve target sha " + target, "likely because the base branch moved", "the next sweep re-derives"} {
+		assertContainsFile(t, fixture.failureLog, want)
+	}
+	for _, suffix := range []string{".argv", ".terminal"} {
+		if _, err := os.Stat(fixture.record + suffix); !os.IsNotExist(err) {
+			t.Fatalf("lead record %s exists or stat failed after protocol v2 refusal: %v", suffix, err)
+		}
+	}
+}
+
+func TestRunBodyStreamsSetupStderrBeforeSetupExits(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	release := filepath.Join(fixture.root, "release-setup")
+	const progress = "MINOS_SETUP_PROGRESS_BEFORE_EXIT"
+	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
+set -eu
+printf '%s\n' 'MINOS_SETUP_PROGRESS_BEFORE_EXIT' >&2
+while [ ! -f "$MINOS_TEST_RELEASE_SETUP" ]; do sleep 0.01; done
+exit 19
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := fixture.command(ctx, map[string]string{"MINOS_TEST_RELEASE_SETUP": release})
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			_ = os.WriteFile(release, nil, 0o600)
+			_ = cmd.Wait()
+		}
+	}()
+	observed := make(chan struct{}, 1)
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			if scanner.Text() == progress {
+				observed <- struct{}{}
+			}
+		}
+	}()
+	select {
+	case <-observed:
+		// Setup cannot exit until this test releases it, so receipt proves
+		// forwarding during setup rather than replay after its exit.
+	case <-time.After(2 * time.Second):
+		t.Fatal("setup stderr was not forwarded while setup was waiting for release")
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = cmd.Wait()
+	waited = true
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 19 {
+		t.Fatalf("run-body exit = %v, want setup exit 19", err)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "setup.stderr"), progress)
+	assertFailureLine(t, fixture.failureLog, "stage=workspace-setup", "cause=workspace setup failed")
+}
+
+func TestRunBodyKeepsGenericCauseForTargetTransportFailure(t *testing.T) {
+	server, head, target, environment := refusedTargetForge(t)
+	// A missing server repository fails the actual Git transport, without
+	// refusing a particular unadvertised object.
+	writeScript(t, environment["GIT_SSH_COMMAND"], "#!/usr/bin/env sh\nexec git upload-pack '"+filepath.Join(t.TempDir(), "missing-repository")+"'\n")
+	fixture := realSetupRunBodyFixture(t, server.Bin, head, target, environment)
+	output, err := fixture.execute(environment)
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 128 {
+		t.Fatalf("run-body exit = %v, want transport failure exit 128; output = %s", err, output)
+	}
+	assertContainsFile(t, fixture.failureLog, "stage=workspace-setup cause=workspace setup failed\n")
+	if strings.Contains(string(output), "target fetch refused:") {
+		t.Fatalf("unrelated transport failure reported as target refusal: %s", output)
+	}
+}
+
+func realSetupRunBodyFixture(t *testing.T, minosBin string, head, target string, environment map[string]string) runBodyFixture {
+	t.Helper()
+	fixture := newRunBodyFixture(t)
+	setup, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "setup-workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.appendConfig(t, map[string]string{"MINOS_SETUP_WORKSPACE": setup, "MINOS_BIN": minosBin})
+	for key, value := range map[string]string{
+		"MINOS_HEAD_SHA": head, "MINOS_TARGET_SHA": target, "MINOS_HEAD_BRANCH": "feature",
+		"MINOS_GUIDANCE_SOURCES": "[]",
+	} {
+		environment[key] = value
+	}
+	return fixture
 }
 
 func TestRunBodyFailsLoudlyWhenFailureLogIsUnwritable(t *testing.T) {
@@ -719,7 +568,7 @@ func TestRunBodyKeepsWaitingLeadsAlive(t *testing.T) {
 				"MINOS_TEST_PENDING_STATE":   state,
 				"MINOS_TEST_WAIT_POLLS":      "3",
 				"MINOS_LEAD_SILENCE_TIMEOUT": "5",
-				"MINOS_CLAUDE_POLL_SECONDS":  "0",
+				"MINOS_LEAD_POLL_SECONDS":    "0",
 			})
 			assertContainsFile(t, fixture.record+".terminal", `"status":null`)
 			assertContainsFile(t, fixture.record+".waiting-states", state)
@@ -745,7 +594,7 @@ func TestRunBodyRecordsBlockedLeadBeforeFirstRunActivity(t *testing.T) {
 		t,
 		fixture.failureLog,
 		"stage=lead-supervision",
-		"cause=Claude lead entered blocked state before producing run activity",
+		"cause=claude lead entered blocked state before producing run activity",
 	)
 	assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 	fixture.assertProcessesStopped(t)
@@ -759,7 +608,7 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 				"MINOS_TEST_TERMINAL_STATE":    "done",
 				"MINOS_TEST_COMPLETION_MARKER": outcome,
 				"MINOS_LEAD_SILENCE_TIMEOUT":   "1",
-				"MINOS_CLAUDE_POLL_SECONDS":    "0",
+				"MINOS_LEAD_POLL_SECONDS":      "0",
 			})
 
 			assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), outcome)
@@ -772,6 +621,58 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 				t.Fatalf("Claude agent queries = %s, want exactly 1", attempts)
 			}
 			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
+			assertFileEmpty(t, fixture.failureLog)
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
+// The unit's exit status says whether the head is spent: only a clean or
+// attention outcome (or a continuation) may succeed and so trigger the
+// sweep pass; an incomplete outcome or a stop without a recorded status
+// exits 75 and waits for the timer, so a head that keeps ending incomplete
+// never re-runs at run pace.
+func TestRunBodyExitStatusSaysWhetherTheHeadIsSpent(t *testing.T) {
+	for _, tc := range []struct {
+		marker, applied string
+		exit            int
+	}{
+		{"clean", "", 0},
+		{"non-clean", "attention", 0},
+		{"non-clean", "clean", 0},
+		{"continuation", "", 0},
+		{"non-clean", "incomplete", 75},
+		{"non-clean", "", 75},
+		{"non-clean", "working", 75},
+	} {
+		t.Run(tc.marker+"/"+tc.applied, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			record := filepath.Join(fixture.runDir, appliedStatusFile)
+			if tc.applied == "" {
+				if err := os.Remove(record); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(record, []byte(tc.applied+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			output, err := fixture.execute(map[string]string{
+				"MINOS_TEST_TERMINAL_STATE":    "done",
+				"MINOS_TEST_COMPLETION_MARKER": tc.marker,
+				"MINOS_LEAD_SILENCE_TIMEOUT":   "1",
+				"MINOS_LEAD_POLL_SECONDS":      "0",
+			})
+			exit := 0
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exit = exitErr.ExitCode()
+			} else if err != nil {
+				t.Fatalf("run-body: %v\n%s", err, output)
+			}
+			if exit != tc.exit {
+				t.Fatalf("run-body exit = %d, want %d\n%s", exit, tc.exit, output)
+			}
+			if tc.exit == 75 && !strings.Contains(string(output), "stays eligible") {
+				t.Fatalf("a non-spent head exits without saying so:\n%s", output)
+			}
 			assertFileEmpty(t, fixture.failureLog)
 			fixture.assertProcessesStopped(t)
 		})
@@ -915,7 +816,7 @@ func TestRunBodyIgnoresUnrecognisedCompletionMarker(t *testing.T) {
 		"MINOS_TEST_PENDING_STATE":     "done",
 		"MINOS_TEST_WAIT_POLLS":        "3",
 		"MINOS_LEAD_SILENCE_TIMEOUT":   "5",
-		"MINOS_CLAUDE_POLL_SECONDS":    "0",
+		"MINOS_LEAD_POLL_SECONDS":      "0",
 	})
 
 	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "unclean")
@@ -939,12 +840,18 @@ func TestRunBodyStopsFailedAndStoppedLeads(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(cgroup, "memory.pressure"), []byte("some avg10=0.01 avg60=0.02 avg300=0.03 total=456\nfull avg10=0.00 avg60=0.01 avg300=0.02 total=123\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.Remove(filepath.Join(fixture.runDir, appliedStatusFile)); err != nil {
+				t.Fatal(err)
+			}
 			output, err := fixture.execute(map[string]string{
 				"MINOS_CGROUP_DIR":          cgroup,
 				"MINOS_TEST_TERMINAL_STATE": state,
 			})
-			if err != nil {
-				t.Fatalf("run-body failed after recording terminal lead evidence: %v\n%s", err, output)
+			// A lead that died before its marker, with no clean or attention
+			// status applied, leaves the head eligible, so the unit must not
+			// succeed and trigger a pass that re-claims it.
+			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 75 {
+				t.Fatalf("run-body exit = %v after a %s lead, want 75 (head not spent)\n%s", err, state, output)
 			}
 			assertContainsFile(t, fixture.record+".terminal", `"state":"`+state+`"`)
 			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.events]")
@@ -988,7 +895,7 @@ func TestRunBodyStopsSilentLeadAtConfiguredTimeout(t *testing.T) {
 	output, err := fixture.execute(map[string]string{
 		"MINOS_TEST_TERMINAL_STATE":  "done",
 		"MINOS_LEAD_SILENCE_TIMEOUT": "0",
-		"MINOS_CLAUDE_POLL_SECONDS":  "0",
+		"MINOS_LEAD_POLL_SECONDS":    "0",
 	})
 	if err == nil {
 		t.Fatalf("run-body succeeded after the silence backstop stopped the lead\n%s", output)
@@ -1001,7 +908,7 @@ func TestRunBodyStopsSilentLeadAtConfiguredTimeout(t *testing.T) {
 		t,
 		fixture.failureLog,
 		"stage=lead-supervision",
-		"cause=Claude lead produced no run activity for 0 seconds (last state: done)",
+		"cause=claude lead produced no run activity for 0 seconds (last state: unknown)",
 	)
 	fixture.assertProcessesStopped(t)
 }
@@ -1023,11 +930,8 @@ func TestRunBodyRejectsInvalidSilenceTimeout(t *testing.T) {
 	)
 }
 
-// A digit string too large for shell integer arithmetic used to pass
-// validation and then make the backstop comparison error on every poll, which
-// removed the backstop entirely rather than lengthening it — a fat-fingered
-// value in run-body.env would leave a hung run to the systemd limit with no
-// other signal.
+// Silence timeouts must fit shell integer arithmetic and the seven-day bound,
+// so every poll can enforce the silence backstop.
 func TestRunBodyRejectsOutOfRangeSilenceTimeout(t *testing.T) {
 	for _, value := range []string{"99999999999999999999", "604801"} {
 		t.Run(value, func(t *testing.T) {
@@ -1048,15 +952,13 @@ func TestRunBodyKeepsWorkingLeadAliveWithoutStateTransition(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// Interleaved A/B runs under 12 parallel builds made this interval
-	// load-bearing: the 1s calibration failed 2/8, 5/10, and 2/10 runs at the
-	// write-count assertion, while the otherwise identical 2s calibration
-	// failed 0/8 and 0/10. Keep the measured margin rather than shortening it.
+	// The two-second silence margin allows work writes to remain observable
+	// under parallel build load without triggering the backstop prematurely.
 	output, err := fixture.executeContext(ctx, map[string]string{
 		"MINOS_TEST_TERMINAL_STATE":   "done",
 		"MINOS_TEST_POLL_WORK_WRITES": "12",
 		"MINOS_LEAD_SILENCE_TIMEOUT":  "2",
-		"MINOS_CLAUDE_POLL_SECONDS":   "0.25",
+		"MINOS_LEAD_POLL_SECONDS":     "0.25",
 	})
 	if ctx.Err() == context.DeadlineExceeded {
 		t.Fatalf("run-body did not finish within 10s\n%s", output)
@@ -1086,7 +988,7 @@ func TestRunBodyDoesNotTreatSupervisorPollingAsLeadActivity(t *testing.T) {
 		"MINOS_TEST_TERMINAL_STATE":   "done",
 		"MINOS_TEST_POLL_HOME_WRITES": "1",
 		"MINOS_LEAD_SILENCE_TIMEOUT":  "1",
-		"MINOS_CLAUDE_POLL_SECONDS":   "0.25",
+		"MINOS_LEAD_POLL_SECONDS":     "0.25",
 	})
 	if ctx.Err() == context.DeadlineExceeded {
 		t.Fatalf("run-body did not finish within 4s\n%s", output)
@@ -1193,140 +1095,35 @@ func TestVendoredEnsembleResolvesConfiguredConcurrencyFromRunEnvironment(t *test
 	}
 }
 
-func TestLifecycleEnsembleLaunchesRetainRunRecords(t *testing.T) {
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("node is not installed")
-	}
-	for _, launch := range []struct {
-		name   string
-		marker string
-	}{
-		{name: "setup", marker: `> "$MINOS_RUN_DIR/setup-args.json"`},
-		{name: "setup-retry", marker: `> "$MINOS_RUN_DIR/setup-retry-args.json"`},
-		{name: "gate-repair", marker: `> "$MINOS_RUN_DIR/gate-repair-args.json"`},
-		{name: "brief-fix", marker: `> "$MINOS_RUN_DIR/brief-fix-args.json"`},
-		{name: "finishing-rootcause", marker: `> "$MINOS_RUN_DIR/rootcause-args.json"`},
-	} {
-		t.Run(launch.name, func(t *testing.T) {
-			assertLifecycleEnsembleRecordLaunch(t, launch.name, launch.marker)
-
-			runDir := filepath.Join(t.TempDir(), "run")
-			archive := launchEnsembleRecordProbe(t, runDir, launch.name)
-			if !strings.HasPrefix(archive, filepath.Join(runDir, "ensemble-records", launch.name)+string(filepath.Separator)) {
-				t.Fatalf("%s archive = %q, want it below the run record root", launch.name, archive)
-			}
-		})
-	}
-}
-
-func assertLifecycleEnsembleRecordLaunch(t *testing.T, name, marker string) {
-	t.Helper()
-	lifecycle, err := os.ReadFile(filepath.Join("..", "..", "lifecycle", "lifecycle.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := strings.Index(string(lifecycle), marker)
-	if start < 0 {
-		t.Fatalf("lifecycle omits %s launch marker", name)
-	}
-	block := string(lifecycle)[start:]
-	if end := strings.Index(block, "```"); end >= 0 {
-		block = block[:end]
-	}
-	for _, want := range []string{
-		`ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR"`,
-		`ENSEMBLE_RUN_RECORD=on`,
-		`node /opt/minos/runtime/ensemble.mjs`,
-	} {
-		if !strings.Contains(block, want) {
-			t.Fatalf("%s launch omits %q:\n%s", name, want, block)
-		}
-	}
-	if strings.Contains(block, "ENSEMBLE_RUN_RECORD_DIR=") {
-		t.Fatalf("%s launch sets ENSEMBLE_RUN_RECORD_DIR instead of relying on the shared wrapper:\n%s", name, block)
-	}
-	if !strings.Contains(string(lifecycle), `ENSEMBLE_RUN_RECORD_DIR="$MINOS_RUN_DIR/ensemble-records/NAME"`) {
-		t.Fatal("shared lifecycle wrapper omits ENSEMBLE_RUN_RECORD_DIR")
-	}
-}
-
-func assertFixDispatchRetainsEnsembleRecord(t *testing.T) {
-	t.Helper()
-	source, err := os.ReadFile(filepath.Join("..", "..", "workflows", "publish-before-fix.mjs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		`ENSEMBLE_STATUS_DIR: env.MINOS_RUN_DIR`,
-		`ENSEMBLE_RUN_RECORD: "on"`,
-		`ENSEMBLE_RUN_RECORD_DIR: runRecordRoot`,
-	} {
-		if !strings.Contains(string(source), want) {
-			t.Fatalf("fix dispatch omits %q", want)
-		}
-	}
-}
-
-// launchEnsembleRecordProbe drives the vendored launcher rather than making a
-// record-shaped fixture. The deliberately invalid workflow exits non-zero only
-// after the launcher has opened and finalised its immutable run record.
-func launchEnsembleRecordProbe(t *testing.T, runDir, name string) string {
-	t.Helper()
-	bundle, err := filepath.Abs(filepath.Join("..", "..", "runtime", "ensemble.mjs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflow := filepath.Join(t.TempDir(), "invalid-workflow.mjs")
-	if err := os.WriteFile(workflow, []byte("export default {};\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	recordRoot := filepath.Join(runDir, "ensemble-records", name)
-	cmd := exec.CommandContext(t.Context(), "node", bundle, workflow)
-	cmd.Dir = t.TempDir()
-	cmd.Env = environmentWithOverrides(map[string]string{
-		"HOME":                    filepath.Join(runDir, "home"),
-		"XDG_CONFIG_HOME":         filepath.Join(runDir, "config"),
-		"XDG_DATA_HOME":           filepath.Join(runDir, "data"),
-		"ENSEMBLE_STATUS_DIR":     runDir,
-		"ENSEMBLE_RUN_RECORD":     "on",
-		"ENSEMBLE_RUN_RECORD_DIR": recordRoot,
-	})
-	if output, err := cmd.CombinedOutput(); err == nil {
-		t.Fatalf("vendored Ensemble accepted invalid probe workflow\n%s", output)
-	}
-	manifests, err := filepath.Glob(filepath.Join(recordRoot, "runs", "*", "*", "*", "manifest.json"))
-	if err != nil || len(manifests) != 1 {
-		t.Fatalf("%s manifests = %v, error = %v; want one launcher-created record", name, manifests, err)
-	}
-	return filepath.Dir(manifests[0])
-}
-
 func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *testing.T) {
-	sourceRoot := t.TempDir()
-	for _, directory := range []string{"scripts", "runtime", "workflows"} {
-		if err := os.MkdirAll(filepath.Join(sourceRoot, directory), 0o755); err != nil {
+	sourceRoot := installerSourceRoot(t)
+	for _, name := range []string{
+		"adjudicated-review",
+		"brief-dispositions.mjs",
+		"file-triage.mjs",
+		"finding-presentation.mjs",
+		"isolate-from-live-run.mjs",
+		"filing-destination.mjs",
+		"out-of-scope-observations.mjs",
+		"compose-review-publication.mjs",
+		"review-brief-inputs.mjs",
+		"review-briefs.js",
+		"review-inputs.mjs",
+		"review-scope-inputs.mjs",
+		"review-scope.js",
+		"review.js",
+		"run-record-adjudicator.mjs",
+		"verdict-classification.mjs",
+	} {
+		mode := os.FileMode(0o644)
+		contents := []byte("export const workflow = {};\n")
+		if name == "adjudicated-review" {
+			mode = 0o755
+			contents = []byte("#!/usr/bin/env node\n")
+		}
+		if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", name), contents, mode); err != nil {
 			t.Fatal(err)
 		}
-	}
-	copyFixtureFile(t, filepath.Join("..", "..", "scripts", "install-review-runtime"), filepath.Join(sourceRoot, "scripts", "install-review-runtime"), 0o755)
-	for _, name := range []string{"ensemble.mjs", "ensemble.mjs.sha256", "ensemble.source-version"} {
-		copyFixtureFile(t, filepath.Join("..", "..", "runtime", name), filepath.Join(sourceRoot, "runtime", name), 0o644)
-	}
-	declareExpectedTools(t, sourceRoot)
-	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "adjudicated-review"), []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "run-record-adjudicator.mjs"), []byte("export function adjudicate() {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(sourceRoot, "workflows", "setup-briefs"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "setup.js"), []byte("export const meta = {};\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "setup-briefs", "setup-agent.md"), []byte("# Setup\n"), 0o644); err != nil {
-		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "setup_test.mjs"), []byte("must not install\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1342,9 +1139,21 @@ func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *test
 		filepath.Join(destination, "runtime", "ensemble.mjs.sha256"),
 		filepath.Join(destination, "runtime", "ensemble.source-version"),
 		filepath.Join(destination, "workflows", "adjudicated-review"),
+		filepath.Join(destination, "workflows", "brief-dispositions.mjs"),
+		filepath.Join(destination, "workflows", "file-triage.mjs"),
+		filepath.Join(destination, "workflows", "finding-presentation.mjs"),
+		filepath.Join(destination, "workflows", "isolate-from-live-run.mjs"),
+		filepath.Join(destination, "workflows", "filing-destination.mjs"),
+		filepath.Join(destination, "workflows", "out-of-scope-observations.mjs"),
+		filepath.Join(destination, "workflows", "compose-review-publication.mjs"),
+		filepath.Join(destination, "workflows", "review-brief-inputs.mjs"),
+		filepath.Join(destination, "workflows", "review-briefs.js"),
+		filepath.Join(destination, "workflows", "review-inputs.mjs"),
+		filepath.Join(destination, "workflows", "review-scope-inputs.mjs"),
+		filepath.Join(destination, "workflows", "review-scope.js"),
+		filepath.Join(destination, "workflows", "review.js"),
 		filepath.Join(destination, "workflows", "run-record-adjudicator.mjs"),
-		filepath.Join(destination, "workflows", "setup.js"),
-		filepath.Join(destination, "workflows", "setup-briefs", "setup-agent.md"),
+		filepath.Join(destination, "workflows", "verdict-classification.mjs"),
 	} {
 		assertRegularFile(t, path)
 	}
@@ -1362,7 +1171,7 @@ func TestInstallReviewRuntimeVerifiesLauncherAndInstallsSiblingArtefacts(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(installed)); got != "d014d45c7caf0a482ada2594942ee08ddab3493ed43ee6036e2befe5c35bb367" {
+	if got := fmt.Sprintf("%x", sha256.Sum256(installed)); got != "034500995d14eaf93003e0fe19d2d9a8fb05ac7f47c98f8a7feca69828ae05a6" {
 		t.Fatalf("installed Ensemble digest = %s", got)
 	}
 }
@@ -1400,12 +1209,8 @@ func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
 	if err := os.MkdirAll(destination, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\ncat >/dev/null\nexit 3\n")
-	writeScript(t, filepath.Join(bin, "ssh"), `#!/usr/bin/env sh
-last=""
-for argument in "$@"; do last="$argument"; done
-exec sh -c "$last"
-`)
+	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\ncat >/dev/null\nprintf 'partial compressed archive\\n'\nexit 3\n")
+	installArchiveReceiverSSH(t, bin, destination)
 	identity := filepath.Join(fixture.root, "archive-identity")
 	knownHosts := filepath.Join(fixture.root, "archive-known-hosts")
 	for _, path := range []string{identity, knownHosts} {
@@ -1416,7 +1221,6 @@ exec sh -c "$last"
 	archiveConfig := filepath.Join(fixture.root, "archive.env")
 	config := strings.Join([]string{
 		`MINOS_ARCHIVE_HOST="fixture"`,
-		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
 		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
 		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
 	}, "\n") + "\n"
@@ -1445,6 +1249,7 @@ exec sh -c "$last"
 }
 
 type runBodyFixture struct {
+	trace             bool
 	root              string
 	configRoot        string
 	runDir            string
@@ -1495,6 +1300,16 @@ func newRunBodyFixtureAtRoot(t *testing.T, root string) runBodyFixture {
 		}
 	}
 	fixture.ambientHomeBefore = snapshotDirectory(t, fixture.ambientHome)
+	// The stub lead ends by reporting a terminal state and writes no marker
+	// unless a test asks for one; a recorded attention status makes that a
+	// spent head, so tests about other behaviour keep a zero exit. The
+	// head-spent tests remove or replace this file.
+	if err := os.MkdirAll(fixture.runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.runDir, appliedStatusFile), []byte("attention\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	claudeSeed := filepath.Join(root, "claude-seed")
 	codexSeed := filepath.Join(root, "codex-seed")
 	if err := os.MkdirAll(claudeSeed, 0o700); err != nil {
@@ -1509,22 +1324,6 @@ func newRunBodyFixtureAtRoot(t *testing.T, root string) runBodyFixture {
 	if err := os.WriteFile(filepath.Join(codexSeed, "auth.json"), []byte("fixture Codex ChatGPT state\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	skillsDir := filepath.Join(root, "skills")
-	for _, casting := range []string{"claude-code", "codex"} {
-		for _, skill := range []string{"root-cause", "playwright"} {
-			skillSource := filepath.Join(skillsDir, casting, skill)
-			if err := os.MkdirAll(filepath.Join(skillSource, "references"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			content := fmt.Sprintf("# %s\ncasting: %s\n", skill, casting)
-			if err := os.WriteFile(filepath.Join(skillSource, "SKILL.md"), []byte(content), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(skillSource, "references", "proof.md"), []byte("proof\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
 	if err := os.WriteFile(fixture.instructionPath, []byte("Follow the Minos lifecycle exactly.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1534,7 +1333,7 @@ set -eu
 record="${MINOS_TEST_RECORD:?}"
 env | sort >"$record.worker-env"
 printf 'worker wrote state\n' >"$XDG_STATE_HOME/worker-state"
-command -v minos-worker-probe >"$record.worker-tool"
+printf '%s\n' "$0" >"$record.worker-tool"
 printf 'mode=%s\n' "$(stat -c '%a' "$TMPDIR")" >"$record.worker-temp"
 printf 'worker wrote temp\n' >"$TMPDIR/worker-temp"
 cat "$TMPDIR/worker-temp" >>"$record.worker-temp"
@@ -1558,7 +1357,7 @@ case "$1" in
     done
     env | sort >"$record.env"
     test -f "$CLAUDE_CONFIG_DIR/.credentials.json"
-    test -f "$CODEX_HOME/auth.json"
+    case " $MINOS_PROVISIONED_ENGINES " in *" codex "*) test -f "$CODEX_HOME/auth.json" ;; esac
     printf '%s\n%s\n' 'claude-auth-present' 'codex-auth-present' >"$record.auth"
     printf '%s\n' "$HOME/.claude/projects" >"$record.projects"
     cat >"$record.stdin"
@@ -1567,7 +1366,7 @@ case "$1" in
     printf '%s\n' "$lead_pid" >"$record.pids"
     if [ "${MINOS_TEST_NO_WORKER_PROBE:-}" != "1" ]; then
       (
-        minos-worker-probe
+        "$HOME/.local/bin/minos-worker-probe"
         exec sleep 300
       ) </dev/null >/dev/null 2>&1 &
       task_pid=$!
@@ -1627,12 +1426,9 @@ esac
 	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
 set -eu
 mkdir -p "$MINOS_WORKSPACE"
+mkdir -p "$HOME/.local/bin"
 install -m 700 "$MINOS_TEST_WORKER_PROBE_SOURCE" "$HOME/.local/bin/minos-worker-probe"
-if [ -n "${MINOS_TEST_SCCACHE_SOURCE:-}" ]; then
-  install -m 700 "$MINOS_TEST_SCCACHE_SOURCE" "$HOME/.local/bin/sccache"
-fi
-printf '%s\n' '{"grounding":"repository","reason":"annexe-not-found"}' >"$MINOS_ORIENTATION"
-printf '%s\n' '{"outcome":"unnecessary","publish":false,"merge":null}' >"$MINOS_RUN_DIR/reconciliation.json"
+printf '%s\n' '{"guidance":[],"misconfigurations":[]}' >"$MINOS_ORIENTATION"
 printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 `)
 	t.Cleanup(func() { killRecordedProcesses(fixture.record + ".pids") })
@@ -1642,15 +1438,11 @@ printf 'setup invoked\n' >"${MINOS_TEST_RECORD}.setup"
 	}
 	runBodyEnv := map[string]string{
 		"MINOS_CLAUDE":                   fixture.claudeStub,
-		"MINOS_LEAD_MODEL":               "claude-opus-5",
-		"MINOS_GIT_AUTHOR_NAME":          "Minos",
-		"MINOS_GIT_AUTHOR_EMAIL":         "minos@example.invalid",
+		"MINOS_LEAD_MODEL":               "claude-opus-5-5",
 		"MINOS_CLAUDE_CONFIG_SEED":       claudeSeed,
 		"MINOS_CODEX_CONFIG_SEED":        codexSeed,
 		"MINOS_LIFECYCLE_INSTRUCTION":    fixture.instructionPath,
 		"MINOS_REVIEW_WORKFLOW":          "/opt/minos/workflows/adjudicated-review",
-		"MINOS_ROOT_CAUSE_SKILL":         filepath.Join(skillsDir, "codex", "root-cause"),
-		"MINOS_SKILLS_DIR":               skillsDir,
 		"MINOS_SETUP_WORKSPACE":          fixture.setupStub,
 		"MINOS_BIN":                      "/usr/local/bin/minos",
 		"MINOS_FAILURE_LOG":              fixture.failureLog,
@@ -1670,10 +1462,6 @@ func (f runBodyFixture) withRun(name, record string) runBodyFixture {
 	f.runDir = filepath.Join(f.root, "runs", name)
 	f.record = filepath.Join(f.root, record)
 	return f
-}
-
-func (f runBodyFixture) cacheDir(forge, owner, repository string) string {
-	return filepath.Join(f.root, "cache", forge, owner, repository)
 }
 
 func (f runBodyFixture) appendConfig(t *testing.T, values map[string]string) {
@@ -1720,33 +1508,35 @@ func (f runBodyFixture) execute(extraEnv map[string]string) ([]byte, error) {
 }
 
 func (f runBodyFixture) executeContext(ctx context.Context, extraEnv map[string]string) ([]byte, error) {
+	return f.command(ctx, extraEnv).CombinedOutput()
+}
+
+func (f runBodyFixture) command(ctx context.Context, extraEnv map[string]string) *exec.Cmd {
 	runEnv := map[string]string{
-		"MINOS_RUN_DIR":                 f.runDir,
-		"MINOS_CONFIG":                  f.configRoot,
-		"MINOS_FORGE":                   "forgejo",
-		"MINOS_WORKSPACE":               filepath.Join(f.runDir, "workspace"),
-		"MINOS_ORIENTATION":             filepath.Join(f.runDir, "orientation.json"),
-		"MINOS_OWNER":                   "owner",
-		"MINOS_REPO_NAME":               "repository",
-		"MINOS_PR":                      "17",
-		"MINOS_HEAD_SHA":                "head-sha",
-		"MINOS_TARGET_SHA":              "target-sha",
-		"MINOS_BASE_REF":                "main",
-		"MINOS_HEAD_BRANCH":             "feature",
-		"MINOS_API_BASE":                "http://forge.test",
-		"MINOS_CREDENTIAL_FILE":         "/etc/minos/forge.token",
-		"MINOS_BUILD_CMD":               "make build",
-		"MINOS_TEST_CMD":                "make test",
-		"MINOS_AUTO_MERGE":              "true",
-		"MINOS_RUN_BODY":                "/opt/minos/run-body/run-body",
-		"MINOS_TEST_RECORD":             f.record,
-		"MINOS_CLAUDE_POLL_SECONDS":     "0",
-		"HOME":                          f.ambientHome,
-		"CLAUDE_CONFIG_DIR":             filepath.Join(f.ambientHome, ".claude"),
-		"CODEX_HOME":                    filepath.Join(f.ambientHome, ".codex"),
-		"ANTHROPIC_AUTH_TOKEN":          "obsolete-proxy-token-must-not-reach-lead",
-		"ANTHROPIC_BASE_URL":            "http://obsolete-proxy.invalid",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL": "obsolete-haiku-alias",
+		"MINOS_PRESSURE_THRESHOLD_PERCENT": "85",
+		"MINOS_RUN_DIR":                    f.runDir,
+		"MINOS_CONFIG":                     f.configRoot,
+		"MINOS_FORGE":                      "forgejo",
+		"MINOS_WORKSPACE":                  filepath.Join(f.runDir, "workspace"),
+		"MINOS_ORIENTATION":                filepath.Join(f.runDir, "orientation.json"),
+		"MINOS_OWNER":                      "owner",
+		"MINOS_REPO_NAME":                  "repository",
+		"MINOS_PR":                         "17",
+		"MINOS_HEAD_SHA":                   "head-sha",
+		"MINOS_TARGET_SHA":                 "target-sha",
+		"MINOS_BASE_REF":                   "main",
+		"MINOS_HEAD_BRANCH":                "feature",
+		"MINOS_API_BASE":                   "http://forge.test",
+		"MINOS_CREDENTIAL_FILE":            "/etc/minos/forge.token",
+		"MINOS_RUN_BODY":                   "/opt/minos/run-body/run-body",
+		"MINOS_TEST_RECORD":                f.record,
+		"MINOS_LEAD_POLL_SECONDS":          "0",
+		"HOME":                             f.ambientHome,
+		"CLAUDE_CONFIG_DIR":                filepath.Join(f.ambientHome, ".claude"),
+		"CODEX_HOME":                       filepath.Join(f.ambientHome, ".codex"),
+		"ANTHROPIC_AUTH_TOKEN":             "obsolete-proxy-token-must-not-reach-lead",
+		"ANTHROPIC_BASE_URL":               "http://obsolete-proxy.invalid",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":    "obsolete-haiku-alias",
 		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":             "265000",
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":            "265000",
@@ -1757,8 +1547,11 @@ func (f runBodyFixture) executeContext(ctx context.Context, extraEnv map[string]
 	}
 	script := filepath.Join("..", "..", "scripts", "run-body", "run-body")
 	cmd := exec.CommandContext(ctx, script)
+	if f.trace {
+		cmd = exec.CommandContext(ctx, "sh", "-x", script)
+	}
 	cmd.Env = environmentWithOverrides(runEnv)
-	return cmd.CombinedOutput()
+	return cmd
 }
 
 func assertRegularFile(t *testing.T, path string) {
@@ -1988,5 +1781,246 @@ func killRecordedProcesses(path string) {
 		if err == nil {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
+	}
+}
+
+// The stub supplies CLI behaviour; assertions read the real run body's
+// arguments, captured output, state mapping and process cleanup.
+func newCodexRunBodyFixture(t *testing.T) runBodyFixture {
+	t.Helper()
+	fixture := newRunBodyFixture(t)
+	codexStub := filepath.Join(fixture.root, "codex")
+	writeScript(t, codexStub, `#!/usr/bin/env sh
+set -eu
+record="${MINOS_TEST_RECORD:?}"
+printf '%s\n' "$@" >"$record.argv"
+env | sort >"$record.worker-env"
+printf '%s\n' "$$" >"$record.pids"
+printf '%s\n' '{"type":"thread.started","thread_id":"stub-thread"}'
+printf 'Codex diagnostic\n' >&2
+if [ "${MINOS_TEST_CODEX_HANG:-}" = 1 ]; then
+  exec sleep 300
+fi
+if [ -n "${MINOS_TEST_COMPLETION_MARKER:-}" ]; then
+  printf '%s\n' "$MINOS_TEST_COMPLETION_MARKER" >"$MINOS_RUN_DIR/lead-complete"
+fi
+exit "${MINOS_TEST_CODEX_EXIT:-0}"
+`)
+	fixture.appendConfig(t, map[string]string{
+		"MINOS_LEAD_ENGINE": "codex", "MINOS_CODEX": codexStub,
+		"MINOS_LEAD_MODEL": "", "MINOS_CLAUDE": "", "MINOS_CLAUDE_CONFIG_SEED": "",
+	})
+	return fixture
+}
+
+func TestRunBodyCodexLaunch(t *testing.T) {
+	for _, model := range []string{"", "configured-codex-model"} {
+		name := model
+		if name == "" {
+			name = "default"
+		}
+		t.Run(name, func(t *testing.T) {
+			fixture := newCodexRunBodyFixture(t)
+			if model != "" {
+				fixture.appendConfig(t, map[string]string{"MINOS_LEAD_MODEL": model})
+			}
+			fixture.runWithin(t, 10*time.Second, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
+			wantModel := model
+			if wantModel == "" {
+				wantModel = "gpt-6-sol"
+			}
+			argv, err := os.ReadFile(fixture.record + ".argv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			instruction, err := os.ReadFile(fixture.instructionPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"exec", "--model", wantModel, "--dangerously-bypass-approvals-and-sandbox", "--cd", fixture.runDir, "--json", strings.TrimRight(string(instruction), "\n")}
+			if got := strings.Split(strings.TrimSuffix(string(argv), "\n"), "\n"); !reflect.DeepEqual(got, want) {
+				t.Fatalf("Codex argv = %q, want %q", got, want)
+			}
+			assertContainsFile(t, fixture.record+".worker-env", "CODEX_HOME="+filepath.Join(fixture.runDir, "home", ".codex"))
+			assertContainsFile(t, fixture.record+".worker-env", "MINOS_PROVISIONED_ENGINES=codex\n")
+			assertContainsFile(t, filepath.Join(fixture.runDir, "codex-lead.jsonl"), `{"type":"thread.started","thread_id":"stub-thread"}`)
+			assertContainsFile(t, filepath.Join(fixture.runDir, "codex-lead.stderr"), "Codex diagnostic")
+			assertRegularFile(t, filepath.Join(fixture.runDir, "home", ".codex", "auth.json"))
+			if _, err := os.Stat(filepath.Join(fixture.runDir, "home", ".claude", ".credentials.json")); !os.IsNotExist(err) {
+				t.Fatalf("Claude seed unexpectedly copied: %v", err)
+			}
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
+func TestRunBodyCodexTerminalState(t *testing.T) {
+	for _, test := range []struct{ code, state string }{{"0", "stopped"}, {"23", "failed"}} {
+		t.Run(test.state, func(t *testing.T) {
+			fixture := newCodexRunBodyFixture(t)
+			fixture.trace = true
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			output, err := fixture.executeContext(ctx, map[string]string{"MINOS_TEST_CODEX_EXIT": test.code})
+			if err != nil {
+				t.Fatalf("run-body failed handling terminal Codex: %v\n%s", err, output)
+			}
+			// Shell tracing observes the supervisor's actual state assignment, not
+			// a state invented by the CLI fixture. Terminal state alone retains the
+			// existing supervisor exit contract; it is not lifecycle completion.
+			if !strings.Contains(string(output), "agent_state="+test.state) {
+				t.Fatalf("supervisor did not observe %s\n%s", test.state, output)
+			}
+			assertContainsFile(t, filepath.Join(fixture.runDir, "codex-lead.exit"), test.code+"\n")
+			assertRegularFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"))
+			if _, err := os.Stat(filepath.Join(fixture.runDir, "lead-complete")); !os.IsNotExist(err) {
+				t.Fatalf("terminal CLI exit manufactured completion: %v", err)
+			}
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
+func TestRunBodyCodexSilence(t *testing.T) {
+	fixture := newCodexRunBodyFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := fixture.executeContext(ctx, map[string]string{"MINOS_TEST_CODEX_HANG": "1", "MINOS_LEAD_SILENCE_TIMEOUT": "1", "MINOS_LEAD_POLL_SECONDS": "0.05"})
+	if ctx.Err() != nil {
+		t.Fatalf("supervisor failed to stop silent Codex: %v\n%s", ctx.Err(), output)
+	}
+	if err == nil {
+		t.Fatalf("silent Codex run succeeded\n%s", output)
+	}
+	assertFailureLine(t, fixture.failureLog, "stage=lead-supervision", "last state: running")
+	fixture.assertProcessesStopped(t)
+}
+
+func TestRunBodyCodexRequiresExecutableAndSeed(t *testing.T) {
+	for _, test := range []struct{ variable, cause string }{{"MINOS_CODEX", "MINOS_CODEX is required"}, {"MINOS_CODEX_CONFIG_SEED", "MINOS_CODEX_CONFIG_SEED is required: the lead runs on codex"}} {
+		t.Run(test.variable, func(t *testing.T) {
+			fixture := newCodexRunBodyFixture(t)
+			fixture.appendConfig(t, map[string]string{test.variable: ""})
+			output, err := fixture.execute(nil)
+			if err == nil {
+				t.Fatalf("run-body accepted missing %s\n%s", test.variable, output)
+			}
+			assertFailureLine(t, fixture.failureLog, "stage=configuration", test.cause)
+			if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
+				t.Fatalf("Codex launched despite missing configuration: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunBodyHonoursConfiguredPressureThreshold(t *testing.T) {
+	for _, test := range []struct {
+		name, threshold string
+		anon            int64
+		signal          bool
+	}{
+		{"lower threshold signals", "60", 700_000_000, true},
+		{"higher threshold waits", "95", 900_000_000, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0, test.anon, 0)
+			fixture.run(t, map[string]string{
+				"MINOS_PRESSURE_THRESHOLD_PERCENT": test.threshold,
+				"MINOS_CGROUP_DIR":                 cgroup,
+				"MINOS_TEST_PENDING_STATE":         "done",
+				"MINOS_TEST_WAIT_POLLS":            "2",
+				"MINOS_TEST_TERMINAL_STATE":        "failed",
+			})
+			signal := filepath.Join(fixture.runDir, "memory-pressure")
+			if test.signal {
+				assertContainsFile(t, signal, "anonymous memory plus swap")
+			} else if _, err := os.Stat(signal); !os.IsNotExist(err) {
+				t.Fatalf("footprint below configured threshold produced a pressure signal: %v", err)
+			}
+			fixture.assertProcessesStopped(t)
+		})
+	}
+}
+
+// The recorder observes the real exit trap, not a fixture-generated status.
+func TestRunBodySetupDeathWritesNoStatus(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		stage      string
+		writerExit int
+		missing    string
+		postlaunch bool
+	}{
+		{name: "configuration", stage: "configuration"},
+		{name: "setup", stage: "workspace-setup"},
+		{name: "writer failure", stage: "workspace-setup", writerExit: 47},
+		{name: "missing service configuration", stage: "workspace-setup", missing: "service.toml"},
+		{name: "missing coordinates", stage: "workspace-setup", missing: "MINOS_TARGET_SHA"},
+		{name: "missing bootstrap configuration", stage: "configuration", missing: "MINOS_CONFIG"},
+		{name: "postlaunch failure", postlaunch: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			calls := filepath.Join(fixture.root, "status-calls")
+			writer := filepath.Join(fixture.root, "minos-recorder")
+			writeScript(t, writer, fmt.Sprintf("#!/usr/bin/env sh\nfor argument do printf '%%s\\n' \"$argument\"; done >>%s\nexit %d\n", strconv.Quote(calls), test.writerExit))
+			fixture.appendConfig(t, map[string]string{"MINOS_BIN": writer})
+			// Only readability is relevant to this script-level test; parsing and
+			// the actual guarded write are exercised by the fixture-forge journey.
+			serviceConfig := filepath.Join(fixture.configRoot, "service.toml")
+			if err := os.WriteFile(serviceConfig, []byte("# readable service configuration\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			extra := map[string]string{"MINOS_BIN": writer, "MINOS_FAILURE_LOG": fixture.failureLog}
+			wantExit := 19
+			wantCause := "workspace setup failed"
+			if test.postlaunch {
+				extra["MINOS_TEST_TERMINAL_STATE"] = "blocked"
+				extra["MINOS_TEST_NO_WORKER_PROBE"] = "1"
+				wantExit = 1
+				wantCause = "blocked state before producing run activity"
+			} else if test.stage == "configuration" {
+				fixture.appendConfig(t, map[string]string{"MINOS_CLAUDE_CONFIG_SEED": ""})
+				wantExit = 1
+				wantCause = "MINOS_CLAUDE_CONFIG_SEED is required"
+			} else {
+				setup := filepath.Join(fixture.root, "failing-setup")
+				writeScript(t, setup, "#!/usr/bin/env sh\nexit 19\n")
+				fixture.appendConfig(t, map[string]string{"MINOS_SETUP_WORKSPACE": setup})
+			}
+			if test.missing == "service.toml" {
+				if err := os.Remove(serviceConfig); err != nil {
+					t.Fatal(err)
+				}
+			} else if test.missing != "" {
+				extra[test.missing] = ""
+				if test.missing == "MINOS_CONFIG" {
+					wantCause = "MINOS_CONFIG is required"
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			output, err := fixture.executeContext(ctx, extra)
+			exit, ok := err.(*exec.ExitError)
+			if !ok || exit.ExitCode() != wantExit {
+				t.Fatalf("exit = %v, want %d\n%s", err, wantExit, output)
+			}
+			assertFailureLine(t, fixture.failureLog, "cause=", wantCause)
+			if test.stage != "" {
+				assertFailureLine(t, fixture.failureLog, "stage="+test.stage)
+			}
+			recorded, readErr := os.ReadFile(calls)
+			if !os.IsNotExist(readErr) {
+				t.Fatalf("unexpected status call: %q (%v)", recorded, readErr)
+			}
+			failure, err := os.ReadFile(fixture.failureLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(failure), "status_write=") {
+				t.Fatalf("failure ledger carries retired status write: %s", failure)
+			}
+		})
 	}
 }

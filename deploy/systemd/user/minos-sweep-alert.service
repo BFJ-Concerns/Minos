@@ -1,6 +1,6 @@
 [Unit]
 Description=Minos sweep failure alert
-Documentation=file:/opt/minos/docs/go-live.md
+Documentation=file:/opt/minos/docs/deployment.md
 
 [Service]
 Type=oneshot

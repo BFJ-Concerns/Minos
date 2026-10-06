@@ -9,12 +9,13 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"testing"
 
-	"bfj/minos/internal/forge"
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 func TestSweepDecisionMessage(t *testing.T) {
@@ -30,9 +31,8 @@ func TestSweepDecisionMessage(t *testing.T) {
 		{name: "suppressed duplicate", result: ReconcileResult{Decision: SpawnSuppressed, BlockingUnit: "minos-run-owner-repository-pr12.service"}, want: "owner/repository#12: suppressed by active unit minos-run-owner-repository-pr12.service"},
 		{name: "suppressed concurrency cap", result: ReconcileResult{Decision: SpawnSuppressed, Detail: "all 2/2 run slots are occupied by active units minos-run-owner-other-pr9.service, minos-run-owner-third-pr4.service"}, want: "owner/repository#12: suppressed because all 2/2 run slots are occupied by active units minos-run-owner-other-pr9.service, minos-run-owner-third-pr4.service"},
 		{name: "continued", result: ReconcileResult{Decision: SpawnContinued}, want: "owner/repository#12: continued previous run"},
-		{name: "recovered", result: ReconcileResult{Decision: ReconcileRecovered}, want: "owner/repository#12: recovered terminal Minos status"},
 		{name: "nothing", result: ReconcileResult{Decision: ReconcileNothing}, want: "owner/repository#12: nothing to do"},
-		{name: "attention", result: ReconcileResult{Decision: SpawnAttention, Detail: `successor made no progress beyond stage "review" round 2 and published no new head or review`}, want: `owner/repository#12: attention: stopped stalled continuation because its successor made no progress beyond stage "review" round 2 and published no new head or review`},
+		{name: "attention", result: ReconcileResult{Decision: SpawnAttention, Detail: `successor made no progress beyond stage "review" and published no new head or review`}, want: `owner/repository#12: attention: stopped stalled continuation because its successor made no progress beyond stage "review" and published no new head or review`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -71,7 +71,7 @@ func TestPublishSweepDeferralsReplacesThePreviousDocumentAtomically(t *testing.T
 		return originalRename(temporary, destination)
 	}
 
-	if err := publishSweepDeferrals(cfg, want); err != nil {
+	if err := publishSweepDocument(cfg, sweepDeferralDocument{Deferrals: want}); err != nil {
 		t.Fatal(err)
 	}
 	if !renamed {
@@ -92,7 +92,7 @@ func TestPublishSweepDeferralsReplacesThePreviousDocumentAtomically(t *testing.T
 		t.Fatalf("replacement deferrals = %#v, want %#v", got.Deferrals, want)
 	}
 	for index, deferral := range want {
-		if got.Deferrals[index] != deferral {
+		if !reflect.DeepEqual(got.Deferrals[index], deferral) {
 			t.Fatalf("replacement deferral %d = %#v, want %#v", index, got.Deferrals[index], deferral)
 		}
 	}
@@ -126,22 +126,20 @@ func TestSweepRecordsEachAdmissionDeferralFromACompletedPass(t *testing.T) {
 		},
 		{
 			name: "terminal Minos review with its status",
-			configure: func(state *forgejoFixtureState, cfg ServiceConfig, facts Facts) {
+			configure: func(state *forgejoFixtureState, _ ServiceConfig, _ Facts) {
 				state.setReviews([]map[string]any{{
 					"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
 					"body": "completed review", "user": map[string]any{"login": "Minos"},
 				}})
-				facts.BaseSHA = state.targetSHA()
 				state.setStatuses([]map[string]any{{
 					"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(),
-					"target_url": statusTargetURL(cfg.Forges["forgejo"].APIBase, facts),
-					"creator":    map[string]any{"login": "Minos"},
+					"creator": map[string]any{"login": "Minos"},
 				}})
 			},
 			wantReason: "completed-marker",
 		},
 		{
-			name: "terminal Minos review while restoring its status",
+			name: "terminal Minos review without a status",
 			configure: func(state *forgejoFixtureState, _ ServiceConfig, _ Facts) {
 				state.setReviews([]map[string]any{{
 					"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
@@ -235,7 +233,7 @@ func TestSweepDecisionMessageCoversReachableVocabulary(t *testing.T) {
 		case SpawnSuppressed:
 			result.BlockingUnit = "minos-run-other-repo-pr9.service"
 		case SpawnAttention:
-			result.Detail = `successor made no progress beyond stage "review" round 2 and published no new head or review`
+			result.Detail = `successor made no progress beyond stage "review" and published no new head or review`
 		}
 		results = append(results, result)
 	}
@@ -294,7 +292,7 @@ func TestTerminalPullRequestExpiresHandoffBeforeFollowingResidueSweep(t *testing
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "21", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
@@ -326,7 +324,7 @@ func TestOpenPullRequestMissingFromListingKeepsHandoff(t *testing.T) {
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "22", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	if err := expireInactiveRunHandoffs(t.Context(), cfg, []RepoConfig{{Forge: facts.Forge, Owner: facts.Owner, Repo: facts.Repo}}); err != nil {
 		t.Fatal(err)
@@ -341,7 +339,7 @@ func TestUnconfiguredRepositoryExpiresHandoff(t *testing.T) {
 	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "removed-repository", PR: "23", HeadSHA: "head"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	writeTestFile(t, filepath.Join(runDir, "workspace", ".git", "HEAD"), "fixture\n")
-	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	if err := expireInactiveRunHandoffs(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
@@ -377,7 +375,7 @@ func TestOrderSweepCandidatesInterleavesReposWithinEachPriorityClass(t *testing.
 
 func TestOrderSweepCandidatesYieldsTheLaneToReposHoldingFewerLiveRuns(t *testing.T) {
 	candidate := func(repo, pr string, priority int) sweepCandidate {
-		return sweepCandidate{facts: Facts{Owner: "owner", Repo: repo, PR: pr}, priority: priority}
+		return sweepCandidate{facts: Facts{Forge: "forgejo", Owner: "owner", Repo: repo, PR: pr}, priority: priority}
 	}
 	// The busy repo owns the lowest pull request number, so without live-run
 	// counts it would lead every pass and claim each freed slot; its two
@@ -388,9 +386,9 @@ func TestOrderSweepCandidatesYieldsTheLaneToReposHoldingFewerLiveRuns(t *testing
 		candidate("starved", "8", 1),
 		candidate("quiet", "4", 1),
 	}, []string{
-		"minos-run-owner-busy-pr90.service",
-		"minos-run-owner-busy-pr104.service",
-		"minos-run-other-owner-unrelated-pr7.service",
+		"minos-run-forgejo-owner-busy-pr90.service",
+		"minos-run-forgejo-owner-busy-pr104.service",
+		"minos-run-forgejo-other-owner-unrelated-pr7.service",
 	})
 	var got []string
 	for _, entry := range ordered {
@@ -433,5 +431,50 @@ run-body = "/opt/minos/run-body/run-body"
 	}
 	if !slices.Contains(commands, "systemd-run") {
 		t.Fatalf("healthy repo was not reconciled; commands = %v", commands)
+	}
+}
+
+func TestHandoffExpiryUsesForgeIdentity(t *testing.T) {
+	original := inspectHandoffSnapshot
+	t.Cleanup(func() { inspectHandoffSnapshot = original })
+	inspectHandoffSnapshot = func(_ context.Context, _ ServiceConfig, facts Facts) (forge.Snapshot, error) {
+		if facts.Forge == "forgejo" {
+			return forge.Snapshot{State: "closed"}, nil
+		}
+		return forge.Snapshot{State: "open"}, nil
+	}
+	cfg := scratchTestConfig(t)
+	cfg.Forges["github"] = ForgeConfig{}
+	var paths []string
+	var repos []RepoConfig
+	for _, key := range []string{"forgejo", "github"} {
+		facts := Facts{Forge: key, Owner: "owner", Repo: "repository", PR: "21", HeadSHA: "head"}
+		paths = append(paths, writeTestHandoff(t, cfg, facts, filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved"), facts.HeadSHA))
+		repos = append(repos, RepoConfig{Forge: key, Owner: facts.Owner, Repo: facts.Repo})
+	}
+	if err := expireInactiveRunHandoffs(t.Context(), cfg, repos); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
+		t.Fatalf("closed forgejo pull request kept its handoff: %v", err)
+	}
+	if _, err := os.Stat(paths[1]); err != nil {
+		t.Fatalf("open github pull request lost its handoff: %v", err)
+	}
+	// A repository configured only on GitHub must not keep an open
+	// Forgejo handoff with identical owner/repository coordinates.
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "21", HeadSHA: "head"}
+	writeTestHandoff(t, cfg, facts, filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved"), facts.HeadSHA)
+	inspectHandoffSnapshot = func(context.Context, ServiceConfig, Facts) (forge.Snapshot, error) {
+		return forge.Snapshot{State: "open"}, nil
+	}
+	if err := expireInactiveRunHandoffs(t.Context(), cfg, repos[1:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
+		t.Fatalf("unconfigured forgejo repository inherited github configuration: %v", err)
+	}
+	if _, err := os.Stat(paths[1]); err != nil {
+		t.Fatalf("configured github repository lost its handoff: %v", err)
 	}
 }

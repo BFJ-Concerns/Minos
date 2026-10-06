@@ -39,7 +39,9 @@ func TestSweepRunResidueRemovesDeadReadOnlyTreeAndKeepsLiveUnit(t *testing.T) {
 		}
 	}
 
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(dead); !os.IsNotExist(err) {
 		t.Fatalf("dead run still exists: %v", err)
 	}
@@ -54,7 +56,7 @@ func TestSweepRunResidueProtectsOnlyDirectoryNamedByValidHandoff(t *testing.T) {
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 
 	cfg := scratchTestConfig(t)
-	facts := Facts{Owner: "owner", Repo: "repository", PR: "7", HeadSHA: "head"}
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "7", HeadSHA: "head"}
 	preserved := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
 	residue := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-different")
 	for _, runDir := range []string{preserved, residue} {
@@ -62,9 +64,11 @@ func TestSweepRunResidueProtectsOnlyDirectoryNamedByValidHandoff(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeTestHandoff(t, cfg, facts, preserved, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	writeTestHandoff(t, cfg, facts, preserved, facts.HeadSHA)
 
-	_ = sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts})
+	if err := sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(preserved); err != nil {
 		t.Fatalf("valid handoff directory was removed: %v", err)
 	}
@@ -79,14 +83,16 @@ func TestSweepRunResidueDoesNotProtectInvalidHandoff(t *testing.T) {
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 
 	cfg := scratchTestConfig(t)
-	facts := Facts{Owner: "owner", Repo: "repository", PR: "8", HeadSHA: "current"}
+	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repository", PR: "8", HeadSHA: "current"}
 	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-rejected")
 	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeTestHandoff(t, cfg, facts, runDir, "stale-head", []byte(`{"round":0,"confirmedUnfixed":[]}`))
+	writeTestHandoff(t, cfg, facts, runDir, "stale-head")
 
-	_ = sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts})
+	if err := sweepRunResidue(t.Context(), cfg, map[string]Facts{UnitName(facts): facts}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
 		t.Fatalf("invalid handoff protected residue: %v", err)
 	}
@@ -165,11 +171,7 @@ func TestArchiveRunRejectsFailedPipelineWithoutPublishingFinalName(t *testing.T)
 		{
 			name:       "zstd fails",
 			zstdScript: "#!/usr/bin/env sh\ncat >/dev/null\nexit 3\n",
-			sshScript: `#!/usr/bin/env sh
-last=""
-for argument in "$@"; do last="$argument"; done
-exec sh -c "$last"
-`,
+			sshScript:  "",
 		},
 		{
 			name:       "transfer fails",
@@ -179,11 +181,7 @@ exec sh -c "$last"
 		{
 			name:       "compressor produces empty output",
 			zstdScript: "#!/usr/bin/env sh\ncat >/dev/null\nexit 0\n",
-			sshScript: `#!/usr/bin/env sh
-last=""
-for argument in "$@"; do last="$argument"; done
-exec sh -c "$last"
-`,
+			sshScript:  "",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -197,7 +195,12 @@ exec sh -c "$last"
 				}
 			}
 			writeScript(t, filepath.Join(bin, "zstd"), test.zstdScript)
-			writeScript(t, filepath.Join(bin, "ssh"), test.sshScript)
+			// An empty ssh script means the real receiver answers the call.
+			if test.sshScript == "" {
+				installArchiveReceiverSSH(t, bin, destination)
+			} else {
+				writeScript(t, filepath.Join(bin, "ssh"), test.sshScript)
+			}
 			identity := filepath.Join(root, "identity")
 			knownHosts := filepath.Join(root, "known_hosts")
 			for _, path := range []string{identity, knownHosts} {
@@ -205,13 +208,12 @@ exec sh -c "$last"
 					t.Fatal(err)
 				}
 			}
-			if err := os.WriteFile(filepath.Join(runDir, "run-report.md"), []byte("evidence\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(runDir, "report.md"), []byte("evidence\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			config := filepath.Join(root, "archive.env")
 			contents := strings.Join([]string{
 				`MINOS_ARCHIVE_HOST="fixture"`,
-				`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
 				`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
 				`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
 			}, "\n") + "\n"
@@ -250,7 +252,7 @@ func TestFailureDigestUsesExplicitBoundedEvidenceSources(t *testing.T) {
 	for name, contents := range unrelated {
 		writeTestFile(t, filepath.Join(runDir, name), strings.Repeat(contents, 100))
 	}
-	writeTestFile(t, filepath.Join(runDir, "run-report.md"), "run-local report\n")
+	writeTestFile(t, filepath.Join(runDir, "report.md"), "run-local report\n")
 	for index := 0; index < 40; index++ {
 		writeTestFile(t,
 			filepath.Join(runDir, "home", ".claude", "projects", "repo", fmt.Sprintf("session-%02d.jsonl", index)),
@@ -294,11 +296,11 @@ func TestPublishFailureDigestTimesOutAndRetainsLocalCommit(t *testing.T) {
 
 	root := t.TempDir()
 	checkout := filepath.Join(root, "Minos-Annexe")
-	runScratchGit(t, root, "init", "-b", "main", checkout)
+	runGit(t, root, "init", "-b", "main", checkout)
 	configureTestGit(t, checkout)
 	writeTestFile(t, filepath.Join(checkout, "FAILURES.md"), "# Failures\n")
-	runScratchGit(t, checkout, "add", "FAILURES.md")
-	runScratchGit(t, checkout, "commit", "-m", "seed failures")
+	runGit(t, checkout, "add", "FAILURES.md")
+	runGit(t, checkout, "commit", "-m", "seed failures")
 	file, err := os.OpenFile(filepath.Join(checkout, "FAILURES.md"), os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -331,6 +333,9 @@ exec %q "$@"
 	var cfg ServiceConfig
 	cfg.Runs.FailuresRepo = checkout
 	cfg.Runs.FailuresCredentialFile = credential
+	configureFailureForge(t, &cfg)
+	cfg.Service.CommitAuthorName = "Minos"
+	cfg.Service.CommitAuthorEmail = "Minos@minos.invalid"
 
 	started := time.Now()
 	if err := publishFailureDigest(t.Context(), cfg); err == nil {
@@ -388,8 +393,10 @@ func TestSweepRunResidueRechecksLivenessBeforeDeletion(t *testing.T) {
 	}
 	cfg := scratchTestConfig(t)
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr13-new")
-	writeTestFile(t, filepath.Join(runDir, "run-report.md"), "evidence\n")
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(runDir); err != nil {
 		t.Fatalf("run that became live was removed: %v", err)
 	}
@@ -401,9 +408,11 @@ func TestSweepRunResiduePreservesOwnedMidSpawnDirectory(t *testing.T) {
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	cfg := scratchTestConfig(t)
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr14-starting")
-	writeTestFile(t, filepath.Join(runDir, "run-report.md"), "evidence\n")
+	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
 	writeTestFile(t, filepath.Join(runDir, runOwnerMarker), "")
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(runDir); err != nil {
 		t.Fatalf("owned mid-spawn directory was removed: %v", err)
 	}
@@ -414,17 +423,24 @@ func TestSweepRunResiduePreservesStructurallyValidHandoffWithoutCurrentFacts(t *
 	t.Cleanup(func() { commandCombinedOutput = original })
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	cfg := scratchTestConfig(t)
-	facts := Facts{Owner: "owner", Repo: "repository", PR: "15", HeadSHA: "head"}
-	runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
-	if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
-		t.Fatal(err)
+	cfg.Forges["github"] = ForgeConfig{}
+	var runDirs []string
+	for _, key := range []string{"forgejo", "github"} {
+		facts := Facts{Forge: key, Owner: "owner", Repo: "repository", PR: "15", HeadSHA: "head"}
+		runDir := filepath.Join(cfg.Runs.Dir, UnitName(facts)+"-preserved")
+		if err := os.MkdirAll(filepath.Join(runDir, "workspace", ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
+		runDirs = append(runDirs, runDir)
 	}
-	writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA, []byte(`{"round":0,"confirmedUnfixed":[]}`))
 	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(runDir); err != nil {
-		t.Fatalf("structurally valid handoff was not fail-safe without current facts: %v", err)
+	for _, runDir := range runDirs {
+		if _, err := os.Stat(runDir); err != nil {
+			t.Fatalf("structurally valid handoff was not fail-safe without current facts: %s: %v", runDir, err)
+		}
 	}
 }
 
@@ -435,7 +451,7 @@ func TestSweepRunResidueRequiresProvisionedArchiveCommand(t *testing.T) {
 	cfg := scratchTestConfig(t)
 	cfg.Runs.ArchiveCommand = ""
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr16-dead")
-	writeTestFile(t, filepath.Join(runDir, "run-report.md"), "evidence\n")
+	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
 	if err := sweepRunResidue(t.Context(), cfg, nil); err == nil {
 		t.Fatal("sweep accepted an unprovisioned archive command")
 	}
@@ -458,7 +474,9 @@ func TestSweepRunResidueDoesNotAppendEmptyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = sweepRunResidue(t.Context(), cfg, nil)
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	after, err := os.ReadFile(failuresPath)
 	if err != nil {
 		t.Fatal(err)
@@ -493,23 +511,23 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 	checkout := filepath.Join(root, "Minos-Annexe")
 	operator := filepath.Join(root, "operator")
 	verification := filepath.Join(root, "verification")
-	runScratchGit(t, root, "init", "--bare", remote)
-	runScratchGit(t, root, "init", "-b", "main", seed)
+	runGit(t, root, "init", "--bare", remote)
+	runGit(t, root, "init", "-b", "main", seed)
 	configureTestGit(t, seed)
 	writeTestFile(t, filepath.Join(seed, "FAILURES.md"), "# Failures\n")
-	runScratchGit(t, seed, "add", "FAILURES.md")
-	runScratchGit(t, seed, "commit", "-m", "seed failures")
-	runScratchGit(t, seed, "remote", "add", "origin", remote)
-	runScratchGit(t, seed, "push", "-u", "origin", "main")
-	runScratchGit(t, root, "--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/main")
-	runScratchGit(t, root, "clone", remote, checkout)
+	runGit(t, seed, "add", "FAILURES.md")
+	runGit(t, seed, "commit", "-m", "seed failures")
+	runGit(t, seed, "remote", "add", "origin", remote)
+	runGit(t, seed, "push", "-u", "origin", "main")
+	runGit(t, root, "--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	runGit(t, root, "clone", remote, checkout)
 	configureTestGit(t, checkout)
-	runScratchGit(t, root, "clone", remote, operator)
+	runGit(t, root, "clone", remote, operator)
 	configureTestGit(t, operator)
 	writeTestFile(t, filepath.Join(operator, "operator.md"), "operator change\n")
-	runScratchGit(t, operator, "add", "operator.md")
-	runScratchGit(t, operator, "commit", "-m", "operator change")
-	runScratchGit(t, operator, "push", "origin", "main")
+	runGit(t, operator, "add", "operator.md")
+	runGit(t, operator, "commit", "-m", "operator change")
+	runGit(t, operator, "push", "origin", "main")
 
 	file, err := os.OpenFile(filepath.Join(checkout, "FAILURES.md"), os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
@@ -526,10 +544,21 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 	var cfg ServiceConfig
 	cfg.Runs.FailuresRepo = checkout
 	cfg.Runs.FailuresCredentialFile = credential
+	configureFailureForge(t, &cfg)
+	cfg.Service.CommitAuthorName = "Review Bot"
+	cfg.Service.CommitAuthorEmail = "bot@example.org"
 	if err := publishFailureDigest(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	runScratchGit(t, root, "clone", remote, verification)
+	runGit(t, root, "clone", remote, verification)
+	identity := exec.Command("git", "-C", verification, "log", "-1", "--format=%an <%ae> / %cn <%ce>", "--", "FAILURES.md")
+	out, err := identity.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(out)), "Review Bot <bot@example.org> / Review Bot <bot@example.org>"; got != want {
+		t.Fatalf("failure ledger commit identity = %q, want %q", got, want)
+	}
 	for path, want := range map[string]string{
 		"FAILURES.md": "salvaged run",
 		"operator.md": "operator change",
@@ -542,11 +571,6 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 			t.Fatalf("%s omits %q: %s", path, want, contents)
 		}
 	}
-}
-
-func runScratchGit(t *testing.T, directory string, arguments ...string) {
-	t.Helper()
-	_ = runScratchGitOutput(t, directory, arguments...)
 }
 
 func runScratchGitOutput(t *testing.T, directory string, arguments ...string) string {
@@ -562,8 +586,8 @@ func runScratchGitOutput(t *testing.T, directory string, arguments ...string) st
 
 func configureTestGit(t *testing.T, directory string) {
 	t.Helper()
-	runScratchGit(t, directory, "config", "user.name", "Minos Test")
-	runScratchGit(t, directory, "config", "user.email", "minos-test@example.invalid")
+	runGit(t, directory, "config", "user.name", "Minos Test")
+	runGit(t, directory, "config", "user.email", "minos-test@example.invalid")
 }
 
 func writeTestFile(t *testing.T, path, contents string) {
@@ -580,6 +604,7 @@ func scratchTestConfig(t *testing.T) ServiceConfig {
 	t.Helper()
 	root := t.TempDir()
 	var cfg ServiceConfig
+	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
 	cfg.Runs.FailuresRepo = filepath.Join(root, "Minos-Annexe")
 	cfg.Runs.ArchiveCommand = "/bin/true"
@@ -593,4 +618,16 @@ func scratchTestConfig(t *testing.T) ServiceConfig {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func configureFailureForge(t *testing.T, cfg *ServiceConfig) {
+	t.Helper()
+	adaptation, err := filepath.Abs(filepath.Join("..", "..", "scripts", "adaptations", "forgejo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Runs.FailuresForge = "ledger"
+	cfg.Forges = map[string]ForgeConfig{"ledger": {Adaptation: adaptation, APIBase: "http://forge.invalid"}}
+	cfg.Service.BotLogin = "Review Bot"
+	cfg.Service.StatusContext = "Minos"
 }

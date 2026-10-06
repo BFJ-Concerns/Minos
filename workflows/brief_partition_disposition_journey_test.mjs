@@ -1,21 +1,18 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { executableVerdict as wrapperVerdict } from "./executable-verdict-fixture.mjs";
+import { briefRecords } from "./brief-dispositions.mjs";
+import { reviewContracts } from "./review-contracts.mjs";
+import { resolveRouting } from "./role-routing.mjs";
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
-const wrapperPath = join(workflowsDir, "adjudicated-review");
+function executableVerdict(t, envelope) {
+  return wrapperVerdict(t, envelope, { namespace: "partition", workflow: "review-briefs.js", requireCompletion: true });
+}
 const workflowSource = readFileSync(join(workflowsDir, "review-briefs.js"), "utf8");
 const workflowBody = workflowSource.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -39,62 +36,15 @@ const allInapplicableReasons = [
   "ALL-INAPPLICABLE-BETA-0728",
 ];
 
-const preloadSource = String.raw`
-import childProcess from "node:child_process";
-import { EventEmitter } from "node:events";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
-import { join } from "node:path";
-import { PassThrough } from "node:stream";
-
-childProcess.spawn = function recordedSpawn(_command, _arguments, options) {
-  const envelope = JSON.parse(readFileSync(process.env.MINOS_PARTITION_ENVELOPE, "utf8"));
-  const recordDir = options.env.ENSEMBLE_RUN_RECORD_DIR;
-  writeFileSync(process.env.MINOS_PARTITION_RECORD, recordDir);
-  const archive = join(recordDir, "runs", "cwd", "partition", "run");
-  mkdirSync(join(archive, "agents"), { recursive: true });
-  writeFileSync(
-    join(archive, "manifest.json"),
-    JSON.stringify({ kind: "run_manifest", status: "complete" }),
-  );
-  envelope.requiredModelEvidence.forEach((leg, index) => {
-    const directory = join(archive, "agents", String(index + 1).padStart(6, "0"));
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(
-      join(directory, "agent.json"),
-      JSON.stringify({ label: leg.label, status: "complete" }),
-    );
-  });
-
-  const child = new EventEmitter();
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
-  setImmediate(() => {
-    child.stdout.end(JSON.stringify(envelope) + "\n");
-    child.stderr.end();
-    child.emit("close", 0, null);
-  });
-  return child;
-};
-syncBuiltinESMExports();
-`;
-
-function operationRoot(t, prefix) {
-  const root = mkdtempSync(join(tmpdir(), prefix));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  return root;
-}
-
 function workflowInput(files) {
   return {
     target: "target-partition-0728",
     head: "head-partition-0728",
     occasion: "release",
-    workspace: "/workspace",
     hasReviewDirectory: true,
     changedPaths: files,
-    trackedFiles: files.map((path) => ({ path, bytes: 100 })),
-    briefs: [{
+    trackedFiles: files.map((path) => ({ path })),
+    briefs: briefRecords([{
       path: briefPath,
       readPath: `/workspace/${briefPath}`,
       content:
@@ -102,12 +52,9 @@ function workflowInput(files) {
         "Judge every partition without losing an inapplicability reason.",
       scope: null,
       scopeExists: true,
-    }],
-    guidance: {
-      grounding: "repository",
-      path: "/workspace/AGENTS.md",
-      content: "PARTITION-DISPOSITION-GUIDANCE-0728",
-    },
+    }], "release", files),
+    guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PARTITION-DISPOSITION-GUIDANCE-0728" }],
+    routing: resolveRouting({ provisioned: ["claude", "codex"] }),
     instructionBriefs: [
       {
         path: "workflows/review-briefs/repository.md",
@@ -120,6 +67,7 @@ function workflowInput(files) {
         content: "PARTITION-VERIFIER-BRIEF-0728",
       },
     ],
+    contracts: reviewContracts(),
   };
 }
 
@@ -152,7 +100,7 @@ async function producerEnvelope(scenario) {
   const partition = partitionFor(scenario);
   const files = partition.flatMap((unit) => unit.files);
   let specialistIndex = 0;
-  const agent = async (_prompt, options = {}) => {
+  const respond = async (_prompt, options = {}) => {
     if (options.label?.startsWith("brief-partition-")) {
       return { units: partition };
     }
@@ -164,6 +112,12 @@ async function producerEnvelope(scenario) {
     if (scenario === "all-ran") return specialistResult(true);
     const reasons = scenario === "mixed" ? mixedReasons : allInapplicableReasons;
     return specialistResult(false, reasons[scenario === "mixed" ? index - 1 : index]);
+  };
+  const agent = async (prompt, options = {}) => {
+    const output = await respond(prompt, options);
+    return options.identity
+      ? { label: options.label, phase: null, output, failure: null }
+      : output;
   };
   const parallel = async (thunks) => Promise.all(
     thunks.map((thunk) => thunk().catch(() => null)),
@@ -178,48 +132,11 @@ async function producerEnvelope(scenario) {
   );
 }
 
-function executableVerdict(t, envelope) {
-  const root = operationRoot(t, "minos-partition-wrapper-");
-  const envelopePath = join(root, "envelope.json");
-  const preloadPath = join(root, "record-ensemble.mjs");
-  const recordPath = join(root, "record-dir.txt");
-  const argsPath = join(root, "args.json");
-  const workflowPath = join(root, "review-briefs.js");
-  writeFileSync(envelopePath, JSON.stringify(envelope));
-  writeFileSync(preloadPath, preloadSource);
-  writeFileSync(argsPath, "{}");
-  writeFileSync(workflowPath, "return {};\n");
-
-  const result = spawnSync(
-    wrapperPath,
-    [workflowPath, "--json-args", `@${argsPath}`],
-    {
-      cwd: workflowsDir,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
-        MINOS_PARTITION_ENVELOPE: envelopePath,
-        MINOS_PARTITION_RECORD: recordPath,
-      },
-    },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /\[workflow\] complete/);
-  const recordDir = readFileSync(recordPath, "utf8");
-  assert.equal(
-    existsSync(recordDir),
-    false,
-    "the executable wrapper removes the exact archive consumed by adjudication",
-  );
-  return JSON.parse(result.stdout);
-}
-
 async function finalVerdict(t, scenario) {
   const envelope = await producerEnvelope(scenario);
   const verdict = executableVerdict(t, envelope);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
-  return { envelope, verdict };
+  return { verdict };
 }
 
 function entriesFor(entries, path) {
@@ -307,7 +224,6 @@ for (const malformed of [
     assert.equal(verdict.status, "incomplete");
     assert.equal(verdict.complete, false);
     assert.deepEqual(verdict.confirmedFindings, []);
-    assert.equal(verdict.reviewBody, null);
     assert.match(verdict.incomplete.join("\n"), malformed.diagnostic);
   });
 }

@@ -1,32 +1,32 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
-
 import { briefEngagement } from "./brief-dispositions.mjs";
-import { sweepDigest } from "./completion-policy.mjs";
-import { adjudicate } from "./run-record-adjudicator.mjs";
+import { executableVerdict as wrapperVerdict } from "./executable-verdict-fixture.mjs";
+import { resolveRouting } from "./role-routing.mjs";
+import { verdictDigest } from "./verdict-classification.mjs";
+import { adjudicateEnvelope } from "./archive-fixture.mjs";
+
+const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
 const scriptPath = join(workflowsDir, "review-scope.js");
 const inputScriptPath = join(workflowsDir, "review-scope-inputs.mjs");
-const wrapperPath = join(workflowsDir, "adjudicated-review");
+function executableVerdict(t, envelope) {
+  return wrapperVerdict(t, envelope, { namespace: "scope", workflow: "review-scope.js" });
+}
 const source = await readFile(scriptPath, "utf8");
-const briefWorkflowSource = await readFile(join(workflowsDir, "review-briefs.js"), "utf8");
 const lifecycle = await readFile(join(workflowsDir, "..", "lifecycle", "lifecycle.md"), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const script = new AsyncFunction(
   "agent", "parallel", "pipeline", "phase", "log", "args",
   source.replace(/^export const meta =/m, "const meta ="),
-);
-const briefWorkflow = new AsyncFunction(
-  "agent", "parallel", "pipeline", "phase", "log", "args",
-  briefWorkflowSource.replace(/^export const meta =/m, "const meta ="),
 );
 
 async function runScript(args, respond) {
@@ -59,11 +59,8 @@ function workflowArgs(overrides = {}) {
     target: "aaa111",
     head: "bbb222",
     occasion: null,
-    guidance: {
-      grounding: "annexe",
-      path: "/workspace/README.md",
-      content: "SCOPE_TEST_COMMISSION_TEAL",
-    },
+    guidance: [{ repository: null, path: "README.md", origin: "checked-in", content: "SCOPE_TEST_COMMISSION_TEAL" }],
+    routing: pairedRouting,
     instructionBriefs: [{
       path: "workflows/review-briefs/scope.md",
       readPath: join(workflowsDir, "review-briefs", "scope.md"),
@@ -82,78 +79,83 @@ function scopeResult(decision = "nothing-engages", reason = "documentation wordi
   return { decision, reason };
 }
 
-async function adjudicateEnvelope(t, envelope) {
-  const recordDir = mkdtempSync(join(tmpdir(), "minos-scope-record-"));
-  t.after(() => rmSync(recordDir, { recursive: true, force: true }));
-  const archiveDir = join(recordDir, "runs", "cwd", "synthetic", "run");
-  mkdirSync(join(archiveDir, "agents"), { recursive: true });
-  writeFileSync(join(archiveDir, "manifest.json"), JSON.stringify({ status: "complete" }));
-  envelope.requiredModelEvidence.forEach((leg, index) => {
-    const agentDir = join(archiveDir, "agents", String(index + 1).padStart(6, "0"));
-    mkdirSync(agentDir);
-    writeFileSync(join(agentDir, "agent.json"), JSON.stringify({
-      label: leg.label,
-      status: "complete",
-      resolved_model: leg.pinnedModel,
-    }));
-  });
-  return adjudicate({ envelope, recordDir });
-}
-
 // --- input builder ---
 
-function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true } = {}) {
+function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true, rename = false, numstatFault = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), "minos-scope-inputs-"));
-  const workspace = join(root, "workspace");
-  mkdirSync(workspace);
-  const git = (...args) => execFileSync("git", ["-C", workspace, ...args], {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: "Scope Fixture",
-      GIT_AUTHOR_EMAIL: "scope@example.invalid",
-      GIT_COMMITTER_NAME: "Scope Fixture",
-      GIT_COMMITTER_EMAIL: "scope@example.invalid",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  git("init", "--quiet", "--initial-branch=main");
-  mkdirSync(join(workspace, "pkg"));
-  writeFileSync(join(workspace, "pkg", "a.go"), "package a\n");
-  mkdirSync(join(workspace, "deploy"));
-  writeFileSync(join(workspace, "deploy", "notes.txt"), "untouched\n");
-  writeFileSync(join(workspace, "README.md"), "MINOS_SCOPE_COMMISSION_CORAL");
-  git("add", "--all");
-  git("commit", "--quiet", "-m", "base");
-  const target = git("rev-parse", "HEAD").trim();
-  writeFileSync(join(workspace, "pkg", "a.go"), "package a\n\nfunc A() {}\n");
-  git("add", "--all");
-  git("commit", "--quiet", "-m", "change");
-  const head = git("rev-parse", "HEAD").trim();
+  try {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const env = rename || numstatFault
+      ? Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(MINOS_|ENSEMBLE_)/.test(name)))
+      : process.env;
+    const git = (...args) => execFileSync("git", ["-C", workspace, ...args], {
+      encoding: "utf8",
+      env: {
+        ...env,
+        GIT_AUTHOR_NAME: "Scope Fixture",
+        GIT_AUTHOR_EMAIL: "scope@example.invalid",
+        GIT_COMMITTER_NAME: "Scope Fixture",
+        GIT_COMMITTER_EMAIL: "scope@example.invalid",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    git("init", "--quiet", "--initial-branch=main");
+    mkdirSync(join(workspace, "pkg"));
+    const before = rename ? "package a\n" + "// retained line\n".repeat(19) : "package a\n";
+    writeFileSync(join(workspace, "pkg", "a.go"), before);
+    mkdirSync(join(workspace, "deploy"));
+    writeFileSync(join(workspace, "deploy", "notes.txt"), "untouched\n");
+    writeFileSync(join(workspace, "README.md"), "MINOS_SCOPE_COMMISSION_CORAL");
+    git("add", "--all");
+    git("commit", "--quiet", "-m", "base");
+    const target = git("rev-parse", "HEAD").trim();
+    if (rename) renameSync(join(workspace, "pkg", "a.go"), join(workspace, "pkg", "renamed.go"));
+    writeFileSync(join(workspace, "pkg", rename ? "renamed.go" : "a.go"), before + "\nfunc A() {}\n");
+    git("add", "--all");
+    git("commit", "--quiet", "-m", "change");
+    const head = git("rev-parse", "HEAD").trim();
 
-  if (reviewDirectory) {
-    mkdirSync(join(workspace, ".review"), { recursive: true });
-    for (const brief of briefs) {
-      const absolute = join(workspace, brief.path);
-      mkdirSync(dirname(absolute), { recursive: true });
-      writeFileSync(absolute, brief.content);
+    if (reviewDirectory) {
+      mkdirSync(join(workspace, ".review"), { recursive: true });
+      for (const brief of briefs) {
+        const absolute = join(workspace, brief.path);
+        mkdirSync(dirname(absolute), { recursive: true });
+        writeFileSync(absolute, brief.content);
+      }
     }
+    const orientationPath = join(root, "orientation.json");
+    writeFileSync(orientationPath, JSON.stringify({
+      repository: workspace,
+      guidance: [{ source: { path: "README.md" }, location: join(workspace, "README.md"), origin: "checked-in" }],
+      misconfigurations: [],
+    }));
+    const cliArgs = [inputScriptPath, target, head];
+    if (occasion !== undefined) cliArgs.push(occasion);
+    const cliEnvironment = { ...env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: workspace, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" };
+    if (numstatFault) {
+      // Corrupt the real Git transport at its boundary; the builder must
+      // refuse the response instead of publishing a zero-count inventory.
+      const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8", env }).trim();
+      const bin = join(root, "bin");
+      mkdirSync(bin);
+      const quotedGit = "'" + realGit.replaceAll("'", "'\\''") + "'";
+      const fault = numstatFault === "malformed"
+        ? `${quotedGit} "$@" || exit $?\nprintf 'unparseable\\0'`
+        : `${quotedGit} "$@" >/dev/null`;
+      writeFileSync(join(bin, "git"), `#!/bin/sh\ncase " $* " in\n  *" --numstat "*) ${fault} ;;\n  *) exec ${quotedGit} "$@" ;;\nesac\n`, { mode: 0o755 });
+      cliEnvironment.PATH = `${bin}:${env.PATH}`;
+      return spawnSync(process.execPath, cliArgs, { encoding: "utf8", env: cliEnvironment });
+    }
+    const output = JSON.parse(execFileSync(process.execPath, cliArgs, {
+      encoding: "utf8",
+      env: cliEnvironment,
+      stdio: ["ignore", "pipe", "pipe"],
+    }));
+    return output;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
-  const orientationPath = join(root, "orientation.json");
-  writeFileSync(orientationPath, JSON.stringify({
-    repository: workspace,
-    grounding: "repository",
-    guidance: join(workspace, "README.md"),
-  }));
-  const cliArgs = [inputScriptPath, target, head];
-  if (occasion !== undefined) cliArgs.push(occasion);
-  const output = JSON.parse(execFileSync(process.execPath, cliArgs, {
-    encoding: "utf8",
-    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: workspace },
-    stdio: ["ignore", "pipe", "pipe"],
-  }));
-  rmSync(root, { recursive: true, force: true });
-  return output;
 }
 
 test("the input builder enumerates the diff and settles brief engagement deterministically", () => {
@@ -173,7 +175,7 @@ test("the input builder enumerates the diff and settles brief engagement determi
     engaged: true,
     via: "path-scope",
   });
-  assert.equal(input.guidance.content, "MINOS_SCOPE_COMMISSION_CORAL");
+  assert.deepEqual(input.guidance, [{ repository: null, path: "README.md", origin: "checked-in", content: "MINOS_SCOPE_COMMISSION_CORAL" }]);
   assert.equal(input.instructionBriefs[0].path, "workflows/review-briefs/scope.md");
   assert.match(input.instructionBriefs[0].content, /nothing-engages/);
 });
@@ -191,13 +193,6 @@ test("relevance-conditioned and misconfigured briefs settle conservatively", () 
   const misconfiguredInput = enumeratedArgs({ briefs: [misconfiguredBrief] });
   assert.equal(misconfiguredInput.briefsEngage, false);
   assert.equal(misconfiguredInput.briefDispositions[0].skipKind, "misconfigured-scope");
-  assert.deepEqual(misconfiguredInput.briefMisconfigurations, [{
-    brief: ".review/gone/tidy.md",
-    title: "Tidy",
-    member: "primary",
-    kind: "misconfigured-scope",
-    reason: "brief scope gone/ matches no repository directory",
-  }]);
 });
 
 test("a repository without .review/ yields an idle engagement record", () => {
@@ -219,54 +214,29 @@ test("a matched occasion engages the brief it opted in", () => {
   }]);
 });
 
-// --- disposition parity with the sandboxed brief workflow ---
 
-test("the Node dispositions match the brief workflow's own deterministic pass", async () => {
-  const briefs = [...settledBriefs, touchedScopeBrief].map((brief) => ({
-    ...brief,
-    readPath: `/workspace/${brief.path}`,
-  }));
-  const changedPaths = ["pkg/a.go"];
-  const engagement = briefEngagement(briefs, null, changedPaths);
-
-  const agent = async (_prompt, opts = {}) => {
-    assert.match(String(opts.label), /^repository-/, "only the engaged brief dispatches a specialist");
-    return {
-      applicability: { status: "applicable", reason: "the assigned change exercises the concern" },
-      findings: [],
-      outOfScopeObservations: [],
-    };
-  };
-  const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
-  const envelope = await briefWorkflow(agent, parallel, async (items) => items, () => {}, () => {}, {
-    target: "aaa111",
-    head: "bbb222",
-    workspace: "/workspace",
-    hasReviewDirectory: true,
-    changedPaths,
-    trackedFiles: changedPaths.map((path) => ({ path, bytes: 10 })),
-    briefs,
-    guidance: { grounding: "repository", path: "/workspace/AGENTS.md", content: "PARITY_GUIDANCE_CORAL" },
-    instructionBriefs: [
-      { path: "workflows/review-briefs/repository.md", readPath: "/x/repository.md", content: "R" },
-      { path: "workflows/review-briefs/verifier.md", readPath: "/x/verifier.md", content: "V" },
-    ],
-  });
-
-  const workflowSkips = envelope.briefs
-    .filter((entry) => entry.status === "skipped")
-    .map(({ brief, title, status, skipKind, reason }) => ({ brief, title, status, skipKind, reason }));
-  const moduleSkips = engagement.dispositions.filter((entry) => entry.status === "skipped");
-  assert.deepEqual(
-    workflowSkips.sort((a, b) => a.brief.localeCompare(b.brief)),
-    moduleSkips.sort((a, b) => a.brief.localeCompare(b.brief)),
-  );
-  assert.deepEqual(envelope.misconfigurations, engagement.misconfigurations);
-  assert.deepEqual(
-    envelope.dispatches.map((dispatch) => dispatch.brief),
-    engagement.dispositions.filter((entry) => entry.engaged).map((entry) => entry.brief),
-  );
+test("the scope inventory counts both sides of a renamed file", () => {
+  const input = enumeratedArgs({ rename: true, reviewDirectory: false });
+  assert.deepEqual(input.changedFiles, [
+    { path: "pkg/a.go", added: 0, deleted: 20 },
+    { path: "pkg/renamed.go", added: 22, deleted: 0 },
+  ]);
 });
+
+test("the scope builder refuses an unparseable numstat record with usage exit 2", () => {
+  const result = enumeratedArgs({ numstatFault: "malformed" });
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /unparseable git numstat record/);
+  assert.equal(result.stdout, "");
+});
+
+test("the scope builder refuses an inventory path without numstat counts", () => {
+  const result = enumeratedArgs({ numstatFault: "missing" });
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /git numstat omitted counts for pkg\/a.go/);
+  assert.equal(result.stdout, "");
+});
+
 
 // --- the gate workflow ---
 
@@ -279,7 +249,7 @@ test("nothing-engages returns a complete clean review envelope", async (t) => {
   ]);
   assert.equal(result.stage, "present");
   assert.deepEqual(result.requiredModelEvidence, [
-    { label: "review-scope", role: "scope", pinnedModel: "gpt-5.6-terra" },
+    { label: "review-scope", role: "scope", pinnedModel: "gpt-6-sol" },
   ]);
   assert.deepEqual(result.scopeDecision, {
     status: "nothing-engages",
@@ -289,7 +259,7 @@ test("nothing-engages returns a complete clean review envelope", async (t) => {
   assert.ok(result.briefs.every((entry) => entry.status === "skipped"));
   assert.equal(calls.length, 1);
   assert.equal(calls[0].opts.engine, "codex");
-  assert.equal(calls[0].opts.model, "gpt-5.6-terra");
+  assert.equal(calls[0].opts.model, "gpt-6-sol");
   assert.equal(calls[0].opts.effort, "medium");
   assert.match(calls[0].prompt, /SCOPE_ROLE_BRIEF_TEAL/);
   assert.match(calls[0].prompt, /SCOPE_TEST_COMMISSION_TEAL/);
@@ -299,7 +269,6 @@ test("nothing-engages returns a complete clean review envelope", async (t) => {
   assert.equal(verdict.status, "complete", (verdict.incomplete || []).join("\n"));
   assert.deepEqual(verdict.confirmedFindings, []);
   assert.equal(verdict.skipped.length, 4);
-  assert.equal(verdict.briefFixRequired, false);
 });
 
 test("review-required carries the leg's reason without changing the envelope shape", async () => {
@@ -334,7 +303,7 @@ test("an engaged brief answers review-required without spending a leg", async ()
 test("a scope-leg null still emits its required leg and falls back to review-required", async () => {
   const { result } = await runScript(workflowArgs(), () => null);
   assert.deepEqual(result.requiredModelEvidence, [
-    { label: "review-scope", role: "scope", pinnedModel: "gpt-5.6-terra" },
+    { label: "review-scope", role: "scope", pinnedModel: "gpt-6-sol" },
   ]);
   assert.deepEqual(result.reviewers, [{ label: "review-scope", role: "scope", status: "no-result" }]);
   assert.deepEqual(result.scopeDecision, {
@@ -344,79 +313,6 @@ test("a scope-leg null still emits its required leg and falls back to review-req
 });
 
 // --- the executable wrapper journey ---
-
-const preloadSource = String.raw`
-import childProcess from "node:child_process";
-import { EventEmitter } from "node:events";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
-import { join } from "node:path";
-import { PassThrough } from "node:stream";
-
-childProcess.spawn = function recordedSpawn(_command, _arguments, options) {
-  const envelope = JSON.parse(readFileSync(process.env.MINOS_SCOPE_ENVELOPE, "utf8"));
-  const recordDir = options.env.ENSEMBLE_RUN_RECORD_DIR;
-  writeFileSync(process.env.MINOS_SCOPE_RECORD, recordDir);
-  const archive = join(recordDir, "runs", "cwd", "scope", "run");
-  mkdirSync(join(archive, "agents"), { recursive: true });
-  writeFileSync(
-    join(archive, "manifest.json"),
-    JSON.stringify({ kind: "run_manifest", status: "complete" }),
-  );
-  envelope.requiredModelEvidence.forEach((leg, index) => {
-    const directory = join(archive, "agents", String(index + 1).padStart(6, "0"));
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(
-      join(directory, "agent.json"),
-      JSON.stringify({ label: leg.label, status: "complete" }),
-    );
-  });
-
-  const child = new EventEmitter();
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
-  setImmediate(() => {
-    child.stdout.end(JSON.stringify(envelope) + "\n");
-    child.stderr.end();
-    child.emit("close", 0, null);
-  });
-  return child;
-};
-syncBuiltinESMExports();
-`;
-
-function executableVerdict(t, envelope) {
-  const root = mkdtempSync(join(tmpdir(), "minos-scope-wrapper-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const envelopePath = join(root, "envelope.json");
-  const preloadPath = join(root, "record-ensemble.mjs");
-  const recordPath = join(root, "record-dir.txt");
-  const argsPath = join(root, "args.json");
-  const workflowPath = join(root, "review-scope.js");
-  writeFileSync(envelopePath, JSON.stringify(envelope));
-  writeFileSync(preloadPath, preloadSource);
-  writeFileSync(argsPath, "{}");
-  writeFileSync(workflowPath, "return {};\n");
-
-  const result = spawnSync(
-    wrapperPath,
-    [workflowPath, "--json-args", `@${argsPath}`],
-    {
-      cwd: workflowsDir,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
-        MINOS_SCOPE_ENVELOPE: envelopePath,
-        MINOS_SCOPE_RECORD: recordPath,
-      },
-    },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  const recordDir = readFileSync(recordPath, "utf8");
-  assert.equal(existsSync(recordDir), false, "the wrapper removes the consumed archive");
-  return JSON.parse(result.stdout);
-}
 
 test("the wrapper attaches a valid scope decision to the adjudicated verdict", async (t) => {
   const { result } = await runScript(workflowArgs(), () => scopeResult());
@@ -429,9 +325,11 @@ test("the wrapper attaches a valid scope decision to the adjudicated verdict", a
   assert.equal(verdict.skipped.length, 4);
   assert.deepEqual(verdict.confirmedFindings, []);
 
-  const digest = sweepDigest({ review: verdict });
-  assert.equal(digest.thresholdIndication, "terminal");
-  assert.deepEqual(digest.candidates, []);
+  const digest = verdictDigest({ review: verdict });
+  assert.equal(digest.status, "complete");
+  assert.equal(digest.thresholdIndication, "clean");
+  assert.deepEqual(digest.findings, []);
+  assert.deepEqual(digest.atOrAboveThresholdKeys, []);
 });
 
 test("verdicts for envelopes without a scope decision are unchanged", async (t) => {
@@ -456,10 +354,7 @@ test("the lifecycle runs the gate first and treats it as an optimisation, never 
     /Before the first review of a run[\s\S]*review-scope-inputs\.mjs[\s\S]*review-scope-args\.json/,
   );
   assert.match(lifecycle, /`briefsEngage`[\s\S]*skip\s+the gate workflow/);
-  assert.match(
-    lifecycle,
-    /review-scope\.js[\s\S]*--json-args[\s\S]*review-scope-result\.json/,
-  );
+  assert.match(lifecycle, /dispatch-stage" review-scope review-scope\.js/);
   assert.match(
     lifecycle,
     /`scopeDecision\.status` is `nothing-engages`[\s\S]*copy that\s+verdict to `\$MINOS_RUN_DIR\/review-result\.json`[\s\S]*without invoking the review workflow/,
@@ -467,6 +362,6 @@ test("the lifecycle runs the gate first and treats it as an optimisation, never 
   assert.match(lifecycle, /The gate is an\s+optimisation, never a blocker/);
   assert.match(
     lifecycle,
-    /engagement gate's\s+`nothing-engages` verdict[\s\S]*Do not build the brief input or launch the brief\s+workflow[\s\S]*`briefFixRequired` false/,
+    /engagement gate's\s+`nothing-engages` verdict[\s\S]*stage is already settled[\s\S]*nothing to run, judge, or publish/,
   );
 });

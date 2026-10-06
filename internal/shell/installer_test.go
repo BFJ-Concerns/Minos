@@ -9,8 +9,7 @@ import (
 
 // install-review-runtime must leave no orphan on the deployment target: a
 // workflow deleted from the source tree is gone from the destination after
-// the next install. Twice a torn-out workflow survived a deploy and needed
-// a manual sweep of /opt/minos/workflows — the installer only ever added.
+// the next install.
 
 func installerSourceRoot(t *testing.T) string {
 	t.Helper()

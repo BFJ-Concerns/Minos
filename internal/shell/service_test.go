@@ -1,22 +1,32 @@
 package shell
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
-	"bfj/minos/internal/forge"
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
-func TestAlreadyReviewedRequiresMinosReviewOnCurrentHead(t *testing.T) {
+func TestTerminalCurrentReviewMarksCompletion(t *testing.T) {
 	tests := []struct {
 		name    string
 		reviews []forge.Review
 		want    bool
 	}{
 		{
-			name:    "current head review blocks without status or product record",
-			reviews: []forge.Review{{User: "Minos", CommitID: "head", Body: "ordinary review"}},
+			name:    "approved review on the current head",
+			reviews: []forge.Review{{User: "Minos", CommitID: "head", State: "APPROVED"}},
 			want:    true,
+		},
+		{
+			name:    "comment review on the current head is not terminal",
+			reviews: []forge.Review{{User: "Minos", CommitID: "head", State: "COMMENT"}},
 		},
 		{
 			name:    "review from another account does not block",
@@ -32,91 +42,12 @@ func TestAlreadyReviewedRequiresMinosReviewOnCurrentHead(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := forge.Snapshot{HeadSHA: "head", Reviews: test.reviews}
-			if got := alreadyReviewed(snapshot, "Minos"); got != test.want {
-				t.Fatalf("alreadyReviewed() = %t, want %t", got, test.want)
+			review, found := currentReview(snapshot, "Minos")
+			_, terminal := terminalState(review)
+			if got := found && terminal; got != test.want {
+				t.Fatalf("current terminal review = %t, want %t", got, test.want)
 			}
 		})
-	}
-}
-
-func TestTrustedReviewSurvivesOnlyMinosAuthoredMovement(t *testing.T) {
-	snapshot := forge.Snapshot{HeadSHA: "current", Reviews: []forge.Review{{ID: 7, User: "Minos", CommitID: "reviewed", State: "APPROVED"}}}
-	for _, test := range []struct {
-		name   string
-		middle string
-		want   bool
-	}{
-		{name: "Minos-only movement", middle: "Minos", want: true},
-		{name: "foreign movement", middle: "contributor"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			commits := []forge.Commit{{SHA: "reviewed", Author: "contributor"}, {SHA: "middle", Author: test.middle}, {SHA: "current", Author: "Minos"}}
-			_, got := trustedReview(snapshot, commits, "Minos")
-			if got != test.want {
-				t.Fatalf("trustedReview() found = %t, want %t", got, test.want)
-			}
-		})
-	}
-}
-
-func TestCheckCausedVerdictIsSpentOnlyByTargetMovementOnANonFork(t *testing.T) {
-	review := forge.Review{
-		State: "REQUEST_CHANGES",
-		Body:  "Required checks failed.\n\n<!-- Minos: cause=required-checks head=head target=old-target -->",
-	}
-	for _, test := range []struct {
-		name     string
-		snapshot forge.Snapshot
-		want     bool
-	}{
-		{
-			name: "moved target in the same repository",
-			snapshot: forge.Snapshot{
-				TargetSHA: "new-target", HeadRepository: "owner/repo", TargetRepository: "owner/repo",
-			},
-			want: true,
-		},
-		{
-			name: "unchanged target",
-			snapshot: forge.Snapshot{
-				TargetSHA: "old-target", HeadRepository: "owner/repo", TargetRepository: "owner/repo",
-			},
-		},
-		{
-			name: "fork target movement",
-			snapshot: forge.Snapshot{
-				TargetSHA: "new-target", HeadRepository: "contributor/repo", TargetRepository: "owner/repo",
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := checkCausedVerdictSpent(review, test.snapshot); got != test.want {
-				t.Fatalf("checkCausedVerdictSpent() = %t, want %t", got, test.want)
-			}
-		})
-	}
-
-	findingsReview := review
-	findingsReview.Body = "Confirmed findings remain.\n\n<!-- Minos: head=head target=old-target -->"
-	if checkCausedVerdictSpent(findingsReview, forge.Snapshot{
-		TargetSHA: "new-target", HeadRepository: "owner/repo", TargetRepository: "owner/repo",
-	}) {
-		t.Fatal("findings-caused verdict was spent by target movement")
-	}
-
-	chainWaitReview := forge.Review{
-		State: "APPROVED",
-		Body:  "Waiting for the preceding member.\n\n<!-- Minos: cause=chain-wait head=head target=old-target -->",
-	}
-	if !checkCausedVerdictSpent(chainWaitReview, forge.Snapshot{
-		TargetSHA: "new-target", HeadRepository: "owner/repo", TargetRepository: "owner/repo",
-	}) {
-		t.Fatal("chain-wait approval was not spent by target movement")
-	}
-	if checkCausedVerdictSpent(chainWaitReview, forge.Snapshot{
-		TargetSHA: "old-target", HeadRepository: "owner/repo", TargetRepository: "owner/repo",
-	}) {
-		t.Fatal("chain-wait approval was spent before its target moved")
 	}
 }
 
@@ -129,7 +60,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "incomplete current head",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: "forgejo", Context: "Minos",
 				Creator: "Minos", Description: product.Incomplete().Description(),
 			}},
 			want: 0,
@@ -137,7 +68,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "working current head",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: "forgejo", Context: "Minos",
 				Creator: "Minos", Description: product.Working().Description(),
 			}},
 			want: 0,
@@ -145,7 +76,7 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "continued current head",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: "forgejo", Context: "Minos",
 				Creator: "Minos", Description: product.Continuation().Description(),
 			}},
 			want: 0,
@@ -153,39 +84,17 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 		{
 			name: "other account does not claim continuation",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: "forgejo", Context: "Minos",
 				Creator: "SomeBot", Description: product.Incomplete().Description(),
-			}},
-			want: 1,
-		},
-		{
-			name: "held status is not unfinished",
-			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-				Creator: "Minos", Description: product.Held().Description(),
 			}},
 			want: 1,
 		},
 		{
 			name: "clean terminal status is not unfinished",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
+				Provider: "forgejo", Context: "Minos",
 				Creator: "Minos", Description: product.Clean().Description(),
 			}},
-			want: 1,
-		},
-		{
-			name: "later terminal status supersedes an incomplete status",
-			statuses: []forge.Status{
-				{
-					ID: 11, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-					Creator: "Minos", Description: product.Incomplete().Description(),
-				},
-				{
-					ID: 12, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-					Creator: "Minos", Description: product.Merged().Description(),
-				},
-			},
 			want: 1,
 		},
 	}
@@ -193,19 +102,18 @@ func TestContinuationPriorityPrefersAnUnfinishedMinosRun(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := forge.Snapshot{Statuses: test.statuses}
-			if got := continuationPriority(snapshot, "Minos"); got != test.want {
+			if got := continuationPriority(snapshot, "Minos", "Minos"); got != test.want {
 				t.Fatalf("continuationPriority() = %d, want %d", got, test.want)
 			}
 		})
 	}
 }
 
-func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
-	const targetURL = "https://forge.example/owner/repo/pulls/1#minos-target-base"
-	ownedStatus := func(id int64, description string) forge.Status {
+func TestAdmissionCompletionStatuses(t *testing.T) {
+	ownedStatus := func(id int64, state forge.StatusState, description string) forge.Status {
 		return forge.Status{
-			ID: id, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-			Creator: "Minos", Description: description, TargetURL: targetURL,
+			ID: id, Provider: "forgejo", Context: "Minos",
+			Creator: "Minos", State: state, Description: description,
 		}
 	}
 	tests := []struct {
@@ -213,62 +121,25 @@ func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
 		statuses []forge.Status
 		want     bool
 	}{
-		{name: "clean status completes the run", statuses: []forge.Status{ownedStatus(1, product.Clean().Description())}, want: true},
-		{name: "attention status completes the run", statuses: []forge.Status{ownedStatus(1, product.Attention().Description())}, want: true},
-		{name: "merged status completes the run", statuses: []forge.Status{ownedStatus(1, product.Merged().Description())}, want: true},
-		{
-			name: "held status bound to the current environment completes the run",
-			statuses: []forge.Status{{
-				ID: 1, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-				Creator: "Minos", Description: product.Held().Description(),
-				TargetURL: targetURL + "+minos-env-currentstamp",
-			}},
-			want: true,
-		},
-		{
-			name: "held status bound to an older environment is spent",
-			statuses: []forge.Status{{
-				ID: 1, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-				Creator: "Minos", Description: product.Held().Description(),
-				TargetURL: targetURL + "+minos-env-olderstamp",
-			}},
-		},
-		{name: "legacy held status with no environment binding is spent", statuses: []forge.Status{ownedStatus(1, product.Held().Description())}},
-		{name: "incomplete status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Incomplete().Description())}},
-		{name: "working status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Working().Description())}},
-		{name: "continuation status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, product.Continuation().Description())}},
+		{name: "clean status completes the run", statuses: []forge.Status{ownedStatus(1, forge.StatusSuccess, product.Clean().Description())}, want: true},
+		{name: "attention status completes the run", statuses: []forge.Status{ownedStatus(1, forge.StatusFailure, product.Attention().Description())}, want: true},
+		{name: "clean description with failure state leaves the head eligible", statuses: []forge.Status{ownedStatus(1, forge.StatusFailure, product.Clean().Description())}},
+		{name: "attention description with success state leaves the head eligible", statuses: []forge.Status{ownedStatus(1, forge.StatusSuccess, product.Attention().Description())}},
+		{name: "incomplete status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, forge.StatusError, product.Incomplete().Description())}},
+		{name: "working status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, forge.StatusPending, product.Working().Description())}},
+		{name: "continuation status leaves the head eligible", statuses: []forge.Status{ownedStatus(1, forge.StatusPending, product.Continuation().Description())}},
 		{
 			name: "later working status supersedes an older clean marker",
 			statuses: []forge.Status{
-				ownedStatus(11, product.Clean().Description()),
-				ownedStatus(12, product.Working().Description()),
+				ownedStatus(11, forge.StatusSuccess, product.Clean().Description()),
+				ownedStatus(12, forge.StatusPending, product.Working().Description()),
 			},
-		},
-		{
-			name: "newer foreign status does not mask this pull request's clean marker",
-			statuses: []forge.Status{
-				ownedStatus(11, product.Clean().Description()),
-				{
-					ID: 12, Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-					Creator: "Minos", Description: product.Working().Description(),
-					TargetURL: "https://forge.example/owner/repo/pulls/2#minos-target-base",
-				},
-			},
-			want: true,
 		},
 		{
 			name: "another account's clean status is not a marker",
 			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-				Creator: "SomeBot", Description: product.Clean().Description(),
-			}},
-		},
-		{
-			name: "another pull request's clean status is not a marker",
-			statuses: []forge.Status{{
-				Provider: forge.ForgejoProvider, Context: forge.OwnedStatusContext,
-				Creator: "Minos", Description: product.Clean().Description(),
-				TargetURL: "https://forge.example/owner/repo/pulls/2#minos-target-base",
+				Provider: "forgejo", Context: "Minos",
+				Creator: "SomeBot", State: forge.StatusSuccess, Description: product.Clean().Description(),
 			}},
 		},
 		{name: "no statuses"},
@@ -276,29 +147,99 @@ func TestCompletedRunStatusMarksCleanAttentionAndMergedHeads(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			snapshot := forge.Snapshot{Statuses: test.statuses}
-			if got := completedRunStatus(snapshot, "Minos", targetURL, "currentstamp"); got != test.want {
-				t.Fatalf("completedRunStatus() = %t, want %t", got, test.want)
+			snapshot := forge.Snapshot{Statuses: test.statuses, DependenciesAvailable: true}
+			cfg := ServiceConfig{}
+			cfg.Service.BotLogin = "Minos"
+			cfg.Service.StatusContext = "Minos"
+			got := assessPullRequestAdmission(cfg, RepoConfig{}, snapshot)
+			if got.completedRun != test.want {
+				t.Fatalf("admission completedRun = %t, want %t", got.completedRun, test.want)
 			}
 		})
 	}
 }
 
-func TestProvingPullRequestReadsTheMarkerURL(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		targetURL string
-		want      string
-	}{
-		{name: "plain marker url", targetURL: "https://forge.example/owner/repo/pulls/205", want: "#205"},
-		{name: "trailing fragment", targetURL: "https://forge.example/owner/repo/pulls/205#minos-target-abc", want: "#205"},
-		{name: "no pull request segment", targetURL: "https://forge.example/owner/repo"},
-		{name: "empty", targetURL: ""},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := provingPullRequest(test.targetURL); got != test.want {
-				t.Fatalf("provingPullRequest(%q) = %q, want %q", test.targetURL, got, test.want)
-			}
-		})
+func TestContinuationSuccessorSetupDeathKeepsSweepPriority(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+	t.Setenv("MINOS_PR", facts.PR)
+	facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
+	var stdout strings.Builder
+	if err := ForgeCommand(t.Context(), []string{"status", facts.HeadSHA, facts.BaseSHA, "continuation"}, &stdout); err != nil {
+		t.Fatal(err)
+	}
+	if priority, err := currentContinuationPriority(t.Context(), cfg, facts); err != nil || priority != 0 {
+		t.Fatalf("predecessor continuation priority = %d, err=%v", priority, err)
+	}
+
+	// Drive the real setup failure. The stand-in transports the command's
+	// arguments; only ForgeCommand and the real adaptation write forge state.
+	fixture := newRunBodyFixture(t)
+	calls := filepath.Join(fixture.root, "setup-status-command")
+	writer := filepath.Join(fixture.root, "record-forge-command")
+	writeScript(t, writer, fmt.Sprintf("#!/usr/bin/env sh\nfor argument do printf '%%s\\n' \"$argument\"; done >%s\n", strconv.Quote(calls)))
+	setup := filepath.Join(fixture.root, "failing-setup")
+	writeScript(t, setup, "#!/usr/bin/env sh\nexit 19\n")
+	fixture.appendConfig(t, map[string]string{"MINOS_BIN": writer, "MINOS_SETUP_WORKSPACE": setup})
+	copyFixtureFile(t, filepath.Join(cfg.Root, "service.toml"), filepath.Join(fixture.configRoot, "service.toml"), 0o600)
+	output, err := fixture.execute(map[string]string{
+		"MINOS_FORGE": facts.Forge, "MINOS_OWNER": facts.Owner,
+		"MINOS_REPO_NAME": facts.Repo, "MINOS_PR": facts.PR,
+		"MINOS_HEAD_SHA": facts.HeadSHA, "MINOS_TARGET_SHA": facts.BaseSHA,
+	})
+	exit, ok := err.(*exec.ExitError)
+	if !ok || exit.ExitCode() != 19 {
+		t.Fatalf("setup successor exit = %v, want 19\n%s", err, output)
+	}
+	if recorded, err := os.ReadFile(calls); !os.IsNotExist(err) {
+		t.Fatalf("setup death wrote a forge command: %q (%v)", recorded, err)
+	}
+	if posts := state.statusPostFacts(); len(posts) != 1 {
+		t.Fatalf("status posts = %#v, want only predecessor continuation", posts)
+	}
+	priority, err := currentContinuationPriority(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priority != 0 {
+		t.Errorf("setup-dead continuation successor priority = %d, want 0", priority)
+	}
+	fresh := Facts{Owner: facts.Owner, Repo: "fresh", PR: facts.PR}
+	ordered := orderSweepCandidates([]sweepCandidate{{facts: fresh, priority: 1}, {facts: facts, priority: priority}}, nil)
+	if ordered[0].facts != facts {
+		t.Errorf("front of sweep queue = %s, want setup-dead successor %s", ordered[0].facts.RepoSlug(), facts.RepoSlug())
+	}
+}
+
+func TestDeployedSetupFailureKeepsSweepPriority(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, repo, facts := state.service(t)
+	facts.HeadSHA = state.headSHA()
+	state.setStatuses([]map[string]any{{
+		"id": 9, "context": "Minos", "status": "error",
+		"description": "Review incomplete: setup failed at workspace-setup",
+		"creator":     map[string]any{"login": "Minos"},
+	}})
+	snapshot, err := currentSnapshot(t.Context(), cfg, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := assessPullRequestAdmission(cfg, repo, snapshot)
+	if admission.completedRun || admission.workInProgress || admission.dependencyDeferred {
+		t.Fatalf("deployed setup failure changed admission: %#v", admission)
+	}
+	priority, err := currentContinuationPriority(t.Context(), cfg, facts)
+	if err != nil || priority != 0 {
+		t.Fatalf("deployed setup failure priority = %d, err=%v, want 0", priority, err)
+	}
+	fresh := Facts{Forge: facts.Forge, Owner: facts.Owner, Repo: "fresh", PR: facts.PR}
+	ordered := orderSweepCandidates([]sweepCandidate{{facts: fresh, priority: 1}, {facts: facts, priority: priority}}, nil)
+	if ordered[0].facts != facts {
+		t.Fatalf("front of sweep queue = %s, want deployed setup failure %s", ordered[0].facts.RepoSlug(), facts.RepoSlug())
 	}
 }

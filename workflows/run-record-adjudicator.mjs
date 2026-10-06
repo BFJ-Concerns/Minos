@@ -1,7 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { memberIdsFrom } from "./member-record.mjs";
-import { REVIEW_BODIES, findingComment } from "./finding-presentation.mjs";
 
 const LOW_COMBINED_CONFIDENCE = 70;
 
@@ -32,16 +30,6 @@ function reviewedFrom(envelope) {
   };
 }
 
-function memberIdsFor(envelope, incomplete) {
-  if (envelope && envelope.members === undefined) return new Set(["primary"]);
-  const ids = memberIdsFrom(envelope && envelope.members);
-  if (!ids) {
-    incomplete.push("envelope members record is absent or malformed");
-    return null;
-  }
-  return ids;
-}
-
 function emptyVerdict(envelope, reason) {
   return {
     status: "incomplete",
@@ -51,11 +39,9 @@ function emptyVerdict(envelope, reason) {
     infrastructureFailure: null,
     confirmedFindings: [],
     operatorAttention: [],
-    reviewBody: null,
     ran: [],
     skipped: [],
     misconfigurations: [],
-    briefFixRequired: false,
     modelEvidence: [],
   };
 }
@@ -156,9 +142,8 @@ function dispositionsFrom(briefs, incomplete) {
   return { ran, skipped };
 }
 
-function misconfigurationsFrom(entries, incomplete, memberIds) {
+function misconfigurationsFrom(entries, incomplete) {
   const misconfigurations = [];
-  const effectiveMemberIds = memberIds || new Set(["primary"]);
   for (const entry of entries) {
     if (
       !entry || typeof entry !== "object" ||
@@ -170,17 +155,9 @@ function misconfigurationsFrom(entries, incomplete, memberIds) {
       incomplete.push("envelope contains a malformed brief misconfiguration");
       continue;
     }
-    const member = typeof entry.member === "string" && entry.member !== ""
-      ? entry.member
-      : effectiveMemberIds.size === 1 ? [...effectiveMemberIds][0] : null;
-    if (!member || !effectiveMemberIds.has(member)) {
-      incomplete.push("envelope brief misconfiguration has absent or unknown member attribution");
-      continue;
-    }
     misconfigurations.push({
       brief: entry.brief,
       title: entry.title,
-      member,
       kind: entry.kind,
       reason: entry.reason,
     });
@@ -330,19 +307,9 @@ export async function adjudicate({ envelope, recordDir }) {
 
   const evidenceByLabel = new Map(modelEvidence.map((entry) => [entry.label, entry]));
   const proposedFindings = Array.isArray(envelope.proposedFindings) ? envelope.proposedFindings : [];
-  const memberIds = envelope.members === undefined && proposedFindings.length === 0
-    ? null
-    : memberIdsFor(envelope, incomplete);
   const adjudicated = proposedFindings.map((proposed, index) => {
     if (!validProposedFinding(proposed)) {
       incomplete.push(`proposed finding ${index + 1} is absent or malformed`);
-      return null;
-    }
-    const member = proposed.member === undefined && envelope.members === undefined
-      ? "primary"
-      : proposed.member;
-    if (!memberIds || !memberIds.has(member)) {
-      incomplete.push(`proposed finding ${index + 1} has an absent or unknown member attribution`);
       return null;
     }
     const reviewEvidence = evidenceByLabel.get(proposed.proposingLabel);
@@ -372,7 +339,14 @@ export async function adjudicate({ envelope, recordDir }) {
     const { proposingLabel, verifyLabel, rawVerifier: omittedVerifier, ...finding } = proposed;
     return {
       ...finding,
-      member,
+      proposingModel: reviewEvidence && {
+        pinnedModel: reviewEvidence.pinnedModel,
+        resolvedModel: reviewEvidence.resolvedModel,
+      },
+      verifyingModel: verifyEvidence && {
+        pinnedModel: verifyEvidence.pinnedModel,
+        resolvedModel: verifyEvidence.resolvedModel,
+      },
       verifierConfidence: rawVerifier && Number.isInteger(rawVerifier.confidence) ? rawVerifier.confidence : null,
       combinedConfidence,
       verdict,
@@ -386,7 +360,6 @@ export async function adjudicate({ envelope, recordDir }) {
   const misconfigurations = misconfigurationsFrom(
     Array.isArray(envelope.misconfigurations) ? envelope.misconfigurations : [],
     incomplete,
-    memberIds,
   );
   const complete = incomplete.length === 0;
   const confirmedFindings = complete ? adjudicated.filter((finding) => finding.verdict === "confirmed") : [];
@@ -398,43 +371,18 @@ export async function adjudicate({ envelope, recordDir }) {
       combinedConfidence: finding.combinedConfidence,
       threshold: LOW_COMBINED_CONFIDENCE,
     }));
-  const comments = confirmedFindings.map(findingComment);
-  const isBriefReview = Array.isArray(envelope.dispatches) &&
-    envelope.dispatches.some((dispatch) => dispatch && typeof dispatch.brief === "string");
-  const memberReviews = complete && !isBriefReview && Array.isArray(envelope.members) && memberIds
-    ? [...memberIds].map((member) => {
-      const findings = confirmedFindings.filter((finding) => finding.member === member);
-      return {
-        member,
-        verdict: "comment",
-        body: findings.length > 0 ? REVIEW_BODIES.findings : REVIEW_BODIES.clean,
-        comments: findings.map(findingComment),
-        status: findings.length > 0 ? "attention" : "clean",
-      };
-    })
-    : [];
 
   return {
     status: complete ? "complete" : "incomplete",
     complete,
     reviewed: reviewedFrom(envelope),
-    members: Array.isArray(envelope.members) ? envelope.members : undefined,
     incomplete,
     infrastructureFailure: null,
     confirmedFindings,
     operatorAttention,
-    reviewBody: complete && comments.length > 0
-      ? {
-          verdict: "comment",
-          body: isBriefReview ? REVIEW_BODIES.brief : REVIEW_BODIES.findings,
-          comments,
-        }
-      : null,
-    memberReviews,
     ran,
     skipped,
     misconfigurations,
-    briefFixRequired: isBriefReview && complete && confirmedFindings.length > 0,
     modelEvidence,
   };
 }

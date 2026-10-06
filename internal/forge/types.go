@@ -8,16 +8,6 @@ import (
 	"io"
 )
 
-const (
-	ForgejoProvider    = "forgejo"
-	OwnedStatusContext = "Minos"
-	// TargetStatusContext marks a target commit whose own gate a run has
-	// proven broken. It is separate from OwnedStatusContext because the
-	// marker lands on the target commit, which is usually some merged pull
-	// request's head and already carries that pull request's Minos status.
-	TargetStatusContext = "Minos / target"
-)
-
 type Repository struct {
 	Owner string
 	Name  string
@@ -33,27 +23,20 @@ type Guard struct {
 type StatusState string
 
 const (
-	StatusAbsent    StatusState = "absent"
-	StatusQueued    StatusState = "queued"
-	StatusPending   StatusState = "pending"
-	StatusSuccess   StatusState = "success"
-	StatusFailure   StatusState = "failure"
-	StatusError     StatusState = "error"
-	StatusCancelled StatusState = "cancelled"
-	StatusTimeout   StatusState = "timeout"
-	StatusNeutral   StatusState = "neutral"
-	StatusSkipped   StatusState = "skipped"
+	StatusPending StatusState = "pending"
+	StatusSuccess StatusState = "success"
+	StatusFailure StatusState = "failure"
+	StatusError   StatusState = "error"
 )
 
 type Status struct {
-	ID                  int64       `json:"id"`
-	Provider            string      `json:"provider"`
-	Context             string      `json:"context"`
-	State               StatusState `json:"state"`
-	Creator             string      `json:"creator"`
-	Description         string      `json:"description"`
-	TargetURL           string      `json:"target_url"`
-	ProtectionSatisfied bool        `json:"protection_satisfied"`
+	ID          int64       `json:"id"`
+	Provider    string      `json:"provider"`
+	Context     string      `json:"context"`
+	State       StatusState `json:"state"`
+	Creator     string      `json:"creator"`
+	Description string      `json:"description"`
+	TargetURL   string      `json:"target_url"`
 }
 
 type Review struct {
@@ -64,63 +47,49 @@ type Review struct {
 	User     string `json:"user"`
 }
 
-type IssueComment struct {
-	ID   int64  `json:"id"`
-	Body string `json:"body"`
-	User string `json:"user"`
-}
-
-type Commit struct {
-	SHA    string `json:"sha"`
-	Author string `json:"author"`
-}
-
 type Dependency struct {
 	Repository string `json:"repository"`
 	Number     int64  `json:"number"`
 }
 
 type Snapshot struct {
-	AuthenticatedUser     string          `json:"authenticated_user"`
-	Repository            string          `json:"repository"`
-	PullRequest           int64           `json:"pull_request"`
-	State                 string          `json:"state"`
-	Merged                bool            `json:"merged"`
-	Draft                 bool            `json:"draft"`
-	Author                string          `json:"author"`
-	Mergeable             bool            `json:"mergeable"`
-	HeadSHA               string          `json:"head_sha"`
-	HeadBranch            string          `json:"head_branch"`
-	HeadRepository        string          `json:"head_repository"`
-	TargetSHA             string          `json:"target_sha"`
-	TargetBranch          string          `json:"target_branch"`
-	TargetRepository      string          `json:"target_repository"`
-	DefaultBranch         string          `json:"default_branch"`
-	SourceProtected       bool            `json:"source_protected"`
-	CanMerge              bool            `json:"can_merge"`
-	TargetSyncMethod      string          `json:"target_sync_method"`
-	RequiredChecks        []CheckIdentity `json:"required_checks"`
-	FailedChecks          []CheckIdentity `json:"failed_checks"`
-	Statuses              []Status        `json:"statuses"`
-	Labels                []string        `json:"labels"`
-	Reviews               []Review        `json:"reviews"`
-	DependenciesAvailable bool            `json:"dependencies_available"`
-	DependencyError       string          `json:"dependency_error,omitempty"`
-	OpenDependencies      []Dependency    `json:"open_dependencies"`
-	AllowedMergeMethods   []MergeMethod   `json:"allowed_merge_methods"`
-
-	CheckDecision CheckDecision `json:"check_decision"`
+	AuthenticatedUser     string       `json:"authenticated_user"`
+	Repository            string       `json:"repository"`
+	PullRequest           int64        `json:"pull_request"`
+	State                 string       `json:"state"`
+	Merged                bool         `json:"merged"`
+	Draft                 bool         `json:"draft"`
+	Author                string       `json:"author"`
+	HeadSHA               string       `json:"head_sha"`
+	HeadBranch            string       `json:"head_branch"`
+	HeadRepository        string       `json:"head_repository"`
+	Title                 string       `json:"title"`
+	Body                  string       `json:"body"`
+	TargetSHA             string       `json:"target_sha"`
+	TargetBranch          string       `json:"target_branch"`
+	TargetRepository      string       `json:"target_repository"`
+	Statuses              []Status     `json:"statuses"`
+	Labels                []string     `json:"labels"`
+	Reviews               []Review     `json:"reviews"`
+	DependenciesAvailable bool         `json:"dependencies_available"`
+	DependencyError       string       `json:"dependency_error,omitempty"`
+	OpenDependencies      []Dependency `json:"open_dependencies"`
 }
 
-type MergeMethod string
+// RepositoryMetadata is what a forge says about a repository a run clones:
+// where it clones from and which branch is its default.
+type RepositoryMetadata struct {
+	CloneURL      string `json:"clone_url"`
+	DefaultBranch string `json:"default_branch"`
+}
 
-const (
-	MergeMethodMerge       MergeMethod = "merge"
-	MergeMethodRebase      MergeMethod = "rebase"
-	MergeMethodRebaseMerge MergeMethod = "rebase-merge"
-	MergeMethodSquash      MergeMethod = "squash"
-	MergeMethodFastForward MergeMethod = "fast-forward-only"
-)
+// CloneCredential is the HTTPS git credential the forge's adaptation derives
+// from its credential file. The password is a secret: callers hand it to git
+// through the environment and never print, log or persist it.
+type CloneCredential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
 
 type ReviewVerdict string
 
@@ -147,19 +116,6 @@ type reviewWritePayload struct {
 	Comments []ReviewComment `json:"comments"`
 }
 
-type CheckIdentity struct {
-	Provider string `json:"provider"`
-	Context  string `json:"context"`
-}
-
-type CheckDecision string
-
-const (
-	ChecksPass    CheckDecision = "pass"
-	ChecksPending CheckDecision = "pending"
-	ChecksFail    CheckDecision = "fail"
-)
-
 type WriteOutcome string
 
 const (
@@ -172,7 +128,7 @@ const (
 type WriteResult struct {
 	Outcome WriteOutcome `json:"outcome"`
 	Reason  string       `json:"reason,omitempty"`
-	SHA     string       `json:"sha,omitempty"`
+	Written *int         `json:"written,omitempty"`
 }
 
 type RunRequest struct {

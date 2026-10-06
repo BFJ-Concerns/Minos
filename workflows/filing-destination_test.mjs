@@ -1,0 +1,650 @@
+import "./isolate-from-live-run.mjs";
+import assert from "node:assert/strict";
+import test from "node:test";
+import { execFileSync, spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { issueLogEntry } from "./finding-presentation.mjs";
+
+import { appendFilingEntries, deliverFilingEntries, filingMarker, validFilingDestination } from "./filing-destination.mjs";
+
+// The filing drives real git against a bare "origin" the test owns and a
+// fixture forge that answers the repository lookup, so what these tests
+// prove is the delivered shape: an entry lands in the named file on the
+// destination's default branch, once, under the configured identity, and a
+// failed delivery leaves the material in the run record with no fallback.
+
+const fileTriageCli = fileURLToPath(new URL("./file-triage.mjs", import.meta.url));
+const pushGuard = fileURLToPath(new URL("../scripts/run-body/pre-push-guard", import.meta.url));
+const identity = { name: "Review Bot", email: "review-bot@example.invalid" };
+const source = { owner: "owner", repo: "repository", pr: "17", date: "2026-09-12" };
+const reviewedRepository = "owner/repository";
+const protection = { headBranch: "feature", pushGuard };
+
+function git(directory, ...args) {
+  return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+// The CLI answers its forge lookup against a server in this process, so it
+// runs asynchronously: a synchronous spawn would block the loop the fixture
+// forge needs to reply on.
+function runCli(args, env) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [fileTriageCli, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+// The filing reaches the forge through the run's minos binary, which runs
+// the real Forgejo adaptation against the fixture forge; it is built once.
+let builtMinos = null;
+function minosBinary() {
+  if (builtMinos) return builtMinos;
+  const directory = mkdtempSync(join(tmpdir(), "filing-minos-"));
+  process.on("exit", () => rmSync(directory, { recursive: true, force: true }));
+  builtMinos = join(directory, "minos");
+  execFileSync("go", ["build", "-o", builtMinos, "./cmd/minos"], { cwd: fileURLToPath(new URL("../", import.meta.url)) });
+  return builtMinos;
+}
+
+// The authenticated origin runs in its own process: the filing's git runs
+// synchronously, so a server on this process's loop could never answer it.
+const gitServerFixture = fileURLToPath(new URL("./authenticated-git-server-fixture.mjs", import.meta.url));
+function authenticatedGitServer(t, root, credential) {
+  const log = join(root, "git-requests.log");
+  writeFileSync(log, "");
+  const child = spawn(process.execPath, [gitServerFixture, root, credential.username, credential.password, log], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => child.kill());
+  return new Promise((resolve, reject) => {
+    let announced = "";
+    child.on("exit", (code) => reject(new Error(`git server fixture exited with ${code}`)));
+    child.stdout.on("data", (chunk) => {
+      announced += chunk;
+      if (!announced.includes("\n")) return;
+      resolve({
+        url: announced.trim(),
+        requests: () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)),
+      });
+    });
+  });
+}
+
+function listen(server) {
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}`)));
+}
+
+// A destination repository with a bare origin served over authenticated
+// HTTP, and a fixture forge whose repository lookup names that origin as
+// the clone URL. The run's forge is configured as the service exports it:
+// the compiled minos binary, a service.toml naming the Forgejo adaptation
+// and the fixture forge, and the forge's token. gitCredential is what the
+// origin accepts; by default the token the Forgejo adaptation reports.
+async function destinationFixture(t, {
+  issues = "# Issues\n\n- An existing entry.\n", branch = "main", repositories = ["owner/plans"],
+  token = "forge-token", gitCredential = { username: "minos", password: token },
+} = {}) {
+  const scratch = mkdtempSync(join(tmpdir(), "filing-destination-"));
+  const origin = join(scratch, "origin.git");
+  const seed = join(scratch, "seed");
+  execFileSync("git", ["init", "--quiet", "--bare", `--initial-branch=${branch}`, origin]);
+  execFileSync("git", ["init", "--quiet", `--initial-branch=${branch}`, seed]);
+  git(seed, "config", "user.name", "Seed");
+  git(seed, "config", "user.email", "seed@example.invalid");
+  writeFileSync(join(seed, "README.md"), "# Plans\n");
+  if (issues !== null) writeFileSync(join(seed, "ISSUES.md"), issues);
+  git(seed, "add", ".");
+  git(seed, "commit", "--quiet", "-m", "seed");
+  git(seed, "push", "--quiet", origin, branch);
+  const gitServer = await authenticatedGitServer(t, scratch, gitCredential);
+  const cloneURL = `${gitServer.url}/origin.git`;
+  const lookups = [];
+  const forge = createServer((request, response) => {
+    lookups.push({ url: request.url, authorization: request.headers.authorization || null });
+    const repository = repositories.find((name) => request.url === `/api/v1/repos/${name}`);
+    if (!repository) {
+      response.writeHead(404);
+      response.end("not found");
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ clone_url: cloneURL, default_branch: branch }));
+  });
+  const apiBase = await listen(forge);
+  const tokenFile = join(scratch, "forge.token");
+  writeFileSync(tokenFile, token === "" ? "\n" : `${token}\n`, { mode: 0o600 });
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  writeFileSync(join(scratch, "service.toml"), `
+[service]
+bot-login = "Review Bot"
+[listener]
+bind = "127.0.0.1:0"
+[runs]
+dir = "${scratch}"
+[forges.forgejo]
+adaptation = "${join(root, "scripts", "adaptations", "forgejo")}"
+api-base = "${apiBase}"
+credential-file = "${tokenFile}"
+webhook-secret-file = "${tokenFile}"
+`);
+  const forgeEnvironment = { MINOS_BIN: minosBinary(), MINOS_CONFIG: scratch, MINOS_FORGE: "forgejo" };
+  const previous = Object.fromEntries(Object.keys(forgeEnvironment).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, forgeEnvironment);
+  t.after(() => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    forge.close();
+    rmSync(scratch, { recursive: true, force: true });
+  });
+  const runDir = join(scratch, "run");
+  return {
+    scratch, origin, seed, lookups, runDir, forgeEnvironment, gitRequests: gitServer.requests,
+    originFile: (path = "ISSUES.md") => git(seed, "--git-dir", origin, "show", `${branch}:${path}`),
+    deliver: (overrides) => deliverFilingEntries({
+      destination: { kind: "file", repository: "owner/plans", path: "ISSUES.md" },
+      entries: [advisory],
+      source, reviewedRepository, runDir, identity, protection,
+      ...overrides,
+    }),
+  };
+}
+
+const advisory = {
+  kind: "advisory-finding",
+  id: "specialist-2:1",
+  title: "Lost update on concurrent write",
+  severity: "Medium",
+  path: "internal/store.go",
+  line: 41,
+  explanation: "Two writers read the same revision and the later write wins silently.",
+};
+const observation = {
+  kind: "out-of-scope-observation",
+  id: "specialist-1:observation:1",
+  title: "Unrelated nil deref",
+  path: "pkg/server.go",
+  line: 12,
+  explanation: "A nil map write outside the reviewed range.",
+};
+const misconfiguration = {
+  kind: "review-brief-misconfiguration",
+  brief: ".review/security.md",
+  title: "Security brief",
+  reason: "declared scope directory does not exist",
+};
+
+test("the file kind appends to the named repository's default branch, committed under the configured identity", async (t) => {
+  const fixture = await destinationFixture(t, { branch: "trunk" });
+  const outcome = await fixture.deliver({ entries: [advisory, observation, misconfiguration] });
+  assert.deepEqual(outcome, { kind: "file", outcome: "filed", written: 2, location: "owner/plans:ISSUES.md" });
+  const issues = fixture.originFile();
+  assert.match(issues, /^# Issues\n\n- An existing entry\.\n/);
+  assert.match(issues, /\n- \*\*Advisory · Medium: Lost update on concurrent write\*\* \(`internal\/store\.go:41`\)[^\n]*Filed by Review Bot from owner\/repository#17, 2026-09-12\. <!-- minos:[A-Za-z0-9_-]+ -->\n/);
+  assert.doesNotMatch(issues, /Unrelated nil deref|Unverified observation/);
+  assert.match(issues, /\n- \*\*Review brief misconfiguration: Security brief\*\* \(`\.review\/security\.md`\)/);
+  const log = git(fixture.seed, "--git-dir", fixture.origin, "log", "-1", "--format=%an <%ae> %s", "trunk");
+  assert.equal(log.trim(), "Review Bot <review-bot@example.invalid> issues: record review material for triage");
+  assert.deepEqual(fixture.lookups.map((lookup) => lookup.url), ["/api/v1/repos/owner/plans"]);
+  const clone = join(fixture.runDir, "filing", "owner", "plans");
+  assert.equal(git(clone, "status", "--porcelain"), "", "the filing clone is left clean");
+});
+
+test("the file kind without a repository writes to the reviewed repository, at a nested path it creates, under the push guard", async (t) => {
+  const fixture = await destinationFixture(t, { repositories: ["owner/repository"] });
+  const outcome = await fixture.deliver({ destination: { kind: "file", path: "docs/review/ISSUES.md" } });
+  assert.deepEqual(outcome, { kind: "file", outcome: "filed", written: 1, location: "owner/repository:docs/review/ISSUES.md" });
+  assert.match(fixture.originFile("docs/review/ISSUES.md"), /^# Issues\n\n- \*\*Advisory/);
+  assert.deepEqual(fixture.lookups.map((lookup) => lookup.url), ["/api/v1/repos/owner/repository"]);
+  const clone = join(fixture.runDir, "filing", "owner", "repository");
+  assert.equal(readFileSync(join(clone, ".git", "minos-protected-ref"), "utf8"), "refs/heads/feature\n");
+  assert.equal(readFileSync(join(clone, ".git", "hooks", "pre-push"), "utf8"), readFileSync(pushGuard, "utf8"));
+});
+
+test("filing to the reviewed repository never reaches the pull-request branch", async (t) => {
+  // The pull request's own branch is the repository's default branch — a
+  // release-style pull request — so the default-branch write is refused.
+  const fixture = await destinationFixture(t, { branch: "feature", repositories: ["owner/repository"] });
+  const outcome = await fixture.deliver({ destination: { kind: "file", path: "ISSUES.md" } });
+  assert.equal(outcome.outcome, "unfiled");
+  assert.match(outcome.reason, /default branch feature is the pull-request branch, which Minos never writes/);
+  assert.match(fixture.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
+  assert.deepEqual(
+    await fixture.deliver({ destination: { kind: "file", path: "ISSUES.md" }, protection: null }),
+    { kind: "file", outcome: "unfiled", reason: "filing to the reviewed repository needs the pull-request branch and the push guard (protection)" },
+  );
+  // A named secondary repository whose default branch happens to share the
+  // name is not the pull-request branch and files normally.
+  const other = await destinationFixture(t, { branch: "feature" });
+  assert.equal((await other.deliver()).outcome, "filed");
+});
+
+test("an entry already at the destination is not filed twice", async (t) => {
+  const fixture = await destinationFixture(t, { issues: null });
+  assert.equal((await fixture.deliver()).written, 1);
+  const again = await fixture.deliver({ entries: [advisory, misconfiguration] });
+  assert.deepEqual(again, { kind: "file", outcome: "filed", written: 1, location: "owner/plans:ISSUES.md" });
+  const issues = fixture.originFile();
+  assert.equal(issues.split(filingMarker(advisory, reviewedRepository)).length - 1, 1, "the advisory finding appears once");
+  assert.equal(issues.split(filingMarker(misconfiguration, reviewedRepository)).length - 1, 1);
+  assert.deepEqual(
+    await fixture.deliver({ entries: [advisory, misconfiguration] }),
+    { kind: "file", outcome: "filed", written: 0, location: "owner/plans:ISSUES.md" },
+    "nothing new means no commit",
+  );
+});
+
+test("an unreadable guidance source files once, as a configuration diagnostic keyed by repository and source", async (t) => {
+  const guidance = {
+    kind: "guidance-source-misconfiguration", repository: reviewedRepository,
+    sourceRepository: "owner/guidance", path: "docs/INTENT.md", reason: "is missing or empty",
+  };
+  const fixture = await destinationFixture(t, { issues: null });
+  assert.equal((await fixture.deliver({ entries: [guidance] })).written, 1);
+  assert.deepEqual(
+    await fixture.deliver({ entries: [{ ...guidance }] }),
+    { kind: "file", outcome: "filed", written: 0, location: "owner/plans:ISSUES.md" },
+    "a second delivery files nothing",
+  );
+  const issues = fixture.originFile();
+  assert.match(issues, /\n- \*\*Guidance source misconfiguration: owner\/guidance:docs\/INTENT\.md\*\* — configured guidance for /);
+  assert.equal(issues.split(filingMarker(guidance, reviewedRepository)).length - 1, 1);
+  assert.notEqual(filingMarker(guidance, reviewedRepository), filingMarker(guidance, "other/project"));
+  assert.notEqual(filingMarker(guidance, reviewedRepository), filingMarker({ ...guidance, path: "docs/OTHER.md" }, reviewedRepository));
+  assert.notEqual(filingMarker(guidance, reviewedRepository), filingMarker({ ...guidance, sourceRepository: null }, reviewedRepository));
+});
+
+test("the filing appends to what the destination holds at delivery time", async (t) => {
+  const fixture = await destinationFixture(t);
+  writeFileSync(join(fixture.seed, "ISSUES.md"), "# Issues\n\n- An existing entry.\n- A newer entry the operator added mid-run.\n");
+  git(fixture.seed, "commit", "--quiet", "-am", "operator edit");
+  git(fixture.seed, "push", "--quiet", fixture.origin, "main");
+  assert.equal((await fixture.deliver()).outcome, "filed");
+  assert.match(fixture.originFile(), /A newer entry the operator added mid-run\.\n\n- \*\*Advisory/);
+});
+
+test("the marker keys on repository, kind, site and title so one defect files once across heads", () => {
+  const marker = (entry, repository = reviewedRepository) => filingMarker(entry, repository);
+  assert.equal(marker(advisory), marker({ ...advisory, id: "other:9", explanation: "reworded", title: "  Lost   update on concurrent write " }));
+  assert.notEqual(marker(advisory), marker({ ...advisory, kind: "out-of-scope-observation" }));
+  assert.notEqual(marker(advisory), marker({ ...advisory, line: 42 }));
+  assert.notEqual(marker(advisory), marker(advisory, "other/project"), "two projects sharing a destination file the same site separately");
+  assert.equal(marker(misconfiguration), marker({ ...misconfiguration, reason: "other reason" }));
+  const { text, written } = appendFilingEntries("", [advisory, advisory], "Filed by Minos from o/r#1, 2026-09-12", reviewedRepository);
+  assert.equal(written, 1, "a duplicate within one batch files once");
+  assert.match(text, /^# Issues\n\n- \*\*Advisory/);
+});
+
+test("the none kind discards and an observation-only batch files nothing", async (t) => {
+  const fixture = await destinationFixture(t);
+  assert.deepEqual(await fixture.deliver({ destination: { kind: "none" } }), { kind: "none", outcome: "discarded", written: 0 });
+  assert.deepEqual(await fixture.deliver({ entries: [observation] }), { kind: "file", outcome: "nothing-to-file", written: 0 });
+  assert.deepEqual(await fixture.deliver({ entries: [] }), { kind: "file", outcome: "nothing-to-file", written: 0 });
+  assert.equal(fixture.lookups.length, 0, "none of these touches the forge");
+  assert.match(fixture.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
+});
+
+test("a refused push, an unknown repository, missing attribution or an unreachable forge leaves the material unfiled", async (t) => {
+  const fixture = await destinationFixture(t);
+  writeFileSync(join(fixture.origin, "hooks", "pre-receive"), "#!/bin/sh\necho 'refused by policy' >&2\nexit 1\n", { mode: 0o755 });
+  const refused = await fixture.deliver();
+  assert.equal(refused.outcome, "unfiled");
+  assert.match(refused.reason, /^filing to owner\/plans:ISSUES\.md failed: /);
+  assert.doesNotMatch(fixture.originFile(), /Lost update/);
+
+  const unknown = await fixture.deliver({ destination: { kind: "file", repository: "owner/absent", path: "ISSUES.md" } });
+  assert.deepEqual(unknown, { kind: "file", outcome: "unfiled", reason: "filing to owner/absent:ISSUES.md failed: repository lookup for owner/absent returned HTTP 404" });
+
+  assert.deepEqual(await fixture.deliver({ source: { owner: "owner" } }), { kind: "file", outcome: "unfiled", reason: "the orientation record carries no source attribution" });
+  delete process.env.MINOS_BIN;
+  try {
+    assert.deepEqual(await fixture.deliver(), { kind: "file", outcome: "unfiled", reason: "filing to owner/plans:ISSUES.md failed: MINOS_BIN is required to reach the forge" });
+  } finally {
+    process.env.MINOS_BIN = fixture.forgeEnvironment.MINOS_BIN;
+  }
+  assert.doesNotMatch(fixture.originFile(), /Lost update/);
+});
+
+test("an empty forge credential leaves the material unfiled", async (t) => {
+  const fixture = await destinationFixture(t, { token: "" });
+  assert.deepEqual(await fixture.deliver(), { kind: "file", outcome: "unfiled", reason: "forge credential file is empty" });
+  assert.equal(fixture.lookups.length, 0, "no lookup is made without a credential");
+  assert.match(fixture.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
+});
+
+// The forge's credential reaches the lookup through the adaptation and the
+// clone and push as the HTTPS credential clone-credential reports; an origin
+// that accepts another credential refuses the filing.
+test("the clone credential the forge reports authorises the destination clone and push", async (t) => {
+  const fixture = await destinationFixture(t, { token: "forge-token-719" });
+  assert.equal((await fixture.deliver()).outcome, "filed");
+  assert.deepEqual(fixture.lookups.map((lookup) => lookup.authorization), ["token forge-token-719"]);
+  assert.ok(fixture.gitRequests().some((request) => request.authorised && /git-receive-pack/.test(request.url)), "the push was authorised");
+  assert.match(fixture.originFile(), /Lost update on concurrent write/);
+  const clone = join(fixture.runDir, "filing", "owner", "plans");
+  assert.doesNotMatch(readFileSync(join(clone, ".git", "config"), "utf8"), /Authorization|forge-token-719/, "no credential is persisted in the clone");
+
+  const refused = await destinationFixture(t, { token: "forge-token-719", gitCredential: { username: "minos", password: "another-token" } });
+  const outcome = await refused.deliver();
+  assert.equal(outcome.outcome, "unfiled");
+  assert.match(outcome.reason, /^filing to owner\/plans:ISSUES\.md failed: /);
+  assert.ok(refused.gitRequests().length > 0 && refused.gitRequests().every((request) => !request.authorised), "the origin saw only unauthorised requests");
+  assert.match(refused.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
+});
+
+test("the destination validator admits exactly the configured shapes", () => {
+  for (const valid of [
+    { kind: "file", path: "ISSUES.md" }, { kind: "file", repository: "o/r", path: "a/b.md" },
+    { kind: "issue", repository: "o/r" }, { kind: "pull-request-comment" }, { kind: "none" },
+  ]) assert.equal(validFilingDestination(valid), true, JSON.stringify(valid));
+  for (const invalid of [
+    null, "file", { kind: "email" }, { kind: "file" }, { kind: "file", path: "" }, { kind: "issue" }, { kind: "none", path: 3 },
+    { kind: "none", path: "ISSUES.md" }, { kind: "pull-request-comment", repository: "o/r" }, { kind: "issue", repository: "o/r", path: "x" },
+    { kind: "file", path: "../ISSUES.md" }, { kind: "file", path: "/etc/ISSUES.md" }, { kind: "file", repository: "http://x/y", path: "a" },
+    { kind: "file", path: "a", branch: "main" },
+  ]) assert.equal(validFilingDestination(invalid), false, JSON.stringify(invalid));
+});
+
+test("the file-triage CLI delivers to the destination the environment names and never writes a fallback review", async (t) => {
+  const fixture = await destinationFixture(t);
+  const entriesPath = join(fixture.scratch, "triage-entries.json");
+  const orientationPath = join(fixture.scratch, "orientation.json");
+  writeFileSync(entriesPath, JSON.stringify([advisory, observation, misconfiguration]));
+  writeFileSync(orientationPath, JSON.stringify({ repository: "/workspace", guidance: [], source }));
+  const env = {
+    ...process.env,
+    MINOS_FILING_DESTINATION: JSON.stringify({ kind: "file", repository: "owner/plans", path: "ISSUES.md" }),
+    ...fixture.forgeEnvironment,
+    MINOS_OWNER: "owner",
+    MINOS_REPO_NAME: "repository",
+    MINOS_RUN_DIR: fixture.runDir,
+    MINOS_COMMIT_AUTHOR_NAME: identity.name,
+    MINOS_COMMIT_AUTHOR_EMAIL: identity.email,
+    MINOS_HEAD_BRANCH: "feature",
+    MINOS_SETUP_WORKSPACE: join(dirname(pushGuard), "setup-workspace"),
+  };
+
+  const filed = await runCli([entriesPath, orientationPath], env);
+  assert.equal(filed.status, 0, filed.stderr);
+  assert.deepEqual(JSON.parse(filed.stdout), { kind: "file", outcome: "filed", written: 2, location: "owner/plans:ISSUES.md" });
+  assert.equal(existsSync(join(fixture.runDir, "publication")), false, "a filed batch writes no pull-request payload");
+
+  const discarded = await runCli([entriesPath, orientationPath], { ...env, MINOS_FILING_DESTINATION: JSON.stringify({ kind: "none" }) });
+  assert.deepEqual(JSON.parse(discarded.stdout), { kind: "none", outcome: "discarded", written: 0 });
+
+  writeFileSync(entriesPath, "[]");
+  const empty = await runCli([entriesPath, orientationPath], env);
+  assert.deepEqual(JSON.parse(empty.stdout), { kind: "file", outcome: "nothing-to-file", written: 0 });
+
+  const usage = await runCli(["one"], env);
+  assert.equal(usage.status, 2);
+  assert.match(usage.stderr, /^usage: node workflows\/file-triage\.mjs ENTRIES_FILE ORIENTATION/);
+  for (const [name, value] of [["MINOS_FILING_DESTINATION", "not json"], ["MINOS_FILING_DESTINATION", '{"kind":"email"}'], ["MINOS_RUN_DIR", ""], ["MINOS_COMMIT_AUTHOR_EMAIL", ""], ["MINOS_HEAD_BRANCH", ""], ["MINOS_SETUP_WORKSPACE", ""]]) {
+    const rejected = await runCli([entriesPath, orientationPath], { ...env, [name]: value });
+    assert.equal(rejected.status, 2, `${name}=${JSON.stringify(value)} is a usage error`);
+    assert.match(rejected.stderr, new RegExp(name));
+  }
+});
+
+// Real CLI -> compiled minos -> real Forgejo adaptation -> HTTP fixture.
+// The fixture stores only payloads the adaptation POSTs; assertions read
+// those writes and the delivery result rather than inventing filed entries.
+test("issue destination delivers marked entries through the forge command", async (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), "issue-filing-cli-"));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  const binary = join(scratch, "minos");
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  execFileSync("go", ["build", "-o", binary, "./cmd/minos"], { cwd: root });
+
+  async function fixture(t, { existing = [], refusal = false, hideWrites = false, wrongLogin = false, malformed = false, corruptWrite = false, lostResponse = false, refuseAfter = Infinity, repeatPages = false, wrongReadBackAuthor = false } = {}) {
+    const directory = mkdtempSync(join(scratch, "case-"));
+    const token = join(directory, "token");
+    writeFileSync(token, "fixture-token\n");
+    const accounts = new Map([["fixture-token", { login: wrongLogin ? "other" : identity.name }]]);
+    const posted = [];
+    const reads = [];
+    const issues = [...existing];
+    const forge = createServer(async (request, response) => {
+      const url = new URL(request.url, "http://fixture");
+      response.setHeader("Content-Type", "application/json");
+      const account = accounts.get((request.headers.authorization || "").replace(/^token /, ""));
+      if (!account) {
+        response.writeHead(401); response.end("{}"); return;
+      }
+      if (url.pathname === "/api/v1/user") {
+        response.end(JSON.stringify(account)); return;
+      }
+      if (url.pathname === "/api/v1/repos/owner/plans/issues") {
+        if (request.method === "GET") {
+          reads.push(Object.fromEntries(url.searchParams));
+          if (malformed) { response.end('{"message":"not an issue list"}'); return; }
+          const state = url.searchParams.get("state") || "open";
+          const visible = (hideWrites ? existing : issues)
+            .filter((issue) => state === "all" || (issue.state || "open") === state)
+            .map((issue) => wrongReadBackAuthor ? { ...issue, user: { login: "another-account" } } : issue);
+          // The server caps pages below the requested limit, as a forge may.
+          const page = Number(url.searchParams.get("page"));
+          response.end(JSON.stringify(repeatPages ? visible.slice(0, 2) : visible.slice((page - 1) * 2, page * 2))); return;
+        }
+        if (request.method === "POST") {
+          let body = "";
+          for await (const chunk of request) body += chunk;
+          const payload = JSON.parse(body);
+          posted.push(payload);
+          if (refusal || posted.length > refuseAfter) { response.writeHead(403); response.end('{"message":"forbidden"}'); return; }
+          const issue = { ...payload, number: issues.length + 1, state: "open", user: { ...account } };
+          if (corruptWrite) issue.body += "Wrong stored content";
+          issues.push(issue);
+          if (lostResponse) { response.writeHead(500); response.end('{"message":"response lost"}'); return; }
+          response.writeHead(201); response.end(JSON.stringify(issue)); return;
+        }
+      }
+      response.writeHead(404); response.end("{}");
+    });
+    await new Promise((resolve) => forge.listen(0, "127.0.0.1", resolve));
+    t.after(() => forge.close());
+    const apiBase = `http://127.0.0.1:${forge.address().port}`;
+    writeFileSync(join(directory, "service.toml"), `
+[service]
+bot-login = "Review Bot"
+[listener]
+bind = "127.0.0.1:0"
+[runs]
+dir = "${directory}"
+[forges.forgejo]
+adaptation = "${join(root, "scripts", "adaptations", "forgejo")}"
+api-base = "${apiBase}"
+credential-file = "${token}"
+webhook-secret-file = "${token}"
+`);
+    const entriesPath = join(directory, "entries.json");
+    const orientationPath = join(directory, "orientation.json");
+    writeFileSync(orientationPath, JSON.stringify({ source }));
+    const env = {
+      ...process.env, MINOS_BIN: binary, MINOS_CONFIG: directory, MINOS_FORGE: "forgejo", MINOS_PR: "17",
+      MINOS_FILING_DESTINATION: JSON.stringify({ kind: "issue", repository: "owner/plans" }),
+      MINOS_API_BASE: apiBase, MINOS_OWNER: "owner", MINOS_REPO_NAME: "repository", MINOS_RUN_DIR: directory,
+      MINOS_COMMIT_AUTHOR_NAME: identity.name, MINOS_COMMIT_AUTHOR_EMAIL: identity.email,
+      MINOS_HEAD_BRANCH: "feature", MINOS_SETUP_WORKSPACE: join(dirname(pushGuard), "setup-workspace"),
+    };
+    return { posted, reads, issues, directory, async deliver(entries, head = "first-head") {
+      writeFileSync(entriesPath, JSON.stringify(entries));
+      const result = await runCli([entriesPath, orientationPath], { ...env, MINOS_HEAD_SHA: head });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout);
+    } };
+  }
+
+  await t.test("new entries create separate issues once across heads", async (t) => {
+    const f = await fixture(t);
+    assert.deepEqual(await f.deliver([advisory, observation, misconfiguration, advisory]),
+      { kind: "issue", outcome: "filed", written: 2, location: "owner/plans" });
+    assert.deepEqual(f.posted.map((issue) => issue.title), [advisory.title, misconfiguration.title]);
+    for (const [index, entry] of [advisory, misconfiguration].entries()) {
+      assert.equal(f.posted[index].body, `${issueLogEntry(entry, `Filed by ${identity.name} from owner/repository#17, 2026-09-12`)} ${filingMarker(entry, reviewedRepository)}\n`);
+    }
+    assert.deepEqual(await f.deliver([advisory, misconfiguration], "later-head"),
+      { kind: "issue", outcome: "filed", written: 0, location: "owner/plans" });
+    assert.equal(f.posted.length, 2);
+    assert.equal(existsSync(join(f.directory, "publication")), false);
+  });
+  for (const state of ["open", "closed"]) await t.test(`${state} marker on a later capped page suppresses creation`, async (t) => {
+    const f = await fixture(t, { existing: [
+      { number: 1, body: "unrelated", state: "open" }, { number: 2, body: null, state: "open" },
+      { number: 3, body: filingMarker(advisory, reviewedRepository), state },
+    ] });
+    assert.deepEqual(await f.deliver([advisory]), { kind: "issue", outcome: "filed", written: 0, location: "owner/plans" });
+    assert.equal(f.posted.length, 0);
+    assert.ok(f.reads.some((read) => read.page === "2" && read.state === "all" && read.type === "issues"));
+  });
+  await t.test("a failed POST response is reconciled by marker read-back", async (t) => {
+    const f = await fixture(t, { lostResponse: true });
+    assert.deepEqual(await f.deliver([advisory]), { kind: "issue", outcome: "filed", written: 1, location: "owner/plans" });
+    assert.equal(f.posted.length, 1);
+  });
+  await t.test("a partial batch records confirmed writes and stops at the failure", async (t) => {
+    const f = await fixture(t, { refuseAfter: 1 });
+    const outcome = await f.deliver([advisory, misconfiguration, { ...advisory, title: "Another defect" }]);
+    assert.equal(outcome.outcome, "unfiled");
+    assert.equal(outcome.written, 1);
+    assert.match(outcome.reason, /issue creation returned HTTP 403/);
+    assert.equal(f.posted.length, 2);
+    assert.equal(f.issues.length, 1);
+  });
+  for (const [name, options, reason, writes] of [
+    ["refused creation", { refusal: true }, /issue creation returned HTTP 403/, 1],
+    ["successful POST missing from read-back", { hideWrites: true }, /issue write could not be discovered/, 1],
+    ["wrong service identity", { wrongLogin: true }, /identity does not match/, 0],
+    ["malformed marker list", { malformed: true }, /issue markers could not be read/, 0],
+    ["stored content mismatch", { corruptWrite: true }, /read-back does not match/, 1],
+    ["read-back author differs from authenticated account", { wrongReadBackAuthor: true }, /read-back does not match/, 1],
+    ["repeated non-empty page", { repeatPages: true, existing: [{ body: "unrelated" }] }, /issue markers could not be read/, 0],
+  ]) await t.test(name, async (t) => {
+    const f = await fixture(t, options);
+    const outcome = await f.deliver([advisory]);
+    assert.equal(outcome.outcome, "unfiled");
+    assert.match(outcome.reason, reason);
+    assert.equal(f.posted.length, writes);
+    assert.equal(existsSync(join(f.directory, "publication")), false);
+  });
+});
+
+// The stand-in stores a review only when the product invokes forge review;
+// subsequent snapshots read those stored writes, rather than seeded success.
+test("pull-request-comment filing delivers through the module and CLI", async (t) => {
+  async function fixture(t, overrides = {}) {
+    const directory = mkdtempSync(join(tmpdir(), "comment-filing-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const binary = join(directory, "minos");
+    const statePath = join(directory, "state.json");
+    writeFileSync(statePath, JSON.stringify({ reviews: [], calls: [] }));
+    writeFileSync(binary, `#!${process.execPath}
+const fs = require("node:fs");
+const path = process.env.FILING_TEST_STATE;
+const state = JSON.parse(fs.readFileSync(path, "utf8"));
+const args = process.argv.slice(2);
+if (args.join(" ") === "forge snapshot") {
+  if (process.env.FILING_TEST_SNAPSHOT_FAILURE) { console.error("snapshot unavailable"); process.exit(1); }
+  process.stdout.write(JSON.stringify({ authenticated_user: "review-bot", reviews: state.reviews }));
+} else if (args[0] === "forge" && args[1] === "review") {
+  const body = fs.readFileSync(args[5], "utf8");
+  state.calls.push({ args, body });
+  if (!process.env.FILING_TEST_REVIEW_FAILURE && !process.env.FILING_TEST_REVIEW_REJECTED) state.reviews.push({ user: "review-bot", body });
+  fs.writeFileSync(path, JSON.stringify(state));
+  if (process.env.FILING_TEST_REVIEW_FAILURE) { console.error("review refused"); process.exit(1); }
+  process.stdout.write(JSON.stringify(process.env.FILING_TEST_REVIEW_REJECTED ? { outcome: "rejected", reason: "head moved" } : { outcome: "applied", reason: "review posted" }));
+} else { console.error("unexpected forge arguments"); process.exit(2); }
+`, { mode: 0o700 });
+    const entriesPath = join(directory, "entries.json");
+    const orientationPath = join(directory, "orientation.json");
+    writeFileSync(orientationPath, JSON.stringify({ source }));
+    const env = {
+      ...process.env, MINOS_BIN: binary, FILING_TEST_STATE: statePath,
+      MINOS_HEAD_SHA: "a".repeat(40), MINOS_TARGET_SHA: "b".repeat(40),
+      MINOS_FILING_DESTINATION: JSON.stringify({ kind: "pull-request-comment" }),
+      MINOS_OWNER: "owner", MINOS_REPO_NAME: "repository", MINOS_RUN_DIR: directory,
+      MINOS_COMMIT_AUTHOR_NAME: identity.name, MINOS_COMMIT_AUTHOR_EMAIL: identity.email,
+      MINOS_HEAD_BRANCH: "feature", MINOS_SETUP_WORKSPACE: join(dirname(pushGuard), "setup-workspace"),
+      ...overrides,
+    };
+    return {
+      env, directory,
+      state: () => JSON.parse(readFileSync(statePath, "utf8")),
+      seedForeignMarker() {
+        writeFileSync(statePath, JSON.stringify({ reviews: [{ user: "someone-else", body: filingMarker(advisory, reviewedRepository) }], calls: [] }));
+      },
+      async deliver(entries = [advisory, misconfiguration], module = false) {
+        if (module) {
+          const previous = process.env;
+          process.env = env;
+          try {
+            return await deliverFilingEntries({ destination: { kind: "pull-request-comment" }, entries, source, reviewedRepository, runDir: directory, identity });
+          } finally { process.env = previous; }
+        }
+        writeFileSync(entriesPath, JSON.stringify(entries));
+        const result = await runCli([entriesPath, orientationPath], env);
+        assert.equal(result.status, 0, result.stderr);
+        return JSON.parse(result.stdout);
+      },
+    };
+  }
+
+  await t.test("first delivery posts both marked renderings once and repeat delivery posts nothing", async (t) => {
+    const f = await fixture(t);
+    const first = await f.deliver([advisory, misconfiguration, advisory, observation], true);
+    assert.equal(first.outcome, "filed");
+    assert.equal(first.kind, "pull-request-comment");
+    assert.equal(first.written, 2);
+    const calls = f.state().calls;
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args.slice(0, 5), ["forge", "review", f.env.MINOS_HEAD_SHA, f.env.MINOS_TARGET_SHA, "comment"]);
+    assert.equal(calls[0].args.length, 6, "there is no comments file");
+    assert.ok(calls[0].args[5].startsWith(`${f.directory}/`));
+    const attribution = `Filed by ${identity.name} from owner/repository#17, 2026-09-12`;
+    for (const entry of [advisory, misconfiguration]) {
+      assert.ok(calls[0].body.includes(`${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}`));
+      assert.equal(calls[0].body.split(filingMarker(entry, reviewedRepository)).length - 1, 1);
+    }
+    assert.doesNotMatch(calls[0].body, /Unrelated nil deref|all.clear/i);
+    const again = await f.deliver();
+    assert.equal(again.outcome, "nothing-to-file");
+    assert.equal(again.written, 0);
+    assert.equal(f.state().calls.length, 1);
+  });
+  await t.test("another author's marker does not suppress delivery", async (t) => {
+    const f = await fixture(t);
+    f.seedForeignMarker();
+    assert.equal((await f.deliver([advisory])).outcome, "filed");
+    assert.equal(f.state().calls.length, 1);
+  });
+  for (const name of ["MINOS_HEAD_SHA", "MINOS_TARGET_SHA"]) {
+    for (const value of ["", "invalid sha"]) await t.test(`${name}=${JSON.stringify(value)} refuses with a coordinate reason`, async (t) => {
+      const f = await fixture(t, { [name]: value });
+      const result = await f.deliver();
+      assert.equal(result.outcome, "unfiled");
+      assert.match(result.reason, new RegExp(name));
+      assert.equal(f.state().calls.length, 0);
+    });
+  }
+  for (const [flag, reason, writes] of [
+    ["FILING_TEST_SNAPSHOT_FAILURE", /snapshot unavailable/, 0],
+    ["FILING_TEST_REVIEW_FAILURE", /review refused/, 1],
+    ["FILING_TEST_REVIEW_REJECTED", /head moved/, 1],
+  ]) await t.test(`${flag} records the delivery failure without fallback`, async (t) => {
+    const f = await fixture(t, { [flag]: "1" });
+    const result = await f.deliver();
+    assert.equal(result.kind, "pull-request-comment");
+    assert.equal(result.outcome, "unfiled");
+    assert.match(result.reason, reason);
+    assert.equal(f.state().calls.length, writes);
+    assert.equal(f.state().reviews.length, 0);
+  });
+});

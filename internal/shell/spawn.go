@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"bfj/minos/internal/forge"
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 var unitSafe = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
@@ -24,10 +25,9 @@ var commandCombinedOutput = func(ctx context.Context, name string, args ...strin
 }
 
 type SpawnResult struct {
-	Outcome             ReconcileDecision
-	BlockingUnit        string
-	Detail              string
-	GroupCandidatesPath string
+	Outcome      ReconcileDecision
+	BlockingUnit string
+	Detail       string
 }
 
 const runOwnerMarker = ".runwrap-owner"
@@ -50,32 +50,25 @@ func preserveStaleReviewResult(path, stalePath string) error {
 	return nil
 }
 
-// runMemoryEnvelopeGiB is the whole box's run budget, not one run's. Runs
-// share it live inside runsSliceName rather than by static division: the
-// slice unit (deploy/systemd/user/minos-runs.slice) holds MemoryHigh just
-// under the envelope and MemoryMax at it, so no run feels any pressure until
-// the runs *together* approach the envelope, reclaim then pushes them back,
-// and only combined demand the envelope cannot hold kills — the kernel picks
-// the biggest consumer, which is the ballooning run's compiler or worker.
-// Each run also carries its own MemoryMax at the whole envelope as the
-// backstop for a box where the slice unit is not installed, keeping the
-// receiver and sweep (outside the slice) safe either way.
-const runMemoryEnvelopeGiB = 22
-
+// Runs share the configured envelope live through this slice; each run's
+// MemoryMax is also the backstop on a box without the slice installed.
 const runsSliceName = "minos-runs.slice"
 
-func runMemoryMax() string {
-	return fmt.Sprintf("%dG", runMemoryEnvelopeGiB)
+// sweepAfterRunTemplate is the shipped template
+// (deploy/systemd/user/minos-sweep-after-run@.service) whose per-run
+// instance a run unit's clean exit starts. The instance enqueues the
+// canonical sweep and exits, so the user manager collects the exited run
+// unit, the instance and the link between them at once. Naming
+// minos-sweep.service directly would leave every exited run unit loaded as
+// that long-lived unit's dependency, and the pull request's next run refused
+// as already loaded.
+const sweepAfterRunTemplate = "minos-sweep-after-run"
+
+func sweepAfterRunUnit(unit string) string {
+	return sweepAfterRunTemplate + "@" + unit + ".service"
 }
 
-type RunClass string
-
-const (
-	RunClassReview      RunClass = "review"
-	RunClassMaintenance RunClass = "maintenance"
-)
-
-func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, admission AdmissionContext, runClass RunClass) (SpawnResult, error) {
+func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (SpawnResult, error) {
 	unit := UnitName(facts)
 	unlock, err := lockAdmission(cfg.Runs.Dir)
 	if err != nil {
@@ -94,9 +87,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return strings.TrimSuffix(name, ".service") == unit
 	}); own >= 0 {
 		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: active[own]}, nil
-	}
-	if holder, guarded := liveGroupMemberHolder(cfg.Runs.Dir, unit, active); guarded {
-		return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: holder}, nil
 	}
 	if len(active) >= cfg.MaxConcurrentRuns() {
 		return SpawnResult{
@@ -135,20 +125,8 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	reviewResultAlreadyCarried := false
 	if handoff != nil {
 		if reason, valid := adoptableRunDirectory(cfg, unit, facts, handoff); valid {
-			if memberReason, membersValid := adoptableGroupMembers(ctx, cfg, facts, unit, handoff); membersValid {
-				runDir = handoff.RunDir
-				adopted = true
-			} else {
-				progressDecision = continuationProgressUnknown
-				fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, memberReason)
-				rejectRunHandoff(handoffFile, fmt.Errorf("%s", memberReason))
-				if _, statErr := os.Stat(handoffFile); statErr == nil {
-					return SpawnResult{}, fmt.Errorf("invalidate grouped continuation handoff %s", handoffFile)
-				} else if !os.IsNotExist(statErr) {
-					return SpawnResult{}, fmt.Errorf("confirm grouped continuation invalidation: %w", statErr)
-				}
-				handoff = nil
-			}
+			runDir = handoff.RunDir
+			adopted = true
 		} else {
 			fmt.Fprintf(os.Stderr, "minos: continuation workspace not reused for %s: %s; starting fresh\n", unit, reason)
 		}
@@ -179,16 +157,10 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		reviewResultPath = containedPredecessorReviewResult(cfg, unit, facts.HeadSHA)
 	}
 	if progressDecision == continuationProgressStalled {
-		return stopStalledContinuation(ctx, cfg, unit, facts, handoffFile, handoff)
+		return stopStalledContinuation(ctx, cfg, repo, unit, facts, handoffFile, handoff)
 	}
 	if !adopted {
 		progressDecision = continuationProgressUnknown
-		// A fresh run does not inherit the previous run's fixed membership.
-		// Release the old group's guards before this reused unit name becomes
-		// live and can make those guards appear current again.
-		if err := releaseGroupMemberGuards(cfg.Runs.Dir, unit); err != nil {
-			return SpawnResult{}, fmt.Errorf("release previous group members: %w", err)
-		}
 	}
 	if adopted {
 		for _, stale := range []string{"lead-complete", "memory-pressure"} {
@@ -203,33 +175,32 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 			return SpawnResult{}, err
 		}
 	}
-	// A continuation resumes the membership the original lead fixed, including
-	// an original singleton for which there is no members.json. Do not invite it
-	// to reconsider newly eligible siblings from this sweep.
-	if adopted {
-		admission.GroupCandidatesJSON = ""
-	}
 	reviewResultCarried := false
 	cleanupSpawnFailure := func() {
+		report := func(action, path string, err error) {
+			if err != nil && !os.IsNotExist(err) {
+				log.Printf("spawn rollback: %s %s: %v", action, path, err)
+			}
+		}
+		restore := func(destination string) {
+			source := filepath.Join(runDir, "carried-review-result.json")
+			// A missing carried verdict is also a failed restoration.
+			if err := os.Rename(source, destination); err != nil {
+				log.Printf("spawn rollback: restore %s to %s: %v", source, destination, err)
+			}
+		}
 		if adopted {
 			if reviewResultCarried && !reviewResultAlreadyCarried {
-				_ = os.Rename(filepath.Join(runDir, "carried-review-result.json"), filepath.Join(runDir, "review-result.json"))
+				restore(filepath.Join(runDir, "review-result.json"))
 			}
-			_ = os.Remove(filepath.Join(runDir, runOwnerMarker))
+			path := filepath.Join(runDir, runOwnerMarker)
+			report("remove ownership marker", path, os.Remove(path))
 			return
 		}
 		if reviewResultCarried {
-			_ = os.Rename(filepath.Join(runDir, "carried-review-result.json"), reviewResultPath)
+			restore(reviewResultPath)
 		}
-		_ = removeRunDir(runDir)
-	}
-	if admission.GroupCandidatesJSON != "" {
-		candidatesPath := filepath.Join(runDir, "group-candidates.json")
-		if err := os.WriteFile(candidatesPath, []byte(admission.GroupCandidatesJSON), 0o600); err != nil {
-			cleanupSpawnFailure()
-			return SpawnResult{}, fmt.Errorf("write group candidates: %w", err)
-		}
-		admission.GroupCandidatesJSON = candidatesPath
+		report("remove run directory", runDir, removeRunDir(runDir))
 	}
 	if reviewResultPath != "" {
 		carriedResult := filepath.Join(runDir, "carried-review-result.json")
@@ -247,57 +218,53 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return SpawnResult{}, fmt.Errorf("create run ownership marker: %w", err)
 	}
 	if handoff != nil {
-		if err := os.WriteFile(filepath.Join(runDir, "loop-record.json"), handoff.RunRecord, 0o600); err != nil {
-			cleanupSpawnFailure()
-			return SpawnResult{}, fmt.Errorf("seed continuation loop record: %w", err)
-		}
-		if handoff.GateRepairLadder != nil {
-			if err := os.WriteFile(filepath.Join(runDir, "gate-repair-ladder.log"), []byte(*handoff.GateRepairLadder), 0o600); err != nil {
-				cleanupSpawnFailure()
-				return SpawnResult{}, fmt.Errorf("restore continuation gate repair ladder: %w", err)
-			}
-		}
 		if err := os.Remove(handoffFile); err != nil {
 			cleanupSpawnFailure()
 			return SpawnResult{}, fmt.Errorf("consume continuation handoff: %w", err)
 		}
 	}
 	forgeConfig := cfg.Forges[facts.Forge]
-	maximumRounds := ""
-	if repo.Review.MaximumRounds > 0 {
-		maximumRounds = strconv.Itoa(repo.Review.MaximumRounds)
-	}
 	env := map[string]string{
-		"MINOS_RUN_DIR":                 runDir,
-		"MINOS_CONFIG":                  cfg.Root,
-		"MINOS_FORGE":                   facts.Forge,
-		"MINOS_WORKSPACE":               filepath.Join(runDir, "workspace"),
-		"MINOS_ORIENTATION":             filepath.Join(runDir, "orientation.json"),
-		"MINOS_HANDOFF":                 handoffFile,
-		"MINOS_LOOP_RECORD":             filepath.Join(runDir, "loop-record.json"),
-		"MINOS_OWNER":                   facts.Owner,
-		"MINOS_REPO_NAME":               facts.Repo,
-		"MINOS_PR":                      facts.PR,
-		"MINOS_HEAD_SHA":                facts.HeadSHA,
-		"MINOS_TARGET_SHA":              facts.BaseSHA,
-		"MINOS_BASE_REF":                facts.BaseRef,
-		"MINOS_HEAD_BRANCH":             facts.HeadRef,
-		"MINOS_API_BASE":                forgeConfig.APIBase,
-		"MINOS_CREDENTIAL_FILE":         forgeConfig.CredentialFile,
-		"MINOS_BUILD_CMD":               repo.Adaptation.Build,
-		"MINOS_TEST_CMD":                repo.Adaptation.Test,
-		"MINOS_RUN_BODY":                repo.Adaptation.RunBody,
-		"MINOS_AUTO_MERGE":              fmt.Sprintf("%t", repo.Policy.AutoMerge),
-		"MINOS_REVIEW_THRESHOLD":        repo.Review.Threshold,
-		"MINOS_MAX_ROUNDS":              maximumRounds,
-		"MINOS_MAX_GATE_REPAIRS":        strconv.Itoa(repo.Gate.MaximumRepairs),
-		"MINOS_RUN_CLASS":               string(runClass),
-		"MINOS_RELEASED_HOLD_HEAD":      admission.ReleasedHoldHead,
-		"MINOS_RELEASED_HOLD_STAGE":     admission.ReleasedHoldStage,
-		"MINOS_RELEASED_HOLD_DIAGNOSIS": admission.ReleasedHoldDiagnosis,
-		"MINOS_GROUP_CANDIDATES":        admission.GroupCandidatesJSON,
-		"ENSEMBLE_CONCURRENCY_CLAUDE":   strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
-		"ENSEMBLE_CONCURRENCY_CODEX":    strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
+		"MINOS_PRESSURE_THRESHOLD_PERCENT": strconv.Itoa(cfg.runPressureThresholdPercent()),
+		"MINOS_RUN_DIR":                    runDir,
+		"MINOS_CONFIG":                     cfg.Root,
+		"MINOS_FORGE":                      facts.Forge,
+		"MINOS_WORKSPACE":                  filepath.Join(runDir, "workspace"),
+		"MINOS_ORIENTATION":                filepath.Join(runDir, "orientation.json"),
+		"MINOS_HANDOFF":                    handoffFile,
+		"MINOS_OWNER":                      facts.Owner,
+		"MINOS_REPO_NAME":                  facts.Repo,
+		"MINOS_PR":                         facts.PR,
+		"MINOS_HEAD_SHA":                   facts.HeadSHA,
+		"MINOS_TARGET_SHA":                 facts.BaseSHA,
+		"MINOS_BASE_REF":                   facts.BaseRef,
+		"MINOS_HEAD_BRANCH":                facts.HeadRef,
+		"MINOS_API_BASE":                   forgeConfig.APIBase,
+		"MINOS_WEB_BASE":                   forgeConfig.WebBase,
+		"MINOS_CREDENTIAL_FILE":            forgeConfig.CredentialFile,
+		"MINOS_RUN_BODY":                   repo.Adaptation.RunBody,
+		"MINOS_REVIEW_THRESHOLD":           repo.Review.Threshold,
+		"MINOS_COMMIT_AUTHOR_NAME":         cfg.Service.CommitAuthorName,
+		"MINOS_COMMIT_AUTHOR_EMAIL":        cfg.Service.CommitAuthorEmail,
+		"MINOS_STATUS_CONTEXT":             cfg.Service.StatusContext,
+		"ENSEMBLE_CONCURRENCY_CLAUDE":      strconv.Itoa(cfg.Ensemble.ConcurrencyClaude),
+		"ENSEMBLE_CONCURRENCY_CODEX":       strconv.Itoa(cfg.Ensemble.ConcurrencyCodex),
+	}
+	// Structured knobs cross into the run as one JSON value each, always
+	// present: an empty guidance list is exported as [] so the run script
+	// reads "configured empty" rather than guessing from an absent variable.
+	for key, value := range map[string]any{
+		"MINOS_GUIDANCE_SOURCES":   nonNilSources(repo.GuidanceSources),
+		"MINOS_FILING_DESTINATION": repo.FilingDestination,
+		"MINOS_ROUTING":            cfg.Routing.Roles(),
+		"MINOS_MARKERS":            repo.Markers,
+	} {
+		encoded, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			cleanupSpawnFailure()
+			return SpawnResult{}, fmt.Errorf("encode %s: %w", key, marshalErr)
+		}
+		env[key] = string(encoded)
 	}
 	if cfg.Ensemble.AgentCeiling > 0 {
 		env["ENSEMBLE_AGENT_CEILING"] = strconv.Itoa(cfg.Ensemble.AgentCeiling)
@@ -322,9 +289,10 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--user", "--collect", "--unit", unit,
 		"--property=ExitType=main",
 		"--property=KillMode=control-group",
-		"--property=RuntimeMaxSec=12h",
+		"--property=RuntimeMaxSec=" + cfg.runDurationCeiling(),
 		"--slice=" + runsSliceName,
-		"--property=MemoryMax=" + runMemoryMax(),
+		"--property=MemoryMax=" + fmt.Sprintf("%dG", cfg.runMemoryEnvelopeGiB()),
+		"--property=OnSuccess=" + sweepAfterRunUnit(unit),
 	}
 	for key, value := range env {
 		args = append(args, "--setenv", key+"="+value)
@@ -339,13 +307,20 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return SpawnResult{}, fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if progressDecision == continuationProgressAdvanced {
-		return SpawnResult{Outcome: SpawnContinued, GroupCandidatesPath: admission.GroupCandidatesJSON}, nil
+		return SpawnResult{Outcome: SpawnContinued}, nil
 	}
-	return SpawnResult{Outcome: SpawnStarted, GroupCandidatesPath: admission.GroupCandidatesJSON}, nil
+	return SpawnResult{Outcome: SpawnStarted}, nil
 }
 
-func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnResult, error) {
-	cause := fmt.Sprintf("successor made no progress beyond stage %q round %d and published no new head or review", handoff.Progress.Stage, handoff.Progress.Round)
+func nonNilSources(sources []GuidanceSource) []GuidanceSource {
+	if sources == nil {
+		return []GuidanceSource{}
+	}
+	return sources
+}
+
+func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, repo RepoConfig, unit string, facts Facts, handoffFile string, handoff *runHandoff) (SpawnResult, error) {
+	cause := fmt.Sprintf("successor made no progress beyond stage %q and published no new head or review", handoff.Progress.Stage)
 	failureLine := fmt.Sprintf("timestamp=%s pull_request=%s/%s#%s head=%s stage=continuation-progress cause=%s\n",
 		time.Now().UTC().Format(time.RFC3339), facts.Owner, facts.Repo, facts.PR, facts.HeadSHA, cause)
 	appendStalledContinuationFailure(cfg.Runs.FailureLog, failureLine)
@@ -365,8 +340,10 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, unit string
 	if result := adapter.SetProductStatus(ctx, guard, product.Attention()); result.Outcome != forge.WriteApplied {
 		return SpawnResult{}, fmt.Errorf("set stalled continuation attention: %s: %s", result.Outcome, result.Reason)
 	}
-	if result := adapter.RemoveReaction(ctx, guard, "eyes"); result.Outcome != forge.WriteApplied {
-		return SpawnResult{}, fmt.Errorf("remove stalled continuation reaction: %s: %s", result.Outcome, result.Reason)
+	if inFlight := repo.Markers.InFlight; inFlight != nil {
+		if result := adapter.RemoveMarker(ctx, guard, *inFlight); result.Outcome != forge.WriteApplied {
+			return SpawnResult{}, fmt.Errorf("remove stalled continuation in-flight marker: %s: %s", result.Outcome, result.Reason)
+		}
 	}
 	if runDir, contained := containedRunDirectory(cfg, unit, handoff.RunDir); contained {
 		if err := os.WriteFile(filepath.Join(runDir, "lead-complete"), []byte("non-clean\n"), 0o600); err != nil && !os.IsNotExist(err) {
@@ -417,7 +394,7 @@ func lockAdmission(runsDir string) (func(), error) {
 // UnitName carries the minos-run- prefix so the admission check's unit glob
 // matches only run units, never the long-lived receiver or sweep services.
 func UnitName(facts Facts) string {
-	return unitSafe.ReplaceAllString(fmt.Sprintf("minos-run-%s-%s-pr%s", facts.Owner, facts.Repo, facts.PR), "-")
+	return unitSafe.ReplaceAllString(fmt.Sprintf("minos-run-%s-%s-%s-pr%s", facts.Forge, facts.Owner, facts.Repo, facts.PR), "-")
 }
 
 func runBodyPath() string { return filepath.Clean(os.Getenv("MINOS_RUN_BODY")) }

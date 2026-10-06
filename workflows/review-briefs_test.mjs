@@ -8,7 +8,15 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { adjudicate } from "./run-record-adjudicator.mjs";
+import { findingsFromVerifierPrompt } from "./verifier-prompt-fixture.mjs";
+import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
+import { adjudicateEnvelope } from "./archive-fixture.mjs";
+import { resolveRouting } from "./role-routing.mjs";
+
+const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
+
+import { briefRecords } from "./brief-dispositions.mjs";
+import { reviewContracts } from "./review-contracts.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review-briefs.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-brief-inputs.mjs", import.meta.url));
@@ -53,23 +61,29 @@ function specialistResult(
   return { applicability, findings, outOfScopeObservations };
 }
 
+// The builder attaches each brief's frontmatter, title and deterministic
+// disposition; the test arguments do the same through the one module, so a
+// case names a brief by path and content and the occasion and changed paths
+// it runs under, exactly as a deployment would.
 function args(overrides = {}) {
-  return {
+  const merged = {
     target: "target111",
     head: "head222",
     occasion: null,
-    workspace: "/workspace",
     hasReviewDirectory: true,
     changedPaths: ["pkg/x.go"],
-    trackedFiles: [{ path: "pkg/x.go", bytes: 100 }],
+    trackedFiles: [{ path: "pkg/x.go" }],
     briefs: [brief(".review/pkg/errors.md", "---\nrelevance: Error-path changes.\n---\nJudge errors.")],
-    guidance: { grounding: "repository", path: "/workspace/AGENTS.md", content: "PROJECT_GUIDANCE_TEAL" },
+    guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PROJECT_GUIDANCE_TEAL" }],
+    routing: pairedRouting,
     instructionBriefs: [
       { path: "workflows/review-briefs/repository.md", readPath: "/minos/workflows/review-briefs/repository.md", content: "MINOS_REPOSITORY_BRIEF_V1" },
       { path: "workflows/review-briefs/verifier.md", readPath: "/minos/workflows/review-briefs/verifier.md", content: "MINOS_ADVERSARIAL_VERIFIER_V1" },
     ],
+    contracts: reviewContracts(),
     ...overrides,
   };
+  return { ...merged, briefs: briefRecords(merged.briefs, merged.occasion || null, merged.changedPaths) };
 }
 
 function responder({ relevance, partition, specialist, verify } = {}) {
@@ -86,7 +100,7 @@ function responder({ relevance, partition, specialist, verify } = {}) {
     }
     if (label.startsWith("verify-")) {
       if (verify) return verify(label, prompt, opts);
-      const findings = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+      const findings = findingsFromVerifierPrompt(prompt);
       return {
         verdicts: findings.map((entry) => ({
           findingId: entry.id,
@@ -101,36 +115,8 @@ function responder({ relevance, partition, specialist, verify } = {}) {
   };
 }
 
-async function run(input, respond = responder()) {
-  const calls = [];
-  const agent = async (prompt, opts = {}) => {
-    calls.push({ prompt, opts });
-    return respond(opts.label || "", prompt, opts);
-  };
-  const parallel = async (thunks) => Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
-  const result = await script(agent, parallel, async () => [], () => {}, () => {}, input);
-  return { result, calls };
-}
-
-async function adjudicateEnvelope(t, envelope) {
-  const recordDir = mkdtempSync(join(tmpdir(), "minos-brief-partition-adjudication-"));
-  t.after(() => rmSync(recordDir, { recursive: true, force: true }));
-  const archive = join(recordDir, "runs", "cwd", "namespace", "run");
-  mkdirSync(join(archive, "agents"), { recursive: true });
-  writeFileSync(join(archive, "manifest.json"), JSON.stringify({
-    kind: "run_manifest",
-    status: "complete",
-  }));
-  envelope.requiredModelEvidence.forEach((leg, index) => {
-    const directory = join(archive, "agents", String(index + 1).padStart(6, "0"));
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "agent.json"), JSON.stringify({
-      label: leg.label,
-      status: "complete",
-      resolved_model: leg.pinnedModel,
-    }));
-  });
-  return adjudicate({ envelope, recordDir });
+function run(input, respond = responder()) {
+  return invokeWorkflow(script, input, respond);
 }
 
 test("an absent .review directory emits a complete-stage envelope with no legs", async () => {
@@ -154,20 +140,20 @@ test("a bare full-extent brief with no trigger is skipped without dispatch", asy
   }]);
 });
 
-test("a repository brief keeps its primary attribution but does not create a member review", async (t) => {
+test("a repository brief carries no grouped-run attribution", async (t) => {
   const { result } = await run(args());
-  assert.deepEqual(result.members, [{ id: "primary" }]);
-  assert.ok(result.proposedFindings.every((entry) => entry.member === "primary"));
+  assert.equal("members" in result, false);
+  assert.ok(result.proposedFindings.every((entry) => !("member" in entry)));
   const verdict = await adjudicateEnvelope(t, result);
-  assert.deepEqual(verdict.memberReviews, []);
+  assert.equal("memberReviews" in verdict, false);
 });
 
-test("relevance gates full-extent briefs and remains an explicit Terra leg", async () => {
+test("relevance gates full-extent briefs and remains an explicit Sol leg", async () => {
   const candidate = brief(".review/errors.md", "---\nextent: full\nsweep: whole-tree\nrelevance: Error-path changes.\n---\nJudge errors.");
   const met = await run(args({ briefs: [candidate] }), responder({ specialist: () => specialistResult([]) }));
   assert.equal(met.result.dispatches.length, 1);
   assert.equal(met.result.briefs[0].status, "run");
-  assert.deepEqual([met.calls[0].opts.engine, met.calls[0].opts.model], ["codex", "gpt-5.6-terra"]);
+  assert.deepEqual([met.calls[0].opts.engine, met.calls[0].opts.model], ["codex", "gpt-6-sol"]);
 
   const missed = await run(args({ briefs: [candidate] }), responder({
     relevance: () => ({ decisions: [{ brief: candidate.path, applicable: false, reason: "no error path changed" }] }),
@@ -175,7 +161,7 @@ test("relevance gates full-extent briefs and remains an explicit Terra leg", asy
   assert.deepEqual(missed.result.requiredModelEvidence, [{
     label: "brief-relevance",
     role: "relevance",
-    pinnedModel: "gpt-5.6-terra",
+    pinnedModel: "gpt-6-sol",
   }]);
   assert.equal(missed.result.briefs[0].skipKind, "relevance");
   assert.equal(missed.calls.length, 1);
@@ -228,7 +214,6 @@ test("a brief whose missing scope is its only trigger skips as misconfigured", a
   assert.deepEqual(result.misconfigurations, [{
     brief: candidate.path,
     title: "Scoped",
-    member: "primary",
     kind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }]);
@@ -252,7 +237,7 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
   assert.deepEqual(result.dispatches, [{
     brief: candidate.path,
     title: "Scoped",
-    label: "repository-review-missing-scoped-md-gpt",
+    label: "repository-review-missing-scoped-md-codex",
     extent: "full",
     scope: "missing",
     files: [],
@@ -266,7 +251,6 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
   assert.deepEqual(result.misconfigurations, [{
     brief: candidate.path,
     title: "Scoped",
-    member: "primary",
     kind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }]);
@@ -274,9 +258,9 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
 
 test("per-file partitioning follows repository structure and clamps to a lossless plan", async () => {
   const trackedFiles = [
-    ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/api/f${index}.go`, bytes: 10 })),
-    ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/ui/f${index}.go`, bytes: 10 })),
-    ...Array.from({ length: 30 }, (_, index) => ({ path: `cmd/tool/f${index}.go`, bytes: 10 })),
+    ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/api/f${index}.go` })),
+    ...Array.from({ length: 30 }, (_, index) => ({ path: `pkg/ui/f${index}.go` })),
+    ...Array.from({ length: 30 }, (_, index) => ({ path: `cmd/tool/f${index}.go` })),
   ];
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every file.");
   const apiFiles = trackedFiles.filter((entry) => entry.path.startsWith("pkg/api/")).map((entry) => entry.path);
@@ -304,13 +288,13 @@ test("per-file partitioning follows repository structure and clamps to a lossles
   assert.equal(new Set(result.dispatches.flatMap((entry) => entry.files)).size, trackedFiles.length);
   const partitionCall = calls.find((call) => call.opts.label?.startsWith("brief-partition-"));
   assert.ok(partitionCall);
-  assert.deepEqual([partitionCall.opts.engine, partitionCall.opts.model], ["codex", "gpt-5.6-terra"]);
+  assert.deepEqual([partitionCall.opts.engine, partitionCall.opts.model], ["codex", "gpt-6-sol"]);
   assert.match(partitionCall.prompt, /Judge every file/);
   assert.match(partitionCall.prompt, /pkg\/api\/f0\.go/);
 });
 
 test("adaptive partitioning dispatches every coherent unit without a breadth cap", async () => {
-  const trackedFiles = Array.from({ length: 25 }, (_, index) => ({ path: `module-${index}/file.go`, bytes: 10 }));
+  const trackedFiles = Array.from({ length: 25 }, (_, index) => ({ path: `module-${index}/file.go` }));
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every module.");
   const { result, calls } = await run(
     args({ briefs: [candidate], trackedFiles, occasion: "release" }),
@@ -331,9 +315,9 @@ test("adaptive partitioning dispatches every coherent unit without a breadth cap
 
 test("a mixed partition is one durable run disposition with its inapplicable unit detail", async (t) => {
   const trackedFiles = [
-    { path: "pkg/api.go", bytes: 10 },
-    { path: "pkg/ui.go", bytes: 10 },
-    { path: "pkg/jobs.go", bytes: 10 },
+    { path: "pkg/api.go" },
+    { path: "pkg/ui.go" },
+    { path: "pkg/jobs.go" },
   ];
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every area.");
   const { result } = await run(
@@ -367,12 +351,12 @@ test("a mixed partition is one durable run disposition with its inapplicable uni
     title: "Full",
     inapplicableUnits: [
       {
-        label: "repository-review-full-md-2-gpt",
+        label: "repository-review-full-md-2-codex",
         concern: "UI behaviour",
         reason: "the UI partition contains no changed behaviour to judge",
       },
       {
-        label: "repository-review-full-md-3-gpt",
+        label: "repository-review-full-md-3-codex",
         concern: "Job behaviour",
         reason: "the job partition contains no changed behaviour to judge",
       },
@@ -383,8 +367,8 @@ test("a mixed partition is one durable run disposition with its inapplicable uni
 
 test("an entirely inapplicable partition is one durable skipped disposition", async (t) => {
   const trackedFiles = [
-    { path: "pkg/api.go", bytes: 10 },
-    { path: "pkg/ui.go", bytes: 10 },
+    { path: "pkg/api.go" },
+    { path: "pkg/ui.go" },
   ];
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every area.");
   const { result } = await run(
@@ -417,12 +401,12 @@ test("an entirely inapplicable partition is one durable skipped disposition", as
     reason: "all 2 partition units were inapplicable",
     inapplicableUnits: [
       {
-        label: "repository-review-full-md-1-gpt",
+        label: "repository-review-full-md-1-codex",
         concern: "API behaviour",
         reason: "the API partition has no relevant change",
       },
       {
-        label: "repository-review-full-md-2-gpt",
+        label: "repository-review-full-md-2-codex",
         concern: "UI behaviour",
         reason: "the UI partition has no relevant change",
       },
@@ -432,8 +416,8 @@ test("an entirely inapplicable partition is one durable skipped disposition", as
 
 test("an entirely applicable partition remains one unchanged durable run disposition", async (t) => {
   const trackedFiles = [
-    { path: "pkg/api.go", bytes: 10 },
-    { path: "pkg/ui.go", bytes: 10 },
+    { path: "pkg/api.go" },
+    { path: "pkg/ui.go" },
   ];
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every area.");
   const { result } = await run(
@@ -461,7 +445,7 @@ test("an entirely applicable partition remains one unchanged durable run disposi
 });
 
 test("a missing partition result leaves the brief not-run", async () => {
-  const trackedFiles = [{ path: "pkg/a.go", bytes: 10 }, { path: "pkg/b.go", bytes: 10 }];
+  const trackedFiles = [{ path: "pkg/a.go" }, { path: "pkg/b.go" }];
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge every file.");
   const { result, calls } = await run(
     args({ briefs: [candidate], trackedFiles, occasion: "release" }),
@@ -474,7 +458,7 @@ test("a missing partition result leaves the brief not-run", async () => {
   assert.ok(result.requiredModelEvidence.some((leg) => leg.role === "partition"));
 });
 
-test("all repository specialists dispatch beyond the former twenty-four limit", async () => {
+test("every requested repository specialist dispatches", async () => {
   const briefs = Array.from({ length: 25 }, (_, index) =>
     brief(`.review/pkg/concern-${index + 1}.md`, `# Concern ${index + 1}\nJudge it.`));
   const { result, calls } = await run(args({ briefs }), responder({ specialist: () => specialistResult([]) }));
@@ -484,7 +468,7 @@ test("all repository specialists dispatch beyond the former twenty-four limit", 
 });
 
 test("a large whole-tree brief dispatches instead of becoming not-run", async () => {
-  const trackedFiles = Array.from({ length: 400 }, (_, index) => ({ path: `pkg/f${index}.go`, bytes: 4_000 }));
+  const trackedFiles = Array.from({ length: 400 }, (_, index) => ({ path: `pkg/f${index}.go` }));
   const candidate = brief(".review/full.md", "---\nextent: full\nsweep: whole-tree\noccasion: release\n---\nJudge repository.");
   const { result } = await run(args({ briefs: [candidate], trackedFiles, occasion: "release" }), responder({ specialist: () => specialistResult([]) }));
   assert.equal(result.dispatches.length, 1);
@@ -504,14 +488,14 @@ test("specialist inapplicability is recorded and never reaches verification", as
   assert.equal(result.briefs.find((entry) => entry.skipKind === "inapplicable").reason, "the diff gives this concern nothing to judge");
 });
 
-test("all applicable findings are proposed on Terra and verified cross-family on Claude", async () => {
+test("all applicable findings are proposed on Sol and verified cross-family on Claude", async () => {
   const { result, calls } = await run(args());
   const specialists = calls.filter((call) => call.opts.label?.startsWith("repository-"));
   const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
   assert.ok(specialists.every((call) =>
-    call.opts.engine === "codex" && call.opts.model === "gpt-5.6-terra"));
+    call.opts.engine === "codex" && call.opts.model === "gpt-6-sol"));
   assert.ok(verifiers.every((call) =>
-    call.opts.engine === "claude" && call.opts.model === "claude-opus-5"));
+    call.opts.engine === "claude" && call.opts.model === "claude-opus-5-5"));
   assert.ok(specialists.every((specialist) =>
     verifiers.every((verifier) => specialist.opts.engine !== verifier.opts.engine)));
   assert.deepEqual(result.proposedFindings[0].rawVerifier, { verdict: "upheld", confidence: 92, reason: "confirmed" });
@@ -528,14 +512,13 @@ test("a repository observation is returned separately and never reaches verifica
   assert.deepEqual(result.proposedFindings, []);
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
   assert.deepEqual(result.outOfScopeObservations, [{
-    id: "repository-review-pkg-errors-md-gpt:observation:1",
+    id: "repository-review-pkg-errors-md-codex:observation:1",
     source: "Errors",
-    member: "primary",
     title: "pre-existing repository defect",
     path: "pkg/legacy.go",
     line: 11,
     explanation: "Unverified observation: unchanged code violates the repository concern.",
-    observingLabel: "repository-review-pkg-errors-md-gpt",
+    observingLabel: "repository-review-pkg-errors-md-codex",
     verified: false,
   }]);
   const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
@@ -588,7 +571,7 @@ test("a met relevance runs a scoped brief even when its scope is untouched", asy
   assert.equal(skipped.result.briefs[0].skipKind, "relevance");
 });
 
-test("every repository-brief finding reaches verification beyond the former bound", async () => {
+test("repository-brief verifier batches retain every finding beyond six", async () => {
   const { result, calls } = await run(args(), responder({
     specialist: () => specialistResult([
       finding({ title: "one" }),
@@ -606,11 +589,90 @@ test("every repository-brief finding reaches verification beyond the former boun
   assert.ok(result.proposedFindings.every((entry) => entry.rawVerifier?.verdict === "upheld"));
   const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
   assert.deepEqual(verifierCalls.map((call) => call.opts.label), [
-    "verify-brief-1-1-claude", "verify-brief-1-2-claude",
+    "verify-brief-1-claude", "verify-brief-2-claude",
   ]);
   assert.match(verifierCalls[0].prompt, /"title":"six survives"/);
   assert.doesNotMatch(verifierCalls[0].prompt, /"title":"seven survives"/);
   assert.match(verifierCalls[1].prompt, /"title":"seven survives"/);
+});
+
+test("repository-brief verifier pools findings from separate units with their own context", async () => {
+  const first = brief(".review/pkg/errors.md", "---\nextent: full\nsweep: per-file\n---\n# Errors\nJudge error paths.");
+  const second = brief(".review/cmd/design.md", "---\nextent: full\nsweep: per-file\n---\n# Design\nJudge command design.");
+  const { result, calls } = await run(args({
+    briefs: [first, second],
+    changedPaths: ["pkg/x.go", "cmd/main.go"],
+    trackedFiles: [{ path: "pkg/x.go" }, { path: "cmd/main.go" }],
+  }), responder({
+    partition: (_label, prompt) => {
+      const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
+      return {
+        units: [{
+          id: files[0] === "pkg/x.go" ? "error-paths" : "command-design",
+          concern: files[0] === "pkg/x.go" ? "error-path behaviour" : "command design",
+          files,
+        }],
+      };
+    },
+    specialist: (label) => specialistResult([
+      finding({ title: label.includes("errors") ? "error finding" : "design finding" }),
+    ]),
+  }));
+
+  const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
+  assert.equal(verifierCalls.length, 1);
+  assert.equal(verifierCalls[0].opts.label, "verify-brief-1-claude");
+  const findings = findingsFromVerifierPrompt(verifierCalls[0].prompt);
+  assert.deepEqual(findings.map(({ title, concern, proposingSpecialist }) => ({
+    title, concern, proposingSpecialist,
+  })), [
+    {
+      title: "error finding",
+      concern: "error-path behaviour",
+      proposingSpecialist: "repository-review-pkg-errors-md-1-codex",
+    },
+    {
+      title: "design finding",
+      concern: "command design",
+      proposingSpecialist: "repository-review-cmd-design-md-1-codex",
+    },
+  ]);
+  assert.deepEqual(result.proposedFindings.map((entry) => entry.verifyLabel), [
+    "verify-brief-1-claude", "verify-brief-1-claude",
+  ]);
+});
+
+test("repository-brief verifier identifies unpartitioned brief units in a pooled payload", async () => {
+  const first = brief(".review/pkg/check-one.md", "---\nrelevance: Package changes.\n---\nJudge the first package concern.");
+  const second = brief(".review/cmd/check-two.md", "---\nrelevance: Command changes.\n---\nJudge the second command concern.");
+  const { calls } = await run(args({
+    briefs: [first, second],
+    changedPaths: ["pkg/x.go", "cmd/main.go"],
+  }), responder({
+    specialist: (label) => specialistResult([
+      finding({ title: label.includes("check-one") ? "package finding" : "command finding" }),
+    ]),
+  }));
+
+  const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
+  assert.equal(verifierCalls.length, 1);
+  const findings = findingsFromVerifierPrompt(verifierCalls[0].prompt);
+  assert.deepEqual(findings.map(({ title, concern, unit, proposingSpecialist }) => ({
+    title, concern, unit, proposingSpecialist,
+  })), [
+    {
+      title: "package finding",
+      concern: null,
+      unit: "Check One",
+      proposingSpecialist: "repository-review-pkg-check-one-md-codex",
+    },
+    {
+      title: "command finding",
+      concern: null,
+      unit: "Check Two",
+      proposingSpecialist: "repository-review-cmd-check-two-md-codex",
+    },
+  ]);
 });
 
 test("slug-colliding brief labels retain verdicts for their own findings", async () => {
@@ -621,14 +683,14 @@ test("slug-colliding brief labels retain verdicts for their own findings", async
       finding({ title: prompt.includes(first.path) ? "first finding" : "second finding" }),
     ]),
     verify: (_label, prompt) => {
-      const [entry] = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+      const entries = findingsFromVerifierPrompt(prompt);
       return {
-        verdicts: [{
+        verdicts: entries.map((entry) => ({
           findingId: entry.id,
           verdict: entry.title === "first finding" ? "upheld" : "refuted",
           confidence: 92,
           reason: `verdict for ${entry.title}`,
-        }],
+        })),
       };
     },
   }));
@@ -637,8 +699,8 @@ test("slug-colliding brief labels retain verdicts for their own findings", async
     .filter((call) => call.opts.label?.startsWith("repository-"))
     .map((call) => call.opts.label);
   assert.deepEqual(specialistLabels, [
-    "repository-review-pkg-check-one-md-gpt",
-    "repository-review-pkg-check-one-md-gpt",
+    "repository-review-pkg-check-one-md-codex",
+    "repository-review-pkg-check-one-md-codex",
   ]);
   assert.deepEqual(result.proposedFindings.map(({ id, title, rawVerifier }) => ({ id, title, rawVerifier })), [
     {
@@ -660,8 +722,9 @@ test("a missing specialist result is a not-run disposition with a required archi
   assert.ok(result.requiredModelEvidence.some((leg) => leg.role === "specialist"));
 });
 
-test("the enumerator emits large deterministic input directly as JSON and rejects generated-script mode", () => {
+test("the enumerator emits large deterministic input directly as JSON and rejects generated-script mode", (t) => {
   const root = mkdtempSync(join(tmpdir(), "minos-brief-input-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", root]);
   execFileSync("git", ["-C", root, "config", "user.name", "Fixture"]);
   execFileSync("git", ["-C", root, "config", "user.email", "fixture@example.test"]);
@@ -677,8 +740,12 @@ test("the enumerator emits large deterministic input directly as JSON and reject
   execFileSync("git", ["-C", root, "commit", "-qm", "head"]);
   const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const orientationPath = join(root, "orientation.json");
-  writeFileSync(orientationPath, JSON.stringify({ repository: root, grounding: "repository", guidance: join(root, "AGENTS.md") }));
-  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root };
+  writeFileSync(orientationPath, JSON.stringify({
+    repository: root,
+    guidance: [{ source: { path: "AGENTS.md" }, location: join(root, "AGENTS.md"), origin: "checked-in" }],
+    misconfigurations: [],
+  }));
+  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" };
   const deterministicJson = execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8", env });
   const enumerated = JSON.parse(deterministicJson);
   assert.ok(Buffer.byteLength(deterministicJson) > 147_000);
@@ -694,7 +761,7 @@ test("the enumerator emits large deterministic input directly as JSON and reject
 test("a brief verifier observation reaches the result alongside its verdicts", async () => {
   const { result } = await run(args(), responder({
     verify: (label, prompt) => {
-      const findings = JSON.parse(prompt.match(/Findings: (\[[^\n]+\])/)[1]);
+      const findings = findingsFromVerifierPrompt(prompt);
       return {
         verdicts: findings.map((entry) => ({
           findingId: entry.id,
@@ -712,4 +779,140 @@ test("a brief verifier observation reaches the result alongside its verdicts", a
   assert.equal(observed.title, "residue the verdict cannot carry");
   assert.equal(observed.verified, false);
   assert.match(observed.observingLabel, /^verify-brief-/);
+});
+
+test("the enumerator reads a tracked-file listing larger than the default child-process buffer", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "minos-brief-input-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", ["-C", root, "config", "user.name", "Fixture"]);
+  execFileSync("git", ["-C", root, "config", "user.email", "fixture@example.test"]);
+  writeFileSync(join(root, "AGENTS.md"), "guidance\n");
+  writeFileSync(join(root, "code.txt"), "before\n");
+  execFileSync("git", ["-C", root, "add", "."]);
+  const blob = execFileSync("git", ["-C", root, "hash-object", "-w", "--stdin"], { input: "tracked\n", encoding: "utf8" }).trim();
+  const entries = Array.from({ length: 12_000 }, (_, index) =>
+    `100644 ${blob}\ttree/${String(index).padStart(6, "0")}-${"p".repeat(90)}.txt`).join("\n");
+  execFileSync("git", ["-C", root, "update-index", "--index-info"], { input: `${entries}\n` });
+  execFileSync("git", ["-C", root, "commit", "-qm", "base"]);
+  const target = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  writeFileSync(join(root, "code.txt"), "after\n");
+  execFileSync("git", ["-C", root, "add", "code.txt"]);
+  execFileSync("git", ["-C", root, "commit", "-qm", "head"]);
+  const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const listing = execFileSync("git", ["-C", root, "ls-files", "-z"], { maxBuffer: Infinity });
+  assert.ok(listing.byteLength > 1024 * 1024);
+  const orientationPath = join(root, "orientation.json");
+  writeFileSync(orientationPath, JSON.stringify({
+    repository: root,
+    guidance: [{ source: { path: "AGENTS.md" }, location: join(root, "AGENTS.md"), origin: "checked-in" }],
+    misconfigurations: [],
+  }));
+  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" };
+  const enumerated = JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8", env }));
+  assert.deepEqual(enumerated.briefs, []);
+});
+
+const workerInput = args({
+  briefs: [brief(".review/errors.md", "---\nrelevance: Error-path changes.\nextent: full\nsweep: per-file\n---\nJudge errors.")],
+});
+test("worker dispatch options strip capabilities and identify fan-out settlements", async (t) => {
+  const respond = responder();
+  const { result, calls } = await run(workerInput, respond);
+  assert.equal(calls.length, 4);
+  for (const { opts } of calls) {
+    assert.deepEqual(opts.strip, ["skills", "agents"], `${opts.label} strips worker capabilities`);
+    if (!["Relevance"].includes(opts.phase))
+      assert.equal(opts.identity, true, `${opts.label} identifies its settlement`);
+  }
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, true, verdict.incomplete.join("\n"));
+  assert.equal(verdict.confirmedFindings.length, 1);
+});
+
+test("identified partition failure reaches the verdict by label", async (t) => {
+  const normal = responder();
+  let failedLabel;
+  const respond = (label, prompt, opts) => {
+    if (label.startsWith("brief-partition-")) {
+      failedLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: { message: "worker transport lost" } } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await run(workerInput, respond);
+  const reason = `agent ${failedLabel} failed: worker transport lost`;
+  assert.ok(result.incomplete?.includes(reason), JSON.stringify(result.incomplete));
+
+  // Complete archive records isolate the producer's incompleteness channel.
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, false);
+  assert.ok(verdict.incomplete.includes(`workflow reported incomplete: ${reason}`));
+  assert.deepEqual(verdict.confirmedFindings, []);
+});
+
+test("identified specialist failure reaches the verdict by label", async (t) => {
+  const normal = responder();
+  let failedLabel;
+  const respond = (label, prompt, opts) => {
+    if (opts.phase === "Review") {
+      failedLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: { message: "worker transport lost" } } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await run(workerInput, respond);
+  const reason = `agent ${failedLabel} failed: worker transport lost`;
+  assert.ok(result.incomplete?.includes(reason), JSON.stringify(result.incomplete));
+  assert.equal(result.reviewers.find((entry) => entry.label === failedLabel).status, "no-result");
+  // Complete archive records isolate the producer's incompleteness channel.
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, false);
+  assert.ok(verdict.incomplete.includes(`workflow reported incomplete: ${reason}`));
+  assert.deepEqual(verdict.confirmedFindings, []);
+});
+
+test("identified verifier failure reaches the verdict by label", async (t) => {
+  const normal = responder();
+  let failedLabel;
+  const respond = (label, prompt, opts) => {
+    if (label.startsWith("verify-")) {
+      failedLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: { message: "worker transport lost" } } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await run(workerInput, respond);
+  const reason = `agent ${failedLabel} failed: worker transport lost`;
+  assert.ok(result.incomplete?.includes(reason), JSON.stringify(result.incomplete));
+
+  // Complete archive records isolate the producer's incompleteness channel.
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.complete, false);
+  assert.ok(verdict.incomplete.includes(`workflow reported incomplete: ${reason}`));
+  assert.deepEqual(verdict.confirmedFindings, []);
+});
+
+test("identified null answer keeps reviewer settlement truthful", async () => {
+  const normal = responder();
+  let answeredLabel;
+  const respond = (label, prompt, opts) => {
+    if (opts.phase === "Review") {
+      answeredLabel = label;
+      return { identityEnvelope: { label, phase: opts.phase, output: null, failure: null } };
+    }
+    return normal(label, prompt, opts);
+  };
+  const { result } = await run(workerInput, respond);
+  assert.equal(result.reviewers.find((entry) => entry.label === answeredLabel).status, "done");
+  assert.ok(result.incomplete.includes(`agent ${answeredLabel} answered without usable output`));
+  assert.ok(!result.incomplete.some((reason) => reason.includes("failed:")));
+});
+
+test("the workflow refuses briefs the builder handed over without their deterministic pass", async () => {
+  const bare = { path: ".review/pkg/errors.md", readPath: "/workspace/.review/pkg/errors.md", content: "Judge errors.", scope: "pkg", scopeExists: true };
+  const input = { ...args(), briefs: [bare] };
+  await assert.rejects(run(input), /deterministic brief enumeration is incomplete/);
+  const half = { ...briefRecords([bare], null, ["pkg/x.go"])[0], disposition: { status: "skipped" } };
+  await assert.rejects(run({ ...args(), briefs: [half] }), /deterministic brief enumeration is incomplete/);
 });

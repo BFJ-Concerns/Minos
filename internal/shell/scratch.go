@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -25,8 +26,8 @@ const (
 	salvageMetadataBytes   = 4 * 1024
 	salvageFailureLogBytes = 32 * 1024
 	salvageEnsembleBytes   = 64 * 1024
-	salvageRunReportBytes  = 32 * 1024
-	salvageTranscriptBytes = salvageDigestBytes - salvageMetadataBytes - salvageFailureLogBytes - salvageEnsembleBytes - salvageRunReportBytes
+	salvageReportBytes     = 32 * 1024
+	salvageTranscriptBytes = salvageDigestBytes - salvageMetadataBytes - salvageFailureLogBytes - salvageEnsembleBytes - salvageReportBytes
 	archiveRunTimeout      = 30 * time.Minute
 )
 
@@ -177,21 +178,18 @@ func validHandoffRunDirs(cfg ServiceConfig, factsByUnit map[string]Facts) map[st
 		unit := strings.TrimSuffix(filepath.Base(path), ".json")
 		handoff, err := readRunHandoffStructure(path)
 		if err != nil {
+			log.Printf("reject preservation handoff %s: %v", path, err)
 			continue
 		}
-		embeddedFacts := Facts{
-			Owner:   handoff.PullRequest.Owner,
-			Repo:    handoff.PullRequest.Repo,
-			PR:      handoff.PullRequest.Number,
-			HeadSHA: handoff.Head,
-		}
-		if UnitName(embeddedFacts) != unit {
+		embeddedFacts, recognised := factsForHandoff(cfg, unit, handoff)
+		if !recognised {
 			continue
 		}
 		facts, found := factsByUnit[unit]
 		if found {
 			validated, err := readRunHandoff(path, facts)
 			if err != nil {
+				log.Printf("reject preservation handoff %s: %v", path, err)
 				continue
 			}
 			handoff = validated
@@ -273,7 +271,7 @@ func buildFailureDigest(runDir string) ([]byte, bool, error) {
 	sources := []*sourceDigest{
 		{name: "failure-log", budget: salvageFailureLogBytes},
 		{name: "ensemble", budget: salvageEnsembleBytes},
-		{name: "run-report", budget: salvageRunReportBytes},
+		{name: "report", budget: salvageReportBytes},
 		{name: "transcript", budget: salvageTranscriptBytes},
 	}
 	sourceByName := make(map[string]*sourceDigest, len(sources))
@@ -318,8 +316,8 @@ func evidenceSource(rel string) string {
 		return "failure-log"
 	case strings.HasPrefix(rel, "ensemble-records/"):
 		return "ensemble"
-	case rel == "run-report.md" || rel == "report.md":
-		return "run-report"
+	case rel == "report.md":
+		return "report"
 	default:
 		return "transcript"
 	}
@@ -345,7 +343,7 @@ func appendBudgetedDigestText(digest *bytes.Buffer, text string, budget int, sou
 func salvageEvidencePaths(runDir string) ([]string, []string, error) {
 	var paths []string
 	var skipped []string
-	for _, name := range []string{"failure.log", "failures.log", "run-report.md", "report.md"} {
+	for _, name := range []string{"failure.log", "failures.log", "report.md"} {
 		path := filepath.Join(runDir, name)
 		info, err := os.Lstat(path)
 		if os.IsNotExist(err) {
@@ -465,21 +463,31 @@ func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 	if cfg.Runs.FailuresRepo == "" || cfg.Runs.FailuresCredentialFile == "" {
 		return fmt.Errorf("Minos annexe push is not fully configured; durable local append retained")
 	}
-	tokenBytes, err := os.ReadFile(cfg.Runs.FailuresCredentialFile)
-	if err != nil {
-		return fmt.Errorf("read Minos annexe credential: %w", err)
+	forgeConfig, ok := cfg.Forges[cfg.Runs.FailuresForge]
+	if !ok {
+		return fmt.Errorf("runs.failures-forge %q is not a configured forge; durable local append retained", cfg.Runs.FailuresForge)
 	}
-	token := strings.TrimSpace(string(tokenBytes))
-	if token == "" {
-		return fmt.Errorf("Minos annexe credential is empty")
+	forgeConfig.CredentialFile = cfg.Runs.FailuresCredentialFile
+	adapter, err := newBehaviouralForgeFromConfig(cfg, forgeConfig)
+	if err != nil {
+		return fmt.Errorf("failure-ledger adapter: %w", err)
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, failurePublishTimeout)
 	defer cancel()
+	credential, err := adapter.CloneCredential(publishCtx)
+	if err != nil {
+		return fmt.Errorf("failure-ledger clone credential: %w", err)
+	}
+	authorisation := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(credential.Username+":"+credential.Password))
 	env := append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=http.extraHeader",
-		"GIT_CONFIG_VALUE_0=Authorization: token "+token,
+		"GIT_CONFIG_VALUE_0="+authorisation,
+		"GIT_AUTHOR_NAME="+cfg.Service.CommitAuthorName,
+		"GIT_AUTHOR_EMAIL="+cfg.Service.CommitAuthorEmail,
+		"GIT_COMMITTER_NAME="+cfg.Service.CommitAuthorName,
+		"GIT_COMMITTER_EMAIL="+cfg.Service.CommitAuthorEmail,
 	)
 	commands := [][]string{
 		{"add", "--", "FAILURES.md"},

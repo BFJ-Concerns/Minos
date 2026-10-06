@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"testing"
 
-	"bfj/minos/internal/product"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 func TestSnapshotNormalisesEmptyDependenciesForEncoding(t *testing.T) {
@@ -23,7 +24,7 @@ func TestSnapshotNormalisesEmptyDependenciesForEncoding(t *testing.T) {
 		"target_branch":"main",
 		"dependencies_available":true
 	}`)}, errors: []error{nil}}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,68 +44,9 @@ func TestSnapshotNormalisesEmptyDependenciesForEncoding(t *testing.T) {
 	}
 }
 
-func TestIssueCommentsUsesPullRequestIssueSurface(t *testing.T) {
-	runner := &recordingRunner{outputs: [][]byte{[]byte(`[{"id":7,"body":"Held at: review\nDiagnosis.","user":"Minos"}]`)}, errors: []error{nil}}
-	adapter, err := NewAdapter(runner, "Minos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	comments, err := adapter.IssueComments(t.Context(), Repository{Owner: "owner", Name: "repo"}, 17)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(comments) != 1 || comments[0].ID != 7 || comments[0].User != "Minos" {
-		t.Fatalf("comments = %#v", comments)
-	}
-	request := runner.requests[0]
-	if request.Operation != "issue-comments" || !slices.Equal(request.Arguments, []string{"owner", "repo", "17"}) {
-		t.Fatalf("request = %#v", request)
-	}
-}
-
-func TestPullRequestCommitsExposeForgeAuthorship(t *testing.T) {
-	runner := &recordingRunner{outputs: [][]byte{[]byte(`[{"sha":"old","author":"contributor"},{"sha":"new","author":"Minos"}]`)}, errors: []error{nil}}
-	adapter, err := NewAdapter(runner, "Minos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	commits, err := adapter.PullRequestCommits(t.Context(), Repository{Owner: "owner", Name: "repo"}, 17)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(commits) != 2 || commits[0].SHA != "old" || commits[1].Author != "Minos" {
-		t.Fatalf("commits = %#v", commits)
-	}
-	request := runner.requests[0]
-	if request.Operation != "pull-request-commits" || !slices.Equal(request.Arguments, []string{"owner", "repo", "17"}) {
-		t.Fatalf("request = %#v", request)
-	}
-}
-
-func TestOwnMovementRequiresACompleteAllServiceAuthoredInterval(t *testing.T) {
-	commits := []Commit{{SHA: "held", Author: "contributor"}, {SHA: "own-one", Author: "Minos"}, {SHA: "foreign", Author: "contributor"}, {SHA: "current", Author: "Minos"}}
-	for _, test := range []struct {
-		name           string
-		earlier, later string
-		want           bool
-	}{
-		{name: "same commit", earlier: "current", later: "current", want: true},
-		{name: "own suffix", earlier: "foreign", later: "current", want: true},
-		{name: "mixed suffix", earlier: "held", later: "current"},
-		{name: "missing witness", earlier: "missing", later: "current"},
-		{name: "missing current", earlier: "foreign", later: "missing"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := OwnMovement(commits, test.earlier, test.later, "Minos"); got != test.want {
-				t.Fatalf("OwnMovement() = %t, want %t", got, test.want)
-			}
-		})
-	}
-}
-
 func TestSetProductStatusRejectsInvalidState(t *testing.T) {
 	runner := &recordingRunner{}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,70 +59,12 @@ func TestSetProductStatusRejectsInvalidState(t *testing.T) {
 	}
 }
 
-func TestSetTargetBrokenPassesTargetAndReasonWithoutTheHead(t *testing.T) {
-	runner := &recordingRunner{
-		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},
-		errors:  []error{nil},
-	}
-	adapter, err := NewAdapter(runner, "Minos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	guard := Guard{
-		Repository:  Repository{Owner: "owner", Name: "repo"},
-		PullRequest: 205,
-		HeadSHA:     "head-sha",
-		TargetSHA:   "target-sha",
-	}
-	result := adapter.SetTargetBroken(t.Context(), guard, "the shared-turn race renders two identical messages")
-	if result.Outcome != WriteApplied {
-		t.Fatalf("result = %#v", result)
-	}
-	request := runner.requests[0]
-	if request.Operation != "set-target-status" {
-		t.Fatalf("operation = %q, want set-target-status", request.Operation)
-	}
-	want := []string{
-		"owner", "repo", "205", "target-sha", "Minos",
-		"the shared-turn race renders two identical messages",
-	}
-	if !slices.Equal(request.Arguments, want) {
-		t.Fatalf("arguments = %v, want %v", request.Arguments, want)
-	}
-}
-
-func TestSetTargetBrokenRejectsAnEmptyTargetOrReason(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		guard  Guard
-		reason string
-	}{
-		{name: "no target", guard: Guard{}, reason: "proven"},
-		{name: "no reason", guard: Guard{TargetSHA: "target-sha"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			runner := &recordingRunner{}
-			adapter, err := NewAdapter(runner, "Minos")
-			if err != nil {
-				t.Fatal(err)
-			}
-			result := adapter.SetTargetBroken(t.Context(), test.guard, test.reason)
-			if result.Outcome != WriteRejected {
-				t.Fatalf("result = %#v, want rejected", result)
-			}
-			if len(runner.requests) != 0 {
-				t.Fatal("an incomplete target marker reached the forge runner")
-			}
-		})
-	}
-}
-
 func TestIncompleteStatusUsesGuardedPullRequestAndTargetIdentity(t *testing.T) {
 	runner := &recordingRunner{
 		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},
 		errors:  []error{nil},
 	}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +84,7 @@ func TestIncompleteStatusUsesGuardedPullRequestAndTargetIdentity(t *testing.T) {
 	}
 	want := []string{
 		"owner", "repo", "17", "head-sha", "target-sha", "Minos",
-		OwnedStatusContext, "error", "Review incomplete",
+		"Minos", "error", "Review incomplete",
 	}
 	if !slices.Equal(request.Arguments, want) {
 		t.Fatalf("arguments = %v, want %v", request.Arguments, want)
@@ -212,7 +96,7 @@ func TestClaimUsesServiceIdentity(t *testing.T) {
 		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},
 		errors:  []error{nil},
 	}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,44 +114,12 @@ func TestClaimUsesServiceIdentity(t *testing.T) {
 	}
 }
 
-func TestCheckLogsUsesGuardedPullRequestIdentity(t *testing.T) {
-	runner := &recordingRunner{
-		outputs: [][]byte{[]byte(`{"head_sha":"head-sha","runs":[]}`)},
-		errors:  []error{nil},
-	}
-	adapter, err := NewAdapter(runner, "Minos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	guard := Guard{
-		Repository:  Repository{Owner: "owner", Name: "repo"},
-		PullRequest: 17,
-		HeadSHA:     "head-sha",
-		TargetSHA:   "target-sha",
-	}
-	evidence, err := adapter.CheckLogs(t.Context(), guard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(evidence), `"head_sha":"head-sha"`) {
-		t.Fatalf("evidence = %s", evidence)
-	}
-	request := runner.requests[0]
-	if request.Operation != "guarded-check-logs" {
-		t.Fatalf("operation = %q, want guarded-check-logs", request.Operation)
-	}
-	want := []string{"owner", "repo", "17", "head-sha", "target-sha", "Minos"}
-	if !slices.Equal(request.Arguments, want) {
-		t.Fatalf("arguments = %v, want %v", request.Arguments, want)
-	}
-}
-
 func TestReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 	runner := &recordingRunner{
 		outputs: [][]byte{[]byte(`{"outcome":"applied"}`)},
 		errors:  []error{nil},
 	}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +129,7 @@ func TestReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 		HeadSHA:     "head-sha",
 		TargetSHA:   "target-sha",
 	}
-	result := adapter.AddReaction(t.Context(), guard, "+1")
+	result := adapter.AddMarker(t.Context(), guard, Marker{Reaction: "+1"})
 	if result.Outcome != WriteApplied {
 		t.Fatalf("result = %#v", result)
 	}
@@ -291,66 +143,113 @@ func TestReactionUsesGuardedPullRequestIdentity(t *testing.T) {
 	}
 }
 
-func TestCommentUsesGuardedPullRequestIdentity(t *testing.T) {
+func TestRemoveReactionMarkerUsesGuardedPullRequestIdentity(t *testing.T) {
+	guard := Guard{
+		Repository: Repository{Owner: "owner", Name: "repo"}, PullRequest: 17,
+		HeadSHA: "head-sha", TargetSHA: "target-sha",
+	}
 	runner := &recordingRunner{outputs: [][]byte{[]byte(`{"outcome":"applied"}`)}, errors: []error{nil}}
-	adapter, err := NewAdapter(runner, "Minos")
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard := Guard{Repository: Repository{Owner: "owner", Name: "repo"}, PullRequest: 17, HeadSHA: "head-sha", TargetSHA: "target-sha"}
-	if result := adapter.PostComment(t.Context(), guard, "Repair at `src/code.go` line 9."); result.Outcome != WriteApplied {
+	if result := adapter.RemoveMarker(t.Context(), guard, Marker{Reaction: "eyes"}); result.Outcome != WriteApplied {
 		t.Fatalf("result = %#v", result)
 	}
 	request := runner.requests[0]
-	if request.Operation != "guarded-post-comment" {
-		t.Fatalf("operation = %q, want guarded-post-comment", request.Operation)
+	if request.Operation != "guarded-remove-reaction" {
+		t.Fatalf("operation = %q, want guarded-remove-reaction", request.Operation)
 	}
-	want := []string{"owner", "repo", "17", "head-sha", "target-sha", "Minos"}
+	want := []string{"owner", "repo", "17", "head-sha", "target-sha", "Minos", "eyes"}
 	if !slices.Equal(request.Arguments, want) {
 		t.Fatalf("arguments = %v, want %v", request.Arguments, want)
 	}
 }
 
-func TestFinishingWritesUseGuardedPullRequestIdentity(t *testing.T) {
+// Both operations must carry the caller's title and multiline body, while
+// preserving their distinct operation name and service-login arguments.
+func TestIssueWritesCarryPayloadAndOperation(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		arguments []string
+		call      func(*Adapter, context.Context, Repository, string, string) WriteResult
+	}{
+		{name: "alert", arguments: []string{"owner", "repo"}, call: (*Adapter).Alert},
+		{name: "guarded-file-issue", arguments: []string{"owner", "repo", "Minos"}, call: (*Adapter).FileIssue},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &recordingRunner{outputs: [][]byte{[]byte(`{"outcome":"applied"}`)}, errors: []error{nil}}
+			adapter, err := NewAdapter(runner, "Minos", "Minos")
+			if err != nil {
+				t.Fatal(err)
+			}
+			title := `Advisory "write" failure`
+			body := "Two writers read the same revision.\nThe later update wins."
+			test.call(adapter, t.Context(), Repository{Owner: "owner", Name: "repo"}, title, body)
+			if len(runner.requests) != 1 {
+				t.Fatalf("requests = %v, want one", runner.requests)
+			}
+			request := runner.requests[0]
+			if request.Operation != test.name || !slices.Equal(request.Arguments, test.arguments) {
+				t.Fatalf("operation=%q arguments=%v", request.Operation, request.Arguments)
+			}
+			payload, err := io.ReadAll(request.Stdin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]string
+			if err := json.Unmarshal(payload, &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 2 || got["title"] != title || got["body"] != body {
+				t.Fatalf("issue payload = %s, want title=%q body=%q", payload, title, body)
+			}
+		})
+	}
+}
+
+func TestLabelMarkersUseTheGuardedLabelOperations(t *testing.T) {
 	guard := Guard{
 		Repository: Repository{Owner: "owner", Name: "repo"}, PullRequest: 17,
 		HeadSHA: "head-sha", TargetSHA: "target-sha",
 	}
-	tests := []struct {
-		name      string
-		operation string
-		argument  string
-		invoke    func(*Adapter) WriteResult
-	}{
-		{"remove reaction", "guarded-remove-reaction", "eyes", func(adapter *Adapter) WriteResult {
-			return adapter.RemoveReaction(t.Context(), guard, "eyes")
-		}},
-		{"remove label", "guarded-remove-label", "Flaky Test", func(adapter *Adapter) WriteResult {
-			return adapter.RemoveLabel(t.Context(), guard, "Flaky Test")
-		}},
-		{"delete source branch", "guarded-delete-source-branch", "feature", func(adapter *Adapter) WriteResult {
-			return adapter.DeleteSourceBranch(t.Context(), guard, "feature")
-		}},
+	runner := &recordingRunner{
+		outputs: [][]byte{[]byte(`{"outcome":"applied"}`), []byte(`{"outcome":"applied"}`)},
+		errors:  []error{nil, nil},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			runner := &recordingRunner{outputs: [][]byte{[]byte(`{"outcome":"applied"}`)}, errors: []error{nil}}
-			adapter, err := NewAdapter(runner, "Minos")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if result := test.invoke(adapter); result.Outcome != WriteApplied {
-				t.Fatalf("result = %#v", result)
-			}
-			request := runner.requests[0]
-			if request.Operation != test.operation {
-				t.Fatalf("operation = %q, want %q", request.Operation, test.operation)
-			}
-			want := []string{"owner", "repo", "17", "head-sha", "target-sha", "Minos", test.argument}
-			if !slices.Equal(request.Arguments, want) {
-				t.Fatalf("arguments = %v, want %v", request.Arguments, want)
-			}
-		})
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := Marker{Label: "minos/reviewing"}
+	if result := adapter.AddMarker(t.Context(), guard, marker); result.Outcome != WriteApplied {
+		t.Fatalf("add result = %#v", result)
+	}
+	if result := adapter.RemoveMarker(t.Context(), guard, marker); result.Outcome != WriteApplied {
+		t.Fatalf("remove result = %#v", result)
+	}
+	want := []string{"owner", "repo", "17", "head-sha", "target-sha", "Minos", "minos/reviewing"}
+	for index, operation := range []string{"guarded-add-label", "guarded-remove-label"} {
+		request := runner.requests[index]
+		if request.Operation != operation || !slices.Equal(request.Arguments, want) {
+			t.Fatalf("request %d = %s %v, want %s %v", index, request.Operation, request.Arguments, operation, want)
+		}
+	}
+}
+
+func TestMarkerWithoutExactlyOneFormIsRejectedBeforeAnyWrite(t *testing.T) {
+	runner := &recordingRunner{}
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []Marker{{}, {Reaction: "eyes", Label: "minos/reviewing"}, {Reaction: "two words"}} {
+		if result := adapter.AddMarker(t.Context(), Guard{}, marker); result.Outcome != WriteRejected {
+			t.Fatalf("marker %#v result = %#v, want rejected", marker, result)
+		}
+	}
+	if len(runner.requests) != 0 {
+		t.Fatalf("requests = %#v, want none", runner.requests)
 	}
 }
 

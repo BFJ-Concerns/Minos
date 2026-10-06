@@ -1,6 +1,6 @@
 [Unit]
 Description=Minos reconciliation sweep
-Documentation=file:/opt/minos/docs/go-live.md
+Documentation=file:/opt/minos/docs/deployment.md
 Wants=network-online.target
 After=network-online.target
 OnFailure=minos-sweep-alert.service

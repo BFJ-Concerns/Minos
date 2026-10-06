@@ -51,6 +51,7 @@ type timingWorker struct {
 		Reason      string  `json:"reason"`
 		BuildMs     *int64  `json:"build_ms"`
 		TestMs      *int64  `json:"test_ms"`
+		OtherMs     *int64  `json:"other_ms"`
 		ReasoningMs *int64  `json:"reasoning_ms"`
 	} `json:"span_breakdown"`
 }
@@ -329,8 +330,8 @@ func TestArchivedSpanAnalysisAttributesKnownTranscriptsAndRefusesUnknownFormats(
 	for _, worker := range analysed.Workers {
 		byRecord[worker.Record] = worker
 	}
-	assertArchivedSpan(t, byRecord["ensemble-records/codex"].SpanBreakdown, "codex-app-server-events", 360000, 0, 240000)
-	assertArchivedSpan(t, byRecord["ensemble-records/claude"].SpanBreakdown, "claude-session-jsonl", 0, 120000, 60000)
+	assertArchivedSpan(t, byRecord["ensemble-records/codex"].SpanBreakdown, "codex-app-server-events", 600000)
+	assertArchivedSpan(t, byRecord["ensemble-records/claude"].SpanBreakdown, "claude-session-jsonl", 180000)
 	unknown := byRecord["ensemble-records/unknown"].SpanBreakdown
 	if unknown == nil || unknown.Status != "unparseable" || unknown.Format == nil || *unknown.Format != "future-session-jsonl" {
 		t.Fatalf("unknown transcript was attributed instead of refused: %+v", unknown)
@@ -378,9 +379,9 @@ func TestArchivedSpanAnalysisMatchesSiblingAgentsByWorkerIdentity(t *testing.T) 
 	if len(byID) != 3 {
 		t.Fatalf("workers by identity = %+v, want three sibling agents", byID)
 	}
-	assertArchivedSpan(t, byID[1].SpanBreakdown, "codex-app-server-events", 120000, 0, 120000)
-	assertArchivedSpan(t, byID[2].SpanBreakdown, "claude-session-jsonl", 0, 300000, 120000)
-	assertArchivedSpan(t, byID[3].SpanBreakdown, "codex-app-server-events", 0, 0, 480000)
+	assertArchivedSpan(t, byID[1].SpanBreakdown, "codex-app-server-events", 240000)
+	assertArchivedSpan(t, byID[2].SpanBreakdown, "claude-session-jsonl", 420000)
+	assertArchivedSpan(t, byID[3].SpanBreakdown, "codex-app-server-events", 480000)
 }
 
 func TestArchivedSpanAnalysisScopesToCollectedRecordRootsAndReportsUnresolvedRecords(t *testing.T) {
@@ -429,8 +430,8 @@ func TestArchivedSpanAnalysisScopesToCollectedRecordRootsAndReportsUnresolvedRec
 	if err := json.Unmarshal(output, &record); err != nil {
 		t.Fatalf("analysis does not produce a timing record: %v\n%s", err, output)
 	}
-	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 0, 0, 60000)
-	assertArchivedSpan(t, record.Workers[1].SpanBreakdown, "codex-app-server-events", 0, 0, 120000)
+	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 60000)
+	assertArchivedSpan(t, record.Workers[1].SpanBreakdown, "codex-app-server-events", 120000)
 	if span := record.Workers[2].SpanBreakdown; span == nil || span.Status != "unparseable" || span.Reason != "unreadable or invalid agent record" {
 		t.Fatalf("broken agent record was not reported as unparseable: %+v", span)
 	}
@@ -477,7 +478,7 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeScript(t, filepath.Join(bin, "ssh"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nprintf '%s\\n' \"$last\" >>\"$SSH_LOG\"\nexec sh -c \"$last\"\n")
+	installArchiveReceiverSSH(t, bin, destination)
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nif [ -n \"$last\" ] && [ -f \"$last\" ]; then exec cat \"$last\"; fi\nexec cat\n")
 	identity := filepath.Join(root, "identity")
 	knownHosts := filepath.Join(root, "known-hosts")
@@ -487,7 +488,7 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 		}
 	}
 	config := filepath.Join(root, "archive.env")
-	if err := os.WriteFile(config, []byte("MINOS_ARCHIVE_HOST=fixture\nMINOS_ARCHIVE_DESTINATION=\""+destination+"\"\nMINOS_ARCHIVE_IDENTITY_FILE=\""+identity+"\"\nMINOS_ARCHIVE_KNOWN_HOSTS=\""+knownHosts+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(config, []byte("MINOS_ARCHIVE_HOST=fixture\nMINOS_ARCHIVE_IDENTITY_FILE=\""+identity+"\"\nMINOS_ARCHIVE_KNOWN_HOSTS=\""+knownHosts+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sshLog := filepath.Join(root, "ssh.log")
@@ -509,13 +510,13 @@ func TestListRecentTimingsReadsTheStaticArchivedTimingRecord(t *testing.T) {
 	if err := json.Unmarshal(decoded, &record); err != nil {
 		t.Fatalf("enriched sidecar does not parse: %v\n%s", err, decoded)
 	}
-	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 0, 120000, 60000)
+	assertArchivedSpan(t, record.Workers[0].SpanBreakdown, "codex-app-server-events", 180000)
 	log, err := os.ReadFile(sshLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(log), "zstd -dc") || strings.Contains(string(log), ".tar.zst") {
-		t.Fatalf("recent listing fetched an archive instead of its sidecar:\n%s", log)
+	if strings.TrimSpace(string(log)) != "list 20260826T000000Z 1" {
+		t.Fatalf("recent listing asked the archive host for more than the sidecar listing:\n%s", log)
 	}
 }
 
@@ -547,11 +548,12 @@ func assertArchivedSpan(t *testing.T, span *struct {
 	Reason      string  `json:"reason"`
 	BuildMs     *int64  `json:"build_ms"`
 	TestMs      *int64  `json:"test_ms"`
+	OtherMs     *int64  `json:"other_ms"`
 	ReasoningMs *int64  `json:"reasoning_ms"`
-}, format string, build, test, reasoning int64) {
+}, format string, other int64) {
 	t.Helper()
-	if span == nil || span.Status != "parsed" || span.Format == nil || *span.Format != format || span.BuildMs == nil || *span.BuildMs != build || span.TestMs == nil || *span.TestMs != test || span.ReasoningMs == nil || *span.ReasoningMs != reasoning {
-		t.Fatalf("span = %+v, want parsed %s with %d/%d/%d ms", span, format, build, test, reasoning)
+	if span == nil || span.Status != "parsed" || span.Format == nil || *span.Format != format || span.BuildMs != nil || span.TestMs != nil || span.ReasoningMs != nil || span.OtherMs == nil || *span.OtherMs != other {
+		t.Fatalf("span = %+v, want parsed %s without retired categories and with other_ms=%d", span, format, other)
 	}
 }
 
@@ -595,6 +597,169 @@ func TestMemoryTelemetrySnapshotsHonestCountersFromTheCgroup(t *testing.T) {
 	}
 	if _, present := snapshot["memory_current"]; present {
 		t.Fatal("snapshot carries a page-cache-inflated counter")
+	}
+}
+
+// The pressure watch and the telemetry snapshot read this run's cgroup through
+// one shared collector, so the anon-plus-swap figure the watch records as the
+// run's peak is the same figure the snapshot reports. The fixture's memory.stat
+// is laid out to punish a second, independent parse: the anon line is preceded
+// by keys that a looser match would take instead, and swap lives in its own
+// file. A copy that drifted would make these two numbers disagree.
+func TestCgroupMemoryCollectorFeedsBothTheWatchAndTheSnapshot(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := filepath.Join(fixture.root, "cgroup")
+	if err := os.MkdirAll(cgroup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"memory.current":      "18000000000\n",
+		"memory.max":          "22000000000\n",
+		"memory.stat":         "anon_thp 3300000000\nfile 12687937536\nanon 5100000000\nswapcached 770000000\nworkingset_refault_anon 14067688\nworkingset_refault_file 47279103\n",
+		"memory.swap.current": "2300000000\n",
+		"memory.events":       "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n",
+		"memory.peak":         "18000000000\n",
+		"memory.pressure":     "some avg10=0.12 avg60=0.16 avg300=2.37 total=1064808220\nfull avg10=0.00 avg60=0.09 avg300=1.72 total=880404397\n",
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(cgroup, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "memory-telemetry"), snapshotPath)
+	cmd.Env = append(os.Environ(), "MINOS_CGROUP_DIR="+cgroup)
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("memory-telemetry: %v\n%s", err, combined)
+	}
+	content, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		Anon *float64 `json:"anon"`
+		Swap *float64 `json:"swap"`
+	}
+	if err := json.Unmarshal(content, &snapshot); err != nil {
+		t.Fatalf("snapshot does not parse: %v\n%s", err, content)
+	}
+	if snapshot.Anon == nil || snapshot.Swap == nil {
+		t.Fatalf("snapshot omits the footprint counters: %s", content)
+	}
+
+	output, err := fixture.execute(map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_PENDING_STATE":  "done",
+		"MINOS_TEST_WAIT_POLLS":     "2",
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+	})
+	if err != nil {
+		t.Fatalf("run-body: %v\n%s", err, output)
+	}
+	peak, err := os.ReadFile(filepath.Join(fixture.runDir, "memory-peak"))
+	if err != nil {
+		t.Fatalf("the pressure watch recorded no peak: %v\n%s", err, output)
+	}
+	want := fmt.Sprintf("%d", int64(*snapshot.Anon)+int64(*snapshot.Swap))
+	if strings.TrimSpace(string(peak)) != want {
+		t.Fatalf("watch peak = %s, snapshot anon+swap = %s — the two call paths parsed the cgroup differently",
+			strings.TrimSpace(string(peak)), want)
+	}
+	fixture.assertProcessesStopped(t)
+}
+
+// The shared collector's tolerance reaches both callers: one cgroup missing
+// anon disables the watch and leaves the field out of the snapshot.
+func TestCgroupMemoryCollectorToleratesAMissingCounterOnBothPaths(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	cgroup := writeTestCgroup(t, fixture.root, 900_000_000, 1_000_000_000, 0, 900_000_000, 0)
+	if err := os.WriteFile(filepath.Join(cgroup, "memory.stat"), []byte("inactive_file 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "run-body", "memory-telemetry"), snapshotPath)
+	cmd.Env = append(os.Environ(), "MINOS_CGROUP_DIR="+cgroup)
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("memory-telemetry: %v\n%s", err, combined)
+	}
+	content, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(content, &snapshot); err != nil {
+		t.Fatalf("snapshot does not parse: %v\n%s", err, content)
+	}
+	if _, present := snapshot["anon"]; present {
+		t.Fatalf("snapshot invented an anon figure from a cgroup without one: %s", content)
+	}
+
+	output, err := fixture.execute(map[string]string{
+		"MINOS_CGROUP_DIR":          cgroup,
+		"MINOS_TEST_PENDING_STATE":  "done",
+		"MINOS_TEST_WAIT_POLLS":     "2",
+		"MINOS_TEST_TERMINAL_STATE": "failed",
+	})
+	if err != nil {
+		t.Fatalf("run-body: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "memory-pressure watch disabled: cgroup memory counters are unavailable or malformed") {
+		t.Fatalf("run-body kept judging memory without an anon counter:\n%s", output)
+	}
+	fixture.assertProcessesStopped(t)
+}
+
+// Two faithful copies of a counter read agree on every cgroup until one of
+// them drifts, so agreement alone cannot show that only one copy is left.
+// What can is the absence of the second reader: this run's cgroup is resolved
+// and its counters are parsed in one file of the run-body family, and every
+// other script in it reaches those numbers through that file. The terminal
+// death evidence is deliberately not caught here — it cats memory.events,
+// memory.peak and memory.pressure verbatim through the loop variable, taking
+// only the shared directory.
+func TestOnlyTheSharedFragmentResolvesTheCgroupAndReadsItsCounters(t *testing.T) {
+	signatures := []string{
+		"/proc/self/cgroup",
+		"$cgroup_dir/memory.stat",
+		"$cgroup_dir/memory.swap.current",
+		"$cgroup_dir/memory.pressure",
+	}
+	scripts := filepath.Join("..", "..", "scripts", "run-body")
+	const fragment = "cgroup-memory.sh"
+
+	shared, err := os.ReadFile(filepath.Join(scripts, fragment))
+	if err != nil {
+		// Reported rather than fatal, so the scan below still names whichever
+		// scripts are reading the cgroup for themselves.
+		t.Errorf("the shared cgroup fragment is missing: %v", err)
+	} else {
+		for _, signature := range signatures {
+			if !strings.Contains(string(shared), signature) {
+				t.Errorf("%s no longer carries %q, so the single-reader check below proves nothing", fragment, signature)
+			}
+		}
+	}
+
+	entries, err := os.ReadDir(scripts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == fragment {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(scripts, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, signature := range signatures {
+			if strings.Contains(string(content), signature) {
+				t.Errorf("scripts/run-body/%s reads the cgroup itself (%q) — a second copy free to drift; source %s instead",
+					entry.Name(), signature, fragment)
+			}
+		}
 	}
 }
 
@@ -657,7 +822,7 @@ func writeTimingPhaseAgentRecord(t *testing.T, path, label, phase string, execut
 	}
 	record := map[string]any{
 		"id": 1, "engine": "codex", "label": label, "phase": phase,
-		"model": nil, "resolved_model": "gpt-5.6-terra", "status": "complete",
+		"model": nil, "resolved_model": "gpt-6-sol", "status": "complete",
 		"queued_ms": 12, "execution_ms": executionMs,
 		"attempts": []map[string]any{{"attempt": 1, "started_at": startedAt, "ended_at": endedAt}},
 	}
@@ -676,7 +841,7 @@ func writeTimingFixtureAgentRecord(t *testing.T, path, startedAt, endedAt string
 		t.Fatal(err)
 	}
 	record := `{"id":1,"engine":"codex","label":"specialist-1-correctness-gpt",` +
-		`"phase":"Specialise","model":null,"resolved_model":"gpt-5.6-terra",` +
+		`"phase":"Specialise","model":null,"resolved_model":"gpt-6-sol",` +
 		`"status":"complete","queued_ms":12,"execution_ms":345,` +
 		`"attempts":[{"attempt":1,"started_at":"` + startedAt + `","ended_at":"` + endedAt + `"}]}`
 	if err := os.WriteFile(path, []byte(record+"\n"), 0o644); err != nil {
@@ -750,7 +915,7 @@ this line is not JSON and must cost one event, never the record
 		if worker.Engine == nil || *worker.Engine != "codex" {
 			t.Fatalf("worker engine = %+v", worker.Engine)
 		}
-		if worker.Model == nil || *worker.Model != "gpt-5.6-terra" {
+		if worker.Model == nil || *worker.Model != "gpt-6-sol" {
 			t.Fatalf("worker model = %+v", worker.Model)
 		}
 		if worker.ExecutionMs == nil || *worker.ExecutionMs != 345 {
@@ -833,16 +998,8 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "cgroup-death-evidence"), []byte("[memory.events]\noom_kill 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The archive proof starts at the two production launch boundaries. A tree
-	// lacking either retention setting fails before it can manufacture a record
-	// shape, then the real launcher creates the exact nested directories the
-	// archive and timing scripts consume below.
-	assertLifecycleEnsembleRecordLaunch(t, "gate-repair", `> "$MINOS_RUN_DIR/gate-repair-args.json"`)
-	assertFixDispatchRetainsEnsembleRecord(t)
-	// The launcher, rather than this test, creates each record root. Add one
-	// deterministic agent result to each launcher-created archive so the real
-	// timing and archive scripts exercise the production nested layout without
-	// talking to a model provider.
+	// Add a deterministic agent result under the nested layout the timing and
+	// archive scripts consume without talking to a model provider.
 	records := map[string]string{}
 	for _, fixture := range []struct {
 		name      string
@@ -850,10 +1007,8 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 		endedAt   string
 	}{
 		{name: "record-a", startedAt: "2026-08-17T00:21:00Z", endedAt: "2026-08-17T00:25:00Z"},
-		{name: "gate-repair", startedAt: "2026-08-17T00:26:00Z", endedAt: "2026-08-17T00:27:00Z"},
-		{name: "fix", startedAt: "2026-08-17T00:28:00Z", endedAt: "2026-08-17T00:29:00Z"},
 	} {
-		archive := launchEnsembleRecordProbe(t, runDir, fixture.name)
+		archive := filepath.Join(runDir, "ensemble-records", fixture.name)
 		writeTimingFixtureAgentRecord(t, filepath.Join(archive, "agents", "0001", "agent.json"), fixture.startedAt, fixture.endedAt)
 		relative, err := filepath.Rel(runDir, archive)
 		if err != nil {
@@ -875,14 +1030,9 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The fixture ssh executes the remote command locally and the fixture
-	// zstd is a passthrough, so the whole transport runs inside the temp
-	// directory while archive-run's own logic stays real.
-	writeScript(t, filepath.Join(bin, "ssh"), `#!/usr/bin/env sh
-last=""
-for argument in "$@"; do last="$argument"; done
-exec sh -c "$last"
-`)
+	// The fixture zstd is a passthrough, so the whole transport runs inside
+	// the temp directory while archive-run's own logic stays real.
+	installArchiveReceiverSSH(t, bin, destination)
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nexec cat\n")
 
 	identity := filepath.Join(root, "identity")
@@ -895,7 +1045,6 @@ exec sh -c "$last"
 	archiveConfig := filepath.Join(root, "archive.env")
 	config := strings.Join([]string{
 		`MINOS_ARCHIVE_HOST="fixture"`,
-		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
 		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
 		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
 	}, "\n") + "\n"
@@ -940,31 +1089,28 @@ exec sh -c "$last"
 	if record.Kind != "minos-timing-record-v1" {
 		t.Fatalf("sidecar kind = %q", record.Kind)
 	}
-	if len(record.Commands) != 1 || len(record.Workers) != 3 {
-		t.Fatalf("sidecar carries %d commands, %d workers, want 1 and 3 genuine workers", len(record.Commands), len(record.Workers))
+	if len(record.Commands) != 1 || len(record.Workers) != 1 {
+		t.Fatalf("sidecar carries %d commands, %d workers, want 1 and 1 genuine worker", len(record.Commands), len(record.Workers))
 	}
 	workerRecords := make(map[string]bool, len(record.Workers))
 	for _, worker := range record.Workers {
 		workerRecords[worker.Record] = true
 	}
-	for _, want := range []string{records["record-a"], records["gate-repair"], records["fix"]} {
+	for _, want := range []string{records["record-a"]} {
 		if !workerRecords[want] {
 			t.Fatalf("timing record omits genuine worker record %q: %#v", want, record.Workers)
 		}
 	}
 	for _, worker := range record.Workers {
 		if worker.Record == records["record-a"] {
-			assertArchivedSpan(t, worker.SpanBreakdown, "codex-app-server-events", 0, 120000, 120000)
+			assertArchivedSpan(t, worker.SpanBreakdown, "codex-app-server-events", 240000)
 		}
 	}
 	archiveListing, err := exec.Command("tar", "-tf", tarballs[0]).CombinedOutput()
 	if err != nil {
 		t.Fatalf("list delivered tarball: %v\n%s", err, archiveListing)
 	}
-	for _, want := range []string{
-		records["gate-repair"] + "/agents/0001/agent.json",
-		records["fix"] + "/agents/0001/agent.json",
-	} {
+	for _, want := range []string{records["record-a"] + "/agents/0001/agent.json"} {
 		if !strings.Contains(string(archiveListing), want) {
 			t.Fatalf("delivered tarball omits %q:\n%s", want, archiveListing)
 		}
@@ -987,7 +1133,7 @@ func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {
 	if err := os.MkdirAll(tools, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"archive-run", "collect-timings", "memory-telemetry"} {
+	for _, name := range []string{"archive-run", "archive-transport.sh", "collect-timings", "memory-telemetry", "cgroup-memory.sh"} {
 		content, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", name))
 		if err != nil {
 			t.Fatal(err)
@@ -1005,7 +1151,7 @@ func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeScript(t, filepath.Join(bin, "ssh"), "#!/usr/bin/env sh\nlast=\"\"\nfor argument in \"$@\"; do last=\"$argument\"; done\nexec sh -c \"$last\"\n")
+	installArchiveReceiverSSH(t, bin, destination)
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nexec cat\n")
 	identity := filepath.Join(root, "identity")
 	knownHosts := filepath.Join(root, "known-hosts")
@@ -1017,7 +1163,6 @@ func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {
 	config := filepath.Join(root, "archive.env")
 	content := strings.Join([]string{
 		`MINOS_ARCHIVE_HOST="fixture"`,
-		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
 		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
 		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
 	}, "\n") + "\n"
@@ -1085,11 +1230,7 @@ func TestArchiveRunSanitisesHostileRunNameBeforeRemoteCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeScript(t, filepath.Join(bin, "ssh"), `#!/usr/bin/env sh
-last=""
-for argument in "$@"; do last="$argument"; done
-exec sh -c "$last"
-`)
+	installArchiveReceiverSSH(t, bin, destination)
 	writeScript(t, filepath.Join(bin, "zstd"), "#!/usr/bin/env sh\nexec cat\n")
 
 	identity := filepath.Join(root, "identity")
@@ -1102,7 +1243,6 @@ exec sh -c "$last"
 	archiveConfig := filepath.Join(root, "archive.env")
 	config := strings.Join([]string{
 		`MINOS_ARCHIVE_HOST="fixture"`,
-		`MINOS_ARCHIVE_DESTINATION="` + destination + `"`,
 		`MINOS_ARCHIVE_IDENTITY_FILE="` + identity + `"`,
 		`MINOS_ARCHIVE_KNOWN_HOSTS="` + knownHosts + `"`,
 	}, "\n") + "\n"

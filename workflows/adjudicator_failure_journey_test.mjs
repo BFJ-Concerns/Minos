@@ -75,8 +75,8 @@ function envelope() {
     reviewed: { target: "target-sha", head: "head-sha", occasion: null },
     stage: "present",
     requiredModelEvidence: [
-      { label: "specialist", role: "specialist", pinnedModel: "gpt-5.6-sol" },
-      { label: "verifier", role: "verifier", pinnedModel: "claude-opus-5" },
+      { label: "specialist", role: "specialist", pinnedModel: "gpt-6-sol" },
+      { label: "verifier", role: "verifier", pinnedModel: "claude-opus-5-5" },
     ],
     proposedFindings: [{
       id: "specialist:1",
@@ -179,12 +179,12 @@ function writeArchive(recordDir) {
     JSON.stringify({
       label: "specialist",
       status: scenario === "failed-leg" ? "failed" : "complete",
-      resolved_model: "gpt-5.6-sol",
+      resolved_model: "gpt-6-sol",
     }),
   );
   writeFileSync(
     join(runDir, "agents", "000002", "agent.json"),
-    JSON.stringify({ label: "verifier", status: "complete", resolved_model: "claude-opus-5" }),
+    JSON.stringify({ label: "verifier", status: "complete", resolved_model: "claude-opus-5-5" }),
   );
   writeFileSync(
     join(runDir, "agents", "000002", "attempt-001-claude.jsonl"),
@@ -294,19 +294,11 @@ function assertWithheld(verdict) {
   assert.equal(verdict.status, "incomplete");
   assert.equal(verdict.complete, false);
   assert.deepEqual(verdict.confirmedFindings, []);
-  assert.equal(verdict.reviewBody, null);
-  assert.equal(verdict.briefFixRequired, false);
 }
 
 function machineReadableBriefStatus(verdict, brief) {
-  const disposition = Array.isArray(verdict.briefs)
-    ? verdict.briefs.find((entry) => entry && entry.brief === brief)
-    : null;
-  if (disposition && ["run", "skipped"].includes(disposition.status)) return disposition.status;
-  if (Array.isArray(verdict.ran) && verdict.ran.some((entry) =>
-    entry === brief || (entry && entry.brief === brief))) return "run";
-  if (Array.isArray(verdict.skipped) && verdict.skipped.some((entry) =>
-    entry === brief || (entry && entry.brief === brief))) return "skipped";
+  if (verdict.ran.some((entry) => entry.brief === brief)) return "run";
+  if (verdict.skipped.some((entry) => entry.brief === brief)) return "skipped";
   return null;
 }
 
@@ -330,9 +322,9 @@ test("the executable adjudicator carries the launch contract through to a publis
   assert.match(basename(launch.recordDir), /^minos-ensemble-record-[^/]+$/);
   assert.equal(verdict.status, "complete");
   assert.deepEqual(verdict.confirmedFindings.map((finding) => finding.id), ["specialist:1"]);
-  assert.deepEqual(verdict.reviewBody.comments.map((comment) => ({
-    path: comment.path,
-    line: comment.line,
+  assert.deepEqual(verdict.confirmedFindings.map((finding) => ({
+    path: finding.path,
+    line: finding.line,
   })), [{ path: "internal/review.go", line: 42 }]);
   assert.match(result.stderr, /\[workflow\] complete/);
 });
@@ -402,7 +394,6 @@ test("the adjudicated verdict distinguishes a misconfigured brief that ran from 
   const expectedMisconfigurations = [{
     brief,
     title: "Scoped",
-    member: "primary",
     kind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }];
@@ -443,7 +434,6 @@ test("the executable verdict carries observations without admitting them as find
   assert.deepEqual(verdict.outOfScopeObservations, [{
     id: "specialist:observation:1",
     source: "Correctness",
-    member: "primary",
     title: "Unchanged adjacent defect",
     path: "internal/adjacent.go",
     line: 73,

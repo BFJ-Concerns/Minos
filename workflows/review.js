@@ -8,10 +8,6 @@ export const meta = {
   ],
 };
 
-const GPT_EXPLORER_MODEL = "gpt-5.6-terra";
-const PROPOSER_MODEL = "gpt-5.6-terra";
-const VERIFIER_MODEL = "claude-opus-5";
-const MAX_FINDINGS_PER_VERIFIER = 6;
 const MAX_ORIENTATION_PACKET_BYTES = 32 * 1024;
 
 const ROLE_BRIEFS = {
@@ -22,6 +18,33 @@ const ROLE_BRIEFS = {
   design: "workflows/review-briefs/design.md",
   verifier: "workflows/review-briefs/verifier.md",
 };
+
+// The finding, observation and verifier contracts arrive as `contracts`,
+// built once in workflows/review-contracts.mjs by the input builder; this
+// script keeps no copy, and a missing or malformed set fails the workflow
+// before dispatch.
+function contractsFromInput(input) {
+  const contracts = input && input.contracts;
+  if (!contracts || typeof contracts !== "object" || Array.isArray(contracts)) return null;
+  if (!Number.isInteger(contracts.verifierBatchSize) || contracts.verifierBatchSize < 1) return null;
+  for (const name of [
+    "findingShape",
+    "outOfScopeObservationShape",
+    "applicabilityShape",
+    "specialistSchema",
+    "verifierVerdictShape",
+    "verifierSchema",
+  ]) {
+    const shape = contracts[name];
+    if (
+      !shape || typeof shape !== "object" || Array.isArray(shape) ||
+      shape.type !== "object" ||
+      !Array.isArray(shape.required) ||
+      !shape.properties || typeof shape.properties !== "object" || Array.isArray(shape.properties)
+    ) return null;
+  }
+  return contracts;
+}
 
 function roleBriefsFromInput(input) {
   const entries = Array.isArray(input && input.instructionBriefs) ? input.instructionBriefs : [];
@@ -41,17 +64,52 @@ function missingRoleBriefs(roleBriefs) {
   return [...new Set(Object.values(ROLE_BRIEFS))].filter((path) => !roleBriefs.has(path));
 }
 
+const ROUTING_ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner"];
+const ROUTING_ENGINES = ["claude", "codex"];
+
+// The resolved routing the input builder attached: every role's engine,
+// model and effort, already defaulted for what the deployment provisioned.
+// Nothing here is fixed in source; a missing or malformed table fails the
+// workflow before any dispatch.
+function routingFromInput(input) {
+  const routing = input && input.routing;
+  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
+  for (const role of ROUTING_ROLES) {
+    const entry = routing[role];
+    if (
+      !entry ||
+      !ROUTING_ENGINES.includes(entry.engine) ||
+      typeof entry.model !== "string" || entry.model === "" ||
+      typeof entry.effort !== "string" || entry.effort === ""
+    ) return null;
+  }
+  return routing;
+}
+
 function projectGuidanceFromInput(input) {
   const guidance = input && input.guidance;
-  if (
-    !guidance ||
-    typeof guidance.path !== "string" ||
-    guidance.path === "" ||
-    typeof guidance.content !== "string" ||
-    guidance.content.trim() === "" ||
-    typeof guidance.grounding !== "string"
-  ) return null;
+  if (!Array.isArray(guidance) || guidance.length === 0) return null;
+  for (const entry of guidance) {
+    if (
+      !entry ||
+      typeof entry.path !== "string" ||
+      entry.path === "" ||
+      (entry.repository !== null && (typeof entry.repository !== "string" || entry.repository === "")) ||
+      (entry.origin !== "configured" && entry.origin !== "checked-in") ||
+      typeof entry.content !== "string" ||
+      entry.content.trim() === ""
+    ) return null;
+  }
   return guidance;
+}
+
+// One block per guidance document, in the configured order: the reviewed
+// project's declared intent, as the repository owner names it.
+function projectGuidanceSection(guidance) {
+  return guidance.map((entry) =>
+    `<project-guidance origin="${entry.origin}"${entry.repository === null ? "" : ` repository="${entry.repository}"`} path="${entry.path}">\n` +
+    `${entry.content}\n</project-guidance>\n`
+  ).join("\n") + "\n";
 }
 
 function pullRequestFromInput(input) {
@@ -81,27 +139,23 @@ function pullRequestSection(pullRequest) {
   );
 }
 
-function reviewedMemberSection(context) {
-  const diff = context.diff === null
-    ? "The deterministic input carries no separate diff text for this solo member; read the reviewed range directly."
-    : `<member-diff>\n${context.diff}\n</member-diff>`;
+function reviewedChangeSection(target, head, pullRequest) {
   return (
-    `<review-member id=${JSON.stringify(context.id)} target=${JSON.stringify(context.target)} head=${JSON.stringify(context.head)}>\n` +
-    pullRequestSection(context.pullRequest) +
-    `${diff}\n</review-member>`
+    `<reviewed-change target=${JSON.stringify(target)} head=${JSON.stringify(head)}>\n` +
+    pullRequestSection(pullRequest) +
+    `The deterministic input carries no separate diff text; read the reviewed range directly.\n</reviewed-change>`
   );
 }
 
 function rolePrompt(roleBriefs, guidance, pullRequest, path, assignment) {
-  const brief = roleBriefs.get(path) || { readPath: path, content: "" };
+  const brief = roleBriefs.get(path);
   return (
     `Read and follow the Markdown role brief at ${brief.readPath}. ` +
     `The deterministic input enumerator supplied the same content below so this workflow can bind the dispatched prompt to the shipped brief without reading files itself.\n\n` +
     `<role-brief path="${path}">\n${brief.content}\n</role-brief>\n\n` +
-    `Judge the change against the reviewed project's checked-in commission or guidance below. ` +
-    `This project intent governs whether behaviour is correct.\n\n` +
-    `<project-guidance grounding="${guidance.grounding}" path="${guidance.path}">\n` +
-    `${guidance.content}\n</project-guidance>\n\n` +
+    `Judge the change against the reviewed project's declared intent below — every guidance document its owner configured, ` +
+    `or its own checked-in guidance where none is configured. This project intent governs whether behaviour is correct.\n\n` +
+    projectGuidanceSection(guidance) +
     pullRequestSection(pullRequest) +
     assignment
   );
@@ -112,9 +166,9 @@ function normalisePlan(plan) {
     return {
       ...unit,
       kind: "planned",
-      family: "gpt",
+      family: routing.proposer.engine,
       roleBrief: ROLE_BRIEFS[unit.specialistType],
-      label: `specialist-${index + 1}-${unit.specialistType}-gpt`,
+      label: `specialist-${index + 1}-${unit.specialistType}-${routing.proposer.engine}`,
     };
   });
 }
@@ -138,7 +192,6 @@ function validExplorationResult(result) {
   return result.plan.every((unit) =>
     unit && typeof unit === "object" && !Array.isArray(unit) &&
     typeof unit.id === "string" && unit.id !== "" &&
-    typeof unit.member === "string" && memberIds.has(unit.member) &&
     typeof unit.concern === "string" && unit.concern !== "" &&
     ["correctness", "security", "testing", "design"].includes(unit.specialistType) &&
     Array.isArray(unit.scope) && unit.scope.length > 0 &&
@@ -209,69 +262,12 @@ function orientationPacket(target, head, files, units) {
   return candidate(fileCount, ownershipCount);
 }
 
-const findingShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["member", "title", "severity", "confidence", "path", "line", "explanation"],
-  properties: {
-    member: { type: "string" },
-    title: { type: "string" },
-    severity: { type: "string", enum: ["Critical", "High", "Medium", "Low"] },
-    confidence: { type: "integer", minimum: 0, maximum: 100 },
-    path: { type: "string" },
-    line: { type: "integer", minimum: 1 },
-    explanation: { type: "string" },
-  },
-};
-
-const outOfScopeObservationShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["title", "path", "line", "explanation"],
-  properties: {
-    title: { type: "string" },
-    path: { type: "string" },
-    line: { type: "integer", minimum: 1 },
-    explanation: { type: "string" },
-  },
-};
-
-const memberOutOfScopeObservationShape = {
-  ...outOfScopeObservationShape,
-  required: ["member", ...outOfScopeObservationShape.required],
-  properties: {
-    member: { type: "string" },
-    ...outOfScopeObservationShape.properties,
-  },
-};
-
-const applicabilityShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["status", "reason"],
-  properties: {
-    status: { type: "string", enum: ["applicable", "inapplicable"] },
-    reason: { type: "string" },
-  },
-};
-
 const explorationApplicabilityShape = {
   type: "object",
   additionalProperties: false,
   required: ["reason"],
   properties: {
     reason: { type: "string" },
-  },
-};
-
-const specialistSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["applicability", "findings"],
-  properties: {
-    applicability: applicabilityShape,
-    findings: { type: "array", items: findingShape },
-    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
   },
 };
 
@@ -299,10 +295,9 @@ const explorationSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["id", "member", "concern", "scope", "specialistType"],
+        required: ["id", "concern", "scope", "specialistType"],
         properties: {
           id: { type: "string" },
-          member: { type: "string" },
           concern: { type: "string" },
           scope: { type: "array", minItems: 1, items: { type: "string" } },
           specialistType: { type: "string", enum: ["correctness", "security", "testing", "design"] },
@@ -312,34 +307,14 @@ const explorationSchema = {
   },
 };
 
-const verifierVerdictShape = {
-  type: "object",
-  additionalProperties: false,
-  required: ["findingId", "verdict", "confidence", "reason"],
-  properties: {
-    findingId: { type: "string" },
-    verdict: { type: "string", enum: ["upheld", "refuted"] },
-    confidence: { type: "integer", minimum: 0, maximum: 100 },
-    reason: { type: "string" },
-  },
-};
-
-const verifierSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["verdicts"],
-  properties: {
-    verdicts: { type: "array", items: verifierVerdictShape },
-    outOfScopeObservations: { type: "array", items: memberOutOfScopeObservationShape },
-  },
-};
-
 const input = args && typeof args === "object" && !Array.isArray(args) ? args : null;
 const target = input && typeof input.target === "string" ? input.target : null;
 const head = input && typeof input.head === "string" ? input.head : null;
 const occasion = input && typeof input.occasion === "string" && input.occasion !== "" ? input.occasion : null;
 if (!target || !head)
-  throw new Error("review workflow needs args {target, head, guidance, instructionBriefs}");
+  throw new Error("review workflow needs args {target, head, guidance, instructionBriefs, contracts}");
+const contracts = contractsFromInput(input);
+if (!contracts) throw new Error("deterministic input omitted or malformed the review contracts");
 
 const roleBriefs = roleBriefsFromInput(input);
 const missingBriefs = missingRoleBriefs(roleBriefs);
@@ -347,51 +322,26 @@ if (missingBriefs.length > 0)
   throw new Error(`deterministic input omitted shipped role briefs: ${missingBriefs.join(", ")}`);
 const projectGuidance = projectGuidanceFromInput(input);
 if (!projectGuidance) throw new Error("deterministic input omitted reviewed-project guidance");
+const routing = routingFromInput(input);
+if (!routing) throw new Error("deterministic input omitted the role routing");
 const pullRequestDescription = pullRequestFromInput(input);
-const members = input && input.members;
-const memberEntries = Array.isArray(members)
-  ? members
-  : members && typeof members === "object" && Array.isArray(members.members)
-    ? members.members
-    : null;
-if (!memberEntries || memberEntries.length === 0 || memberEntries.some((member) =>
-  !member || typeof member !== "object" || Array.isArray(member) ||
-  typeof member.id !== "string" || member.id === "" ||
-  typeof member.target !== "string" || member.target === "" ||
-  typeof member.head !== "string" || member.head === "" ||
-  (memberEntries.length > 1 && typeof member.diff !== "string")
-)) throw new Error("deterministic input needs members with ids, reviewed coordinates, and grouped-member diffs");
-const memberIds = new Set(memberEntries.map((member) => member.id));
-const memberContexts = new Map(memberEntries.map((member) => [member.id, {
-  id: member.id,
-  target: member.target,
-  head: member.head,
-  diff: typeof member.diff === "string" ? member.diff : null,
-  pullRequest: pullRequestFromInput({ pullRequest: member }),
-}]));
-const priorFindings = input && input.priorFindings;
-const validPriorEntry = (entry) => Boolean(
-  entry && typeof entry === "object" && !Array.isArray(entry) &&
-  typeof entry.key === "string" && entry.key !== "" &&
-  entry.finding && typeof entry.finding === "object" && !Array.isArray(entry.finding) &&
-  typeof entry.finding.title === "string" &&
-  typeof entry.finding.path === "string" &&
-  Number.isInteger(entry.finding.line) && entry.finding.line >= 1 &&
-  typeof entry.finding.explanation === "string"
-);
-if (!priorFindings || typeof priorFindings !== "object" || Array.isArray(priorFindings) ||
-    !Array.isArray(priorFindings.confirmedFixed) ||
-    !Array.isArray(priorFindings.confirmedUnfixed) ||
-    !priorFindings.confirmedFixed.every(validPriorEntry) ||
-    !priorFindings.confirmedUnfixed.every(validPriorEntry))
-  throw new Error("deterministic input needs priorFindings with valid confirmedFixed and confirmedUnfixed arrays");
+
+const incomplete = [];
+function legOutput(result, label) {
+  if (!result || result.failure !== null) {
+    incomplete.push(`agent ${result?.label || label} failed: ${result?.failure?.message || "no failure account returned"}`);
+    return null;
+  }
+  if (result.output === null)
+    incomplete.push(`agent ${result.label || label} answered without usable output`);
+  return result.output;
+}
 
 const legs = [];
 function addLeg(label, role, pinnedModel, findingIds = null) {
   const leg = { label, role, pinnedModel };
   if (findingIds) leg.findingIds = findingIds;
   legs.push(leg);
-  return leg;
 }
 
 function incompleteExploration(reason) {
@@ -410,29 +360,21 @@ function incompleteExploration(reason) {
 }
 
 phase("Explore");
-addLeg("exploration", "exploration", GPT_EXPLORER_MODEL);
-const repairedSites = priorFindings.confirmedFixed.map(
-  (entry) => `${entry.finding.path}:${entry.finding.line} (${entry.finding.title})`
-);
-const repairedSitesContext = repairedSites.length > 0
-  ? `\nEarlier rounds reviewed this pull request and repairs have since landed at these sites: ${repairedSites.join("; ")}. ` +
-    "Ensure the plan's unit scopes cover every repaired site's path: the repairs are the newest code in the range, and a defect repaired in one arm of a construct is a prime candidate to persist in its symmetric siblings."
-  : "";
+addLeg("exploration", "exploration", routing.exploration.model);
 const explorationResult = await agent(
   rolePrompt(
     roleBriefs,
     projectGuidance,
     pullRequestDescription,
     ROLE_BRIEFS.exploration,
-    `Review ${target}...${head}. Return the change inventory and a partitioned review plan for Minos's planned specialists.` +
-      ` The members record below is the complete attribution vocabulary. Plan each unit against exactly one member and return that member id.\nMembers: ${JSON.stringify(memberEntries)}` +
-      repairedSitesContext
+    `Review ${target}...${head}. Return the change inventory and a partitioned review plan for Minos's planned specialists.`
   ),
   {
-    engine: "codex",
+    engine: routing.exploration.engine,
     schema: explorationSchema,
-    model: GPT_EXPLORER_MODEL,
-    effort: "high",
+    model: routing.exploration.model,
+    effort: routing.exploration.effort,
+    strip: ["skills", "agents"],
     label: "exploration",
     phase: "Explore",
   }
@@ -454,45 +396,30 @@ const exploration = {
 const specialistUnits = normalisePlan(exploration.plan);
 phase("Specialise");
 for (const unit of specialistUnits)
-  addLeg(unit.label, "specialist", PROPOSER_MODEL);
+  addLeg(unit.label, "specialist", routing.proposer.model);
 
 function specialistPrompt(unit) {
-  const memberContext = memberContexts.get(unit.member);
-  const orientation = orientationPacket(
-    memberContext.target,
-    memberContext.head,
-    exploration.files,
-    specialistUnits.filter((candidate) => candidate.member === unit.member),
-  );
-  const hasPriorFindings = priorFindings.confirmedFixed.length > 0 ||
-    priorFindings.confirmedUnfixed.length > 0;
-  const suppressionContext = hasPriorFindings
-    ? `\nPrior findings from earlier rounds: ${JSON.stringify(priorFindings)}\n` +
-      "Do not present a substantially equivalent, already-dispositioned finding as a fresh discovery. " +
-      "You must judge equivalence from the current code and evidence. A regression of a repair, a materially different nearby defect, or a genuinely new finding remains reportable." +
-      (priorFindings.confirmedFixed.length > 0
-        ? " Each confirmedFixed entry names a repaired site. Where a repaired site falls in your scope, read the repair as it now stands and give its symmetric siblings — parallel arms of the same construct, mirrored branches, analogous call sites — the same reading: a defect repaired in one arm is a prime candidate to persist in its siblings."
-        : "")
-    : "";
+  const orientation = orientationPacket(target, head, exploration.files, specialistUnits);
   return rolePrompt(
     roleBriefs,
     projectGuidance,
     null,
     unit.roleBrief,
     `Orientation packet: ${orientation}\n` +
-      `${reviewedMemberSection(memberContext)}\n` +
-      `Assigned concern: ${unit.concern}\nAssigned member: ${unit.member}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that member's concern and scope against ${memberContext.target}...${memberContext.head}. Every finding must carry assigned member ${unit.member}.` +
-      suppressionContext
+      `${reviewedChangeSection(target, head, pullRequestDescription)}\n` +
+      `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.`
   );
 }
 
 const specialistResults = await parallel(
   specialistUnits.map((unit) => () =>
     agent(specialistPrompt(unit), {
-      engine: "codex",
-      schema: specialistSchema,
-      model: PROPOSER_MODEL,
-      effort: "high",
+      engine: routing.proposer.engine,
+      schema: contracts.specialistSchema,
+      model: routing.proposer.model,
+      effort: routing.proposer.effort,
+      strip: ["skills", "agents"],
+      identity: true,
       label: unit.label,
       phase: "Specialise",
     })
@@ -504,7 +431,8 @@ const proposed = [];
 const outOfScopeObservations = [];
 const briefs = [];
 specialistUnits.forEach((unit, unitIndex) => {
-  const result = specialistResults[unitIndex];
+  const settlement = specialistResults[unitIndex];
+  const result = legOutput(settlement, unit.label);
   reviewerStates.push({
     label: unit.label,
     role: "specialist",
@@ -512,8 +440,8 @@ specialistUnits.forEach((unit, unitIndex) => {
     concern: unit.concern,
     scope: unit.scope,
     family: unit.family,
-    pinnedModel: PROPOSER_MODEL,
-    status: result ? "done" : "no-result",
+    pinnedModel: routing.proposer.model,
+    status: settlement && settlement.failure === null ? "done" : "no-result",
   });
   if (!result) return;
   const observations = Array.isArray(result.outOfScopeObservations)
@@ -523,7 +451,6 @@ specialistUnits.forEach((unit, unitIndex) => {
     outOfScopeObservations.push({
       id: `${unit.label}:observation:${observationIndex + 1}`,
       source: unit.concern,
-      member: unit.member,
       ...observation,
       observingLabel: unit.label,
       verified: false,
@@ -544,22 +471,21 @@ specialistUnits.forEach((unit, unitIndex) => {
       id: `${unit.label}:${findingIndex + 1}`,
       unit,
       finding,
-      findingIndex,
     });
   });
 });
 
 phase("Verify");
 const verifierGroups = [];
-for (let offset = 0; offset < proposed.length; offset += MAX_FINDINGS_PER_VERIFIER) {
-  const items = proposed.slice(offset, offset + MAX_FINDINGS_PER_VERIFIER);
-  const groupIndex = Math.floor(offset / MAX_FINDINGS_PER_VERIFIER) + 1;
-  const label = `verify-${groupIndex}-claude`;
+for (let offset = 0; offset < proposed.length; offset += contracts.verifierBatchSize) {
+  const items = proposed.slice(offset, offset + contracts.verifierBatchSize);
+  const groupIndex = Math.floor(offset / contracts.verifierBatchSize) + 1;
+  const label = `verify-${groupIndex}-${routing.verifier.engine}`;
   const findingIds = items.map((item) => item.id);
   const group = { items, label, findingIds };
   verifierGroups.push(group);
   items.forEach((item) => { item.verifyLabel = label; });
-  addLeg(label, "verifier", VERIFIER_MODEL, findingIds);
+  addLeg(label, "verifier", routing.verifier.model, findingIds);
 }
 
 const verifierResults = await parallel(
@@ -570,18 +496,18 @@ const verifierResults = await parallel(
         projectGuidance,
         null,
         ROLE_BRIEFS.verifier,
-        `Try to disprove each proposed finding against its assigned reviewed-member context and the cited code.\n` +
-          `Reviewed member contexts:\n${[...new Set(group.items.map((item) => item.unit.member))]
-            .map((member) => reviewedMemberSection(memberContexts.get(member))).join("\n")}\n` +
+        `Try to disprove each proposed finding against the reviewed change and the cited code.\n` +
+          `${reviewedChangeSection(target, head, pullRequestDescription)}\n` +
           `Proposing specialists: ${[...new Set(group.items.map((item) => item.unit.label))].join(", ")}\n` +
-          `Every out-of-scope observation must carry the member it concerns, chosen from ${JSON.stringify([...new Set(group.items.map((item) => item.unit.member))])}.\n` +
           `Findings: ${JSON.stringify(group.items.map((item) => ({ id: item.id, ...item.finding })))}`
       ),
       {
-        engine: "claude",
-        schema: verifierSchema,
-        model: VERIFIER_MODEL,
-        effort: "medium",
+        engine: routing.verifier.engine,
+        schema: contracts.verifierSchema,
+        model: routing.verifier.model,
+        effort: routing.verifier.effort,
+        strip: ["skills", "agents"],
+        identity: true,
         label: group.label,
         phase: "Verify",
       }
@@ -589,12 +515,15 @@ const verifierResults = await parallel(
   )
 );
 
+const verifierOutputs = verifierResults.map((result, index) =>
+  legOutput(result, verifierGroups[index].label));
+
 const verifierByFinding = new Map(proposed.map((item) => [item.id, null]));
 // The observation channel is independent of verdict validity: what a
 // verifier established while checking survives even when its verdict set
 // is discarded as malformed.
 verifierGroups.forEach((group, groupIndex) => {
-  const response = verifierResults[groupIndex];
+  const response = verifierOutputs[groupIndex];
   const observations = response && Array.isArray(response.outOfScopeObservations)
     ? response.outOfScopeObservations
     : [];
@@ -609,7 +538,7 @@ verifierGroups.forEach((group, groupIndex) => {
   });
 });
 verifierGroups.forEach((group, groupIndex) => {
-  const response = verifierResults[groupIndex];
+  const response = verifierOutputs[groupIndex];
   if (!response || !Array.isArray(response.verdicts)) return;
   const expected = new Set(group.findingIds);
   if (response.verdicts.some((verdict) => !expected.has(verdict && verdict.findingId))) return;
@@ -631,7 +560,6 @@ const proposedFindings = proposed.map((item) => ({
   id: item.id,
   ...item.finding,
   source: item.unit.concern,
-  member: item.unit.member,
   proposingLabel: item.unit.label,
   verifyLabel: item.verifyLabel,
   rawVerifier: verifierByFinding.get(item.id),
@@ -639,9 +567,9 @@ const proposedFindings = proposed.map((item) => ({
 
 return {
   reviewed: { target, head, occasion },
-  members: memberEntries,
   stage: "present",
   exploration,
+  ...(incomplete.length > 0 ? { incomplete } : {}),
   requiredModelEvidence: legs,
   proposedFindings,
   outOfScopeObservations,
@@ -649,7 +577,6 @@ return {
   misconfigurations: [],
   dispatches: specialistUnits.map((unit) => ({
     id: unit.id,
-    member: unit.member,
     label: unit.label,
     concern: unit.concern,
     scope: unit.scope,

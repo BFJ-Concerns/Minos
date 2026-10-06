@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"bfj/minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 // A repo skipped this many consecutive sweep passes earns an operator alert:
@@ -41,6 +41,22 @@ type repoSkipRecord struct {
 	Count     int    `json:"count"`
 	Since     string `json:"since"`
 	LastError string `json:"last_error"`
+}
+
+// writeServiceStateAtomically writes complete service-local state to a
+// temporary file before replacing its destination with the supplied rename.
+func writeServiceStateAtomically(temporary *os.File, temporaryPath, destination string, content []byte, rename func(string, string) error) error {
+	if _, err := temporary.Write(content); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write service state: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close service state: %w", err)
+	}
+	if err := rename(temporaryPath, destination); err != nil {
+		return fmt.Errorf("rename service state: %w", err)
+	}
+	return nil
 }
 
 func sweepSkipStatePath(cfg ServiceConfig) string {
@@ -90,11 +106,12 @@ func recordRepoSkips(ctx context.Context, cfg ServiceConfig, skipped map[string]
 		return
 	}
 	temp := sweepSkipStatePath(cfg) + ".tmp"
-	if err := os.WriteFile(temp, content, 0o600); err != nil {
+	temporary, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		log.Printf("sweep skip state: %v", err)
 		return
 	}
-	if err := os.Rename(temp, sweepSkipStatePath(cfg)); err != nil {
+	if err := writeServiceStateAtomically(temporary, temp, sweepSkipStatePath(cfg), content, os.Rename); err != nil {
 		log.Printf("sweep skip state: %v", err)
 	}
 }

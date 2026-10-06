@@ -3,7 +3,6 @@ package shell
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,7 +33,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	repos, err := LoadRepoConfigs(cfg.Root)
+	repos, err := LoadRepoConfigs(cfg)
 	if err != nil {
 		return err
 	}
@@ -88,76 +87,37 @@ func SweepCommand(ctx context.Context, args []string) error {
 	activeUnits, err := activeRunUnitNames(ctx)
 	if err != nil {
 		log.Printf("inspect active runs for candidate ordering: %v", err)
-	} else if err := sweepDeadGroupMemberGuards(ctx, cfg, repos); err != nil {
-		log.Printf("sweep group member guards: %v", err)
 	}
 	candidates = orderSweepCandidates(candidates, activeUnits)
-	groupCandidates := map[string]string{}
-	groupSnapshots := map[string]groupedCandidateSnapshot{}
-	if err == nil {
-		groupCandidates, groupSnapshots, err = groupCandidatesByPrimary(ctx, cfg, candidates, activeUnits)
-		if err != nil {
-			log.Printf("enumerate group candidates: %v", err)
-			groupCandidates = map[string]string{}
-			groupSnapshots = map[string]groupedCandidateSnapshot{}
-		}
-	}
-	groupedThisPass := map[string]string{}
-	deferrals := []sweepDeferral{}
+	document := sweepDeferralDocument{Deferrals: []sweepDeferral{}, Partial: len(skipped) > 0, SkippedRepositories: skipped}
 	for _, candidate := range candidates {
-		unit := UnitName(candidate.facts)
-		if holder, grouped := groupedThisPass[unit]; grouped {
-			result := ReconcileResult{Decision: SpawnSuppressed, BlockingUnit: holder}
-			if message := sweepDecisionMessage(candidate.facts, result); message != "" {
-				log.Print(message)
-			}
-			continue
-		}
-		var result ReconcileResult
-		if cached, ok := groupSnapshots[unit]; ok {
-			result, err = reconcilePullRequestSnapshotWithCandidates(ctx, cfg, candidate.repo, candidate.facts, cached.adapter, cached.snapshot, groupCandidates[unit])
-		} else {
-			result, err = reconcilePullRequestWithCandidates(ctx, cfg, candidate.repo, candidate.facts, groupCandidates[unit])
-		}
+		result, err := reconcilePullRequest(ctx, cfg, candidate.repo, candidate.facts)
 		if err != nil {
 			log.Printf("%s#%s: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
 			continue
 		}
 		if result.DeferralReason != "" {
-			deferrals = append(deferrals, sweepDeferral{
+			document.Deferrals = append(document.Deferrals, sweepDeferral{
 				Forge: candidate.facts.Forge, Owner: candidate.facts.Owner, Repo: candidate.facts.Repo,
-				PR: candidate.facts.PR, Reason: result.DeferralReason,
+				PR: candidate.facts.PR, Reason: result.DeferralReason, Reasons: result.DeferralReasons,
 			})
+		}
+		row := sweepDecisionRow{Forge: candidate.facts.Forge, Owner: candidate.facts.Owner, Repo: candidate.facts.Repo, PR: candidate.facts.PR, Decision: result.Decision}
+		if result.TerminalOutcome != "" {
+			row.Outcome = result.TerminalOutcome
+			document.Terminal = append(document.Terminal, row)
+		}
+		switch result.Decision {
+		case SpawnSuppressed:
+			row.BlockingUnit, row.Detail = result.BlockingUnit, result.Detail
+			document.Suppressed = append(document.Suppressed, row)
+		case SpawnStarted, SpawnContinued:
+			// Current forge eligibility is observable; an earlier deferral is not.
+			row.Cause = "current forge head is eligible"
+			document.Readied = append(document.Readied, row)
 		}
 		if message := sweepDecisionMessage(candidate.facts, result); message != "" {
 			log.Print(message)
-		}
-		// Candidate membership is fixed when a primary is admitted. Suppress its
-		// surfaced siblings only for that admission pass; a unit already live at
-		// the start of a later pass owns only members carrying durable guards.
-		if (result.Decision != SpawnStarted && result.Decision != SpawnContinued) || result.GroupCandidatesPath == "" {
-			continue
-		}
-		var siblings []Facts
-		if decodeErr := json.Unmarshal([]byte(groupCandidates[unit]), &siblings); decodeErr != nil && groupCandidates[unit] != "" {
-			log.Printf("%s#%s: decode admitted group candidates: %v", candidate.facts.RepoSlug(), candidate.facts.PR, decodeErr)
-		}
-		if len(siblings) == 0 {
-			continue
-		}
-		primaryLive := activeRunContains(activeUnits, unit)
-		if !primaryLive {
-			currentActiveUnits, activeErr := activeRunUnitNames(ctx)
-			if activeErr != nil {
-				log.Printf("%s#%s: inspect primary run after reconciliation: %v", candidate.facts.RepoSlug(), candidate.facts.PR, activeErr)
-				continue
-			}
-			primaryLive = activeRunContains(currentActiveUnits, unit)
-		}
-		if primaryLive {
-			for _, sibling := range siblings {
-				groupedThisPass[UnitName(sibling)] = unit + ".service"
-			}
 		}
 	}
 	if err := expireInactiveRunHandoffs(ctx, cfg, repos); err != nil {
@@ -167,7 +127,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if attempted > 0 && unreadable == attempted {
 		return fmt.Errorf("every configured repo (%d) was unreadable this pass", attempted)
 	}
-	if err := publishSweepDeferrals(cfg, deferrals); err != nil {
+	if err := publishSweepDocument(cfg, document); err != nil {
 		log.Printf("publish sweep deferrals: %v", err)
 	}
 	return nil
@@ -175,40 +135,12 @@ func SweepCommand(ctx context.Context, args []string) error {
 
 var renameSweepDeferrals = os.Rename
 
-// publishSweepDeferrals replaces the previous completed pass as one document.
-// A failed publication leaves the previous whole record in place; it does not
-// change the completed sweep's outcome.
-func publishSweepDeferrals(cfg ServiceConfig, deferrals []sweepDeferral) error {
-	document := sweepDeferralDocument{
-		Kind:        sweepDeferralDocumentKind,
-		CompletedAt: time.Now().UTC().Format(time.RFC3339),
-		Deferrals:   deferrals,
-	}
-	content, err := json.Marshal(document)
-	if err != nil {
-		return fmt.Errorf("encode sweep deferrals: %w", err)
-	}
-	if err := os.MkdirAll(cfg.Runs.Dir, 0o755); err != nil {
-		return fmt.Errorf("create sweep state directory: %w", err)
-	}
-	path := sweepDeferralsPath(cfg)
-	temporary, err := os.CreateTemp(cfg.Runs.Dir, ".sweep-deferrals-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create sweep deferrals temporary file: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if _, err := temporary.Write(content); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write sweep deferrals: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close sweep deferrals: %w", err)
-	}
-	if err := renameSweepDeferrals(temporaryPath, path); err != nil {
-		return fmt.Errorf("publish sweep deferrals: %w", err)
-	}
-	return nil
+// publishSweepDocument replaces the previous pass as one complete document.
+// A failed publication preserves the previous record and never changes admission.
+func publishSweepDocument(cfg ServiceConfig, document sweepDeferralDocument) error {
+	document.Kind = sweepDeferralDocumentKind
+	document.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+	return publishProjectionDocument(cfg.Runs.Dir, sweepDeferralsFilename, document, renameSweepDeferrals)
 }
 
 // orderSweepCandidates keeps continuation priority absolute, then within each
@@ -252,8 +184,9 @@ func repoRunCounts(candidates []sweepCandidate, activeUnits []string) map[string
 			continue
 		}
 		counts[slug] = 0
-		prefix := unitSafe.ReplaceAllString(
-			fmt.Sprintf("minos-run-%s-%s-pr", candidate.facts.Owner, candidate.facts.Repo), "-")
+		prefixFacts := candidate.facts
+		prefixFacts.PR = ""
+		prefix := UnitName(prefixFacts)
 		for _, unit := range activeUnits {
 			if strings.HasPrefix(unit, prefix) {
 				counts[slug]++
@@ -297,7 +230,7 @@ func interleaveByRepo(candidates []sweepCandidate, activeUnits []string) []sweep
 func expireInactiveRunHandoffs(ctx context.Context, cfg ServiceConfig, repos []RepoConfig) error {
 	configured := make(map[string]RepoConfig, len(repos))
 	for _, repo := range repos {
-		configured[repo.Owner+"\x00"+repo.Repo] = repo
+		configured[repo.Forge+"\x00"+repo.Owner+"\x00"+repo.Repo] = repo
 	}
 	paths, err := filepath.Glob(filepath.Join(cfg.Runs.Dir, ".handoffs", "*.json"))
 	if err != nil {
@@ -312,16 +245,16 @@ func expireInactiveRunHandoffs(ctx context.Context, cfg ServiceConfig, repos []R
 		}
 		handoff, err := readRunHandoffStructure(path)
 		if err != nil {
+			expiryErrors = append(expiryErrors, fmt.Errorf("validate continuation handoff %s: %w", path, err))
 			continue
 		}
-		facts := Facts{Owner: handoff.PullRequest.Owner, Repo: handoff.PullRequest.Repo, PR: handoff.PullRequest.Number, HeadSHA: handoff.Head}
-		if UnitName(facts) != strings.TrimSuffix(filepath.Base(path), ".json") {
+		facts, recognised := factsForHandoff(cfg, strings.TrimSuffix(filepath.Base(path), ".json"), handoff)
+		if !recognised {
 			continue
 		}
-		repo, isConfigured := configured[facts.Owner+"\x00"+facts.Repo]
+		_, isConfigured := configured[facts.Forge+"\x00"+facts.Owner+"\x00"+facts.Repo]
 		shouldExpire := !isConfigured
 		if isConfigured {
-			facts.Forge = repo.Forge
 			snapshot, snapshotErr := inspectHandoffSnapshot(ctx, cfg, facts)
 			if snapshotErr != nil {
 				expiryErrors = append(expiryErrors, fmt.Errorf("inspect continuation handoff %s: %w", filepath.Base(path), snapshotErr))
@@ -377,8 +310,6 @@ func sweepDecisionMessage(facts Facts, result ReconcileResult) string {
 		return fmt.Sprintf("%s: suppressed by active unit %s", pullRequest, result.BlockingUnit)
 	case SpawnContinued:
 		return pullRequest + ": continued previous run"
-	case ReconcileRecovered:
-		return pullRequest + ": recovered terminal Minos status"
 	case ReconcileNothing:
 		return pullRequest + ": nothing to do"
 	case SpawnAttention:

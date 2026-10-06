@@ -1,6 +1,11 @@
 #!/usr/bin/env sh
 set -eu
 
+# Sourced before anything changes directory: $0 is the only handle on the
+# script's own directory and the run moves out of it.
+# shellcheck source=scripts/run-body/cgroup-memory.sh
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/cgroup-memory.sh"
+
 prelaunch=true
 supervisor_failure=false
 failure_stage="configuration"
@@ -8,10 +13,106 @@ failure_cause="run-body exited before loading its configuration"
 session_id=""
 run_tmpdir=""
 
-stop_session() {
+# The lead engine seam: launching, observing and stopping the lead are the
+# only engine-specific mechanics. Each engine supplies these three functions;
+# the supervision loop below reads only their contract. lead_state prints one
+# of running, blocked, failed, stopped or unknown — blocked meaning the
+# session is waiting on something outside the run (a Claude session between
+# turns, say), which is terminal only before the lead has produced any work.
+lead_launch_claude() {
+  launch_output="$("$MINOS_CLAUDE" \
+    --bg \
+    --name "$session_name" \
+    --dangerously-skip-permissions \
+    --model "$MINOS_LEAD_MODEL" \
+    "$instruction" 2>&1)"
+  failure_cause="could not write Claude lead launch output"
+  printf '%s\n' "$launch_output"
+  failure_cause="could not parse Claude background session ID"
+  session_id="$(printf '%s\n' "$launch_output" | sed -nE 's/.*[Bb]ackgrounded[^[:xdigit:]]*([[:xdigit:]]{6,}).*/\1/p' | head -n 1)"
+  if [ -z "$session_id" ]; then
+    failure_cause="Claude did not report a background session ID"
+    echo "run-body: Claude did not report a background session ID" >&2
+    exit 1
+  fi
+}
+
+# Claude's roster reports its own vocabulary (running, blocked, done,
+# failed, stopped, …); only the five contract words leave this function.
+lead_state_claude() {
+  lead_raw_state=""
+  if agents="$("$MINOS_CLAUDE" agents --json --all)"; then
+    lead_raw_state="$(printf '%s' "$agents" | jq -r --arg id "$session_id" '
+      (if type == "array" then . else .agents end)[] |
+      select(.id == $id) |
+      .state // empty
+    ' 2>/dev/null)" || lead_raw_state=""
+  fi
+  case "$lead_raw_state" in
+    running|blocked|failed|stopped) printf '%s\n' "$lead_raw_state" ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+lead_stop_claude() {
   if [ -n "$session_id" ]; then
     "$MINOS_CLAUDE" stop "$session_id" >/dev/null 2>&1 || true
   fi
+}
+
+# Codex exec owns one turn. Its output goes straight to files, so a held
+# stdout pipe cannot stall supervision. The launch wrapper records the real
+# exit status because lead_state runs in a command-substitution subshell,
+# which cannot wait on the parent's child.
+lead_launch_codex() {
+  codex_exit_file="$MINOS_RUN_DIR/codex-lead.exit"
+  rm -f "$codex_exit_file" "$codex_exit_file.tmp"
+  (
+    codex_child=""
+    trap 'if [ -n "$codex_child" ]; then kill "$codex_child" 2>/dev/null || true; wait "$codex_child" 2>/dev/null || true; fi; exit 143' TERM INT
+    "$MINOS_CODEX" exec \
+      --model "$MINOS_LEAD_MODEL" \
+      --dangerously-bypass-approvals-and-sandbox \
+      --cd "$MINOS_RUN_DIR" \
+      --json \
+      "$instruction" >"$MINOS_RUN_DIR/codex-lead.jsonl" 2>"$MINOS_RUN_DIR/codex-lead.stderr" &
+    codex_child=$!
+    if wait "$codex_child"; then codex_status=0; else codex_status=$?; fi
+    printf '%s\n' "$codex_status" >"$codex_exit_file.tmp"
+    mv "$codex_exit_file.tmp" "$codex_exit_file"
+  ) </dev/null >/dev/null 2>&1 &
+  session_id=$!
+}
+
+lead_state_codex() {
+  if [ -f "$codex_exit_file" ]; then
+    codex_status="$(cat "$codex_exit_file")"
+    case "$codex_status" in
+      0) printf 'stopped\n' ;;
+      *) printf 'failed\n' ;;
+    esac
+  elif kill -0 "$session_id" 2>/dev/null; then
+    printf 'running\n'
+  else
+    printf 'failed\n'
+  fi
+}
+
+lead_stop_codex() {
+  if [ -n "$session_id" ]; then
+    kill "$session_id" 2>/dev/null || true
+    wait "$session_id" 2>/dev/null || true
+  fi
+}
+
+lead_launch() { "lead_launch_$MINOS_LEAD_ENGINE"; }
+lead_state() { "lead_state_$MINOS_LEAD_ENGINE"; }
+# Runs from the exit trap too, so it must be safe before the engine is
+# resolved: nothing to stop until a lead was launched.
+stop_session() {
+  [ -n "${MINOS_LEAD_ENGINE:-}" ] || return 0
+  command -v "lead_stop_$MINOS_LEAD_ENGINE" >/dev/null 2>&1 || return 0
+  "lead_stop_$MINOS_LEAD_ENGINE"
 }
 
 remove_run_tmpdir() {
@@ -84,10 +185,19 @@ on_exit() {
 }
 trap 'on_exit $?' 0
 
-failure_cause="MINOS_CONFIG is required"
-: "${MINOS_CONFIG:?MINOS_CONFIG is required}"
-failure_cause="MINOS_RUN_DIR is required"
-: "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
+# Exit 1 naming the variable when it is unset or empty. `${VAR:?}` would
+# leave the exit status to the shell: bash exits 1, dash exits 2.
+require_variable() {
+  failure_cause="${2:-$1 is required}"
+  eval "required_value=\${$1:-}"
+  if [ -z "$required_value" ]; then
+    echo "run-body: $failure_cause" >&2
+    exit 1
+  fi
+}
+
+require_variable MINOS_CONFIG
+require_variable MINOS_RUN_DIR
 
 unset_gateway_environment() {
   unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_DEFAULT_HAIKU_MODEL
@@ -104,8 +214,7 @@ failure_cause="could not load ${MINOS_CONFIG%/}/run-body.env"
 set +a
 
 if [ -n "${MINOS_ANTHROPIC_CREDENTIAL_FILE:-}" ]; then
-  failure_cause="ANTHROPIC_BASE_URL is required in gateway mode"
-  : "${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL is required in gateway mode}"
+  require_variable ANTHROPIC_BASE_URL "ANTHROPIC_BASE_URL is required in gateway mode"
   if [ ! -f "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ] ||
     [ ! -r "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ]; then
     failure_cause="gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is missing or unreadable"
@@ -124,57 +233,57 @@ else
   unset_gateway_environment
 fi
 
-failure_cause="MINOS_CLAUDE is required"
-: "${MINOS_CLAUDE:?MINOS_CLAUDE is required}"
-failure_cause="MINOS_CLAUDE_CONFIG_SEED is required"
-: "${MINOS_CLAUDE_CONFIG_SEED:?MINOS_CLAUDE_CONFIG_SEED is required}"
-failure_cause="MINOS_CODEX_CONFIG_SEED is required"
-: "${MINOS_CODEX_CONFIG_SEED:?MINOS_CODEX_CONFIG_SEED is required}"
-run_class="${MINOS_RUN_CLASS:-review}"
-case "$run_class" in
-  review)
-    failure_cause="MINOS_LIFECYCLE_INSTRUCTION is required"
-    : "${MINOS_LIFECYCLE_INSTRUCTION:?MINOS_LIFECYCLE_INSTRUCTION is required}"
-    instruction_path="$MINOS_LIFECYCLE_INSTRUCTION"
+# The lead's engine. Each engine names its executable, its default
+# model and its configuration seed; an engine is provisioned exactly when
+# its seed is named. The lead's engine must be provisioned, the other may be
+# absent — a single-engine deployment — and the workflows route every role
+# by what is provisioned (MINOS_PROVISIONED_ENGINES).
+MINOS_LEAD_ENGINE="${MINOS_LEAD_ENGINE:-claude}"
+case "$MINOS_LEAD_ENGINE" in
+  claude)
+    require_variable MINOS_CLAUDE
+    lead_seed_variable="MINOS_CLAUDE_CONFIG_SEED"
+    lead_default_model="claude-opus-5-5"
     ;;
-  maintenance)
-    failure_cause="MINOS_MAINTENANCE_INSTRUCTION is required"
-    : "${MINOS_MAINTENANCE_INSTRUCTION:?MINOS_MAINTENANCE_INSTRUCTION is required}"
-    instruction_path="$MINOS_MAINTENANCE_INSTRUCTION"
+  codex)
+    require_variable MINOS_CODEX
+    lead_seed_variable="MINOS_CODEX_CONFIG_SEED"
+    lead_default_model="gpt-6-sol"
     ;;
   *)
-    failure_cause="MINOS_RUN_CLASS must be review or maintenance"
-    echo "run-body: MINOS_RUN_CLASS must be review or maintenance" >&2
+    failure_cause="MINOS_LEAD_ENGINE must be claude or codex; the $MINOS_LEAD_ENGINE lead is not available in this build"
+    echo "run-body: $failure_cause" >&2
     exit 1
     ;;
 esac
-failure_cause="MINOS_ROOT_CAUSE_SKILL is required"
-: "${MINOS_ROOT_CAUSE_SKILL:?MINOS_ROOT_CAUSE_SKILL is required}"
-failure_cause="MINOS_SKILLS_DIR is required"
-: "${MINOS_SKILLS_DIR:?MINOS_SKILLS_DIR is required}"
-failure_cause="MINOS_SETUP_WORKSPACE is required"
-: "${MINOS_SETUP_WORKSPACE:?MINOS_SETUP_WORKSPACE is required}"
-failure_cause="MINOS_ORIENTATION is required"
-: "${MINOS_ORIENTATION:?MINOS_ORIENTATION is required}"
-failure_cause="MINOS_GIT_AUTHOR_NAME is required"
-: "${MINOS_GIT_AUTHOR_NAME:?MINOS_GIT_AUTHOR_NAME is required}"
-failure_cause="MINOS_GIT_AUTHOR_EMAIL is required"
-: "${MINOS_GIT_AUTHOR_EMAIL:?MINOS_GIT_AUTHOR_EMAIL is required}"
+export MINOS_LEAD_ENGINE
+provisioned_engines=""
+[ -z "${MINOS_CLAUDE_CONFIG_SEED:-}" ] || provisioned_engines="claude"
+[ -z "${MINOS_CODEX_CONFIG_SEED:-}" ] || provisioned_engines="${provisioned_engines:+$provisioned_engines }codex"
+case " $provisioned_engines " in
+  *" $MINOS_LEAD_ENGINE "*) ;;
+  *)
+    failure_cause="$lead_seed_variable is required: the lead runs on $MINOS_LEAD_ENGINE"
+    echo "run-body: $failure_cause" >&2
+    exit 1
+    ;;
+esac
+MINOS_PROVISIONED_ENGINES="$provisioned_engines"
+export MINOS_PROVISIONED_ENGINES
+require_variable MINOS_LIFECYCLE_INSTRUCTION
+instruction_path="$MINOS_LIFECYCLE_INSTRUCTION"
+require_variable MINOS_SETUP_WORKSPACE
+require_variable MINOS_ORIENTATION
 
 FORCE_COLOR=0
 export FORCE_COLOR
 # The harness reaps background shells under memory pressure, which on a run
-# unit reads as pressure whenever the workspace's build output fills the page
-# cache — a long setup or review stage is then killed mid-flight and reported
+# unit reads as pressure whenever clones and transcripts fill the page cache —
+# a long setup or review stage is then killed mid-flight and reported
 # as an interrupted dispatch rather than a verdict. The run unit's own
 # MemoryMax ceiling and the continuation path are the backstop this removes.
 CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1
 export CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP
-GIT_AUTHOR_NAME="$MINOS_GIT_AUTHOR_NAME"
-GIT_AUTHOR_EMAIL="$MINOS_GIT_AUTHOR_EMAIL"
-GIT_COMMITTER_NAME="$MINOS_GIT_AUTHOR_NAME"
-GIT_COMMITTER_EMAIL="$MINOS_GIT_AUTHOR_EMAIL"
-export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
 failure_stage="run-directory"
 failure_cause="could not create run directory $MINOS_RUN_DIR"
@@ -202,31 +311,10 @@ XDG_STATE_HOME="${MINOS_RUN_DIR%/}/state"
 # emptying the timing record's worker rows and dodging the archive.
 XDG_DATA_HOME="$HOME/.local/share"
 failure_stage="runtime-home"
-failure_cause="MINOS_FORGE is required for the shared cache path"
-: "${MINOS_FORGE:?MINOS_FORGE is required for the shared cache path}"
-failure_cause="MINOS_OWNER is required for the shared cache path"
-: "${MINOS_OWNER:?MINOS_OWNER is required for the shared cache path}"
-failure_cause="MINOS_REPO_NAME is required for the shared cache path"
-: "${MINOS_REPO_NAME:?MINOS_REPO_NAME is required for the shared cache path}"
-for cache_component in "$MINOS_FORGE" "$MINOS_OWNER" "$MINOS_REPO_NAME"; do
-  case "$cache_component" in
-  . | .. | */*)
-    failure_cause="forge, owner and repository cache path components must not equal dot or dot-dot, or contain a slash"
-    echo "run-body: $failure_cause" >&2
-    exit 1
-    ;;
-  esac
-done
 MINOS_RUNS_DIR="$(dirname "${MINOS_RUN_DIR%/}")"
-MINOS_SHARED_CACHE_DIR="$(dirname "$MINOS_RUNS_DIR")/cache/$MINOS_FORGE/$MINOS_OWNER/$MINOS_REPO_NAME"
-SCCACHE_DIR="$MINOS_SHARED_CACHE_DIR/rust/sccache"
-GOCACHE="$MINOS_SHARED_CACHE_DIR/go/build"
-GOMODCACHE="$MINOS_SHARED_CACHE_DIR/go/modules"
-npm_config_cache="$MINOS_SHARED_CACHE_DIR/node/npm"
-PLAYWRIGHT_BROWSERS_PATH="$MINOS_SHARED_CACHE_DIR/playwright/browsers"
-# Repository test suites write large artefacts to temp; the box's shared
-# tmpfs /tmp cannot hold concurrent runs' output. Keep a short, private temp
-# path on the same disk-backed Minos storage and remove it with the run.
+# Workers write large artefacts to temp; the box's shared tmpfs /tmp cannot
+# hold concurrent runs' output. Keep a short, private temp path on the same
+# disk-backed Minos storage and remove it with the run.
 MINOS_RUN_TMP_ROOT="$(dirname "$MINOS_RUNS_DIR")/tmp"
 failure_cause="could not create run temp directory root $MINOS_RUN_TMP_ROOT"
 mkdir -p "$MINOS_RUN_TMP_ROOT"
@@ -235,30 +323,23 @@ chmod 700 "$MINOS_RUN_TMP_ROOT"
 failure_cause="could not create isolated run temp directory in $MINOS_RUN_TMP_ROOT"
 run_tmpdir="$(mktemp -d "$MINOS_RUN_TMP_ROOT/t.XXXXXXXXXX")"
 TMPDIR="$run_tmpdir"
-PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 export HOME CLAUDE_CONFIG_DIR CODEX_HOME XDG_STATE_HOME XDG_DATA_HOME \
-  MINOS_SHARED_CACHE_DIR \
-  SCCACHE_DIR GOCACHE GOMODCACHE npm_config_cache PLAYWRIGHT_BROWSERS_PATH \
-  TMPDIR PATH
+  TMPDIR
 failure_stage="runtime-home"
-failure_cause="could not create isolated runtime home, state, cache and tool directories"
-mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" \
-  "$SCCACHE_DIR" "$GOCACHE" "$GOMODCACHE" "$npm_config_cache" \
-  "$PLAYWRIGHT_BROWSERS_PATH" \
-  "$HOME/.cargo/bin" "$HOME/.local/bin"
-failure_cause="could not secure isolated runtime home, state, cache and tool directories"
-chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" \
-  "$MINOS_SHARED_CACHE_DIR" "$MINOS_SHARED_CACHE_DIR/rust" "$SCCACHE_DIR" \
-  "$MINOS_SHARED_CACHE_DIR/go" "$GOCACHE" "$GOMODCACHE" \
-  "$MINOS_SHARED_CACHE_DIR/node" "$npm_config_cache" \
-  "$MINOS_SHARED_CACHE_DIR/playwright" "$PLAYWRIGHT_BROWSERS_PATH" "$TMPDIR" \
-  "$HOME/.cargo/bin" "$HOME/.local/bin"
-failure_stage="claude-seed"
-failure_cause="could not copy Claude configuration seed from $MINOS_CLAUDE_CONFIG_SEED"
-cp -R "${MINOS_CLAUDE_CONFIG_SEED%/}/." "$CLAUDE_CONFIG_DIR/"
-failure_stage="codex-seed"
-failure_cause="could not copy Codex configuration seed from $MINOS_CODEX_CONFIG_SEED"
-cp -R "${MINOS_CODEX_CONFIG_SEED%/}/." "$CODEX_HOME/"
+failure_cause="could not create isolated runtime home and state directories"
+mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME"
+failure_cause="could not secure isolated runtime home and state directories"
+chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" "$TMPDIR"
+if [ -n "${MINOS_CLAUDE_CONFIG_SEED:-}" ]; then
+  failure_stage="claude-seed"
+  failure_cause="could not copy Claude configuration seed from $MINOS_CLAUDE_CONFIG_SEED"
+  cp -R "${MINOS_CLAUDE_CONFIG_SEED%/}/." "$CLAUDE_CONFIG_DIR/"
+fi
+if [ -n "${MINOS_CODEX_CONFIG_SEED:-}" ]; then
+  failure_stage="codex-seed"
+  failure_cause="could not copy Codex configuration seed from $MINOS_CODEX_CONFIG_SEED"
+  cp -R "${MINOS_CODEX_CONFIG_SEED%/}/." "$CODEX_HOME/"
+fi
 failure_stage="runtime-home"
 failure_cause="could not secure copied Claude and Codex configuration"
 chmod -R go-rwx "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"
@@ -268,34 +349,26 @@ printf '%s\n' '{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":tr
   >"$CLAUDE_CONFIG_DIR/.claude.json"
 failure_cause="could not secure Claude onboarding acceptance"
 chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json"
-# The vendored skill tree holds one copy per agent tool; each session gets
-# the casting made for the tool it runs on.
-failure_stage="vendored-skills"
-failure_cause="could not create the vendored skill directories"
-mkdir -p "$CLAUDE_CONFIG_DIR/skills" "$CODEX_HOME/skills"
-failure_cause="could not copy the vendored Claude Code skills from $MINOS_SKILLS_DIR/claude-code"
-cp -R "${MINOS_SKILLS_DIR%/}/claude-code/." "$CLAUDE_CONFIG_DIR/skills/"
-failure_cause="could not copy the vendored Codex skills from $MINOS_SKILLS_DIR/codex"
-cp -R "${MINOS_SKILLS_DIR%/}/codex/." "$CODEX_HOME/skills/"
-
 failure_stage="workspace-setup"
 failure_cause="workspace setup failed"
-"$MINOS_SETUP_WORKSPACE"
-setup_head="$(jq -r '.head // empty' "$MINOS_ORIENTATION" 2>/dev/null || true)"
-if [ -n "$setup_head" ]; then
-  MINOS_HEAD_SHA="$setup_head"
-  export MINOS_HEAD_SHA
-fi
-
-# A mainline setup may publish its reconciliation merge. From this point the
-# run must bind every forge action to that pushed head, while local-only fork
-# and AGit setups retain the head that admitted the run.
-if jq -e '.publish == true and .outcome == "reconciled"' \
-  "$MINOS_RUN_DIR/reconciliation.json" >/dev/null; then
-  failure_cause="published reconciliation state omitted its merge head"
-  MINOS_HEAD_SHA="$(jq -er '.merge | select(type == "string" and length > 0)' \
-    "$MINOS_RUN_DIR/reconciliation.json")"
-  export MINOS_HEAD_SHA
+setup_status=0
+# Keep setup's stderr live while retaining it for the failure cause. A FIFO
+# lets setup run directly, preserving its exit status independently of tee.
+setup_stderr_pipe="$run_tmpdir/setup.stderr.pipe"
+mkfifo "$setup_stderr_pipe"
+tee "$MINOS_RUN_DIR/setup.stderr" <"$setup_stderr_pipe" >&2 &
+setup_tee_pid=$!
+"$MINOS_SETUP_WORKSPACE" 2>"$setup_stderr_pipe" || setup_status=$?
+wait "$setup_tee_pid" || echo "run-body: could not capture setup stderr" >&2
+rm -f "$setup_stderr_pipe"
+if [ "$setup_status" -ne 0 ]; then
+  # Only the target-refusal diagnostic replaces the generic setup cause.
+  # This is operator-facing failure text, never input to a recovery decision.
+  setup_refusal="$(sed -n 's/^setup-workspace: \(target fetch refused: .*\)$/\1/p' "$MINOS_RUN_DIR/setup.stderr" | head -n 1)"
+  if [ -n "$setup_refusal" ]; then
+    failure_cause="$setup_refusal"
+  fi
+  exit "$setup_status"
 fi
 
 trap 'exit 129' 1
@@ -332,15 +405,11 @@ elif ! [ "$silence_timeout" -ge 0 ] 2>/dev/null; then
   exit 1
 fi
 
+require_variable MINOS_PRESSURE_THRESHOLD_PERCENT
 pressure_enabled=true
 pressure_latched=false
 pressure_samples=0
-if [ -n "${MINOS_CGROUP_DIR:-}" ]; then
-  cgroup_dir="$MINOS_CGROUP_DIR"
-else
-  cgroup_path="$(cut -d: -f3 /proc/self/cgroup 2>/dev/null | head -n 1)"
-  cgroup_dir="/sys/fs/cgroup${cgroup_path}"
-fi
+resolve_cgroup_dir
 
 disable_pressure_watch() {
   echo "run-body: memory-pressure watch disabled: $1" >&2
@@ -360,9 +429,8 @@ sample_memory_pressure() {
     disable_pressure_watch "memory.max has no ceiling"
     return 0
   fi
-  anon="$(awk '$1 == "anon" { print $2; exit }' "$cgroup_dir/memory.stat" 2>/dev/null || true)"
-  IFS= read -r swap_current <"$cgroup_dir/memory.swap.current" || swap_current=""
-  for memory_counter in "$memory_max" "$anon" "$swap_current"; do
+  read_cgroup_memory_counters
+  for memory_counter in "$memory_max" "$cgroup_anon" "$cgroup_swap"; do
     case "$memory_counter" in
       *[!0-9]*|'')
         disable_pressure_watch "cgroup memory counters are unavailable or malformed"
@@ -370,7 +438,7 @@ sample_memory_pressure() {
         ;;
     esac
   done
-  memory_pressure=$((anon + swap_current))
+  memory_pressure=$((cgroup_anon + cgroup_swap))
   # The running peak of genuine footprint is the capacity number the timing
   # record carries: what this run actually needed at its hungriest, sampled
   # every poll, ceilings and admission judgements read it later. Tracked past
@@ -380,7 +448,7 @@ sample_memory_pressure() {
     printf '%s\n' "$peak_anon_swap" >"$MINOS_RUN_DIR/memory-peak" || true
   fi
   [ "$pressure_latched" = false ] || return 0
-  pressure_threshold=$((memory_max / 100 * 85))
+  pressure_threshold=$((memory_max / 100 * MINOS_PRESSURE_THRESHOLD_PERCENT))
   if [ "$memory_pressure" -ge "$pressure_threshold" ]; then
     pressure_samples=$((pressure_samples + 1))
   else
@@ -390,7 +458,7 @@ sample_memory_pressure() {
 
   pressure_gib="$(awk -v bytes="$memory_pressure" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
   maximum_gib="$(awk -v bytes="$memory_max" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
-  swap_gib="$(awk -v bytes="$swap_current" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
+  swap_gib="$(awk -v bytes="$cgroup_swap" 'BEGIN { printf "%.1f", bytes / 1073741824 }')"
   if ! printf 'memory approaching the run ceiling: %s GiB of %s GiB in anonymous memory plus swap, %s GiB swap in use — finish this stage and hand off\n' \
     "$pressure_gib" "$maximum_gib" "$swap_gib" >"$pressure_signal"; then
     supervisor_failure=true
@@ -406,42 +474,25 @@ sample_memory_pressure() {
 "$(dirname "$0")/memory-telemetry" "$MINOS_RUN_DIR/memory-baseline.json" || true
 
 failure_stage="lead-launch"
-failure_cause="Claude lead launch failed"
-last_activity_signature="$(
+failure_cause="$MINOS_LEAD_ENGINE lead launch failed"
+# The newest change anywhere in the run tree outside the private home, the
+# pressure signal and the memory peak: its mtime, inode and size.
+run_activity_signature() {
   find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" -o -path "$MINOS_RUN_DIR/memory-peak" \) -prune \
     -o -printf '%T@:%i:%s\n' 2>/dev/null |
     LC_ALL=C sort -rn |
     head -n 1
-)"
-launch_output="$("$MINOS_CLAUDE" \
-  --bg \
-  --name "$session_name" \
-  --dangerously-skip-permissions \
-  --model "${MINOS_LEAD_MODEL:-claude-opus-5}" \
-  "$instruction" 2>&1)"
-failure_cause="could not write Claude lead launch output"
-printf '%s\n' "$launch_output"
-
-failure_cause="could not parse Claude background session ID"
-session_id="$(printf '%s\n' "$launch_output" | sed -nE 's/.*[Bb]ackgrounded[^[:xdigit:]]*([[:xdigit:]]{6,}).*/\1/p' | head -n 1)"
-if [ -z "$session_id" ]; then
-  failure_cause="Claude did not report a background session ID"
-  echo "run-body: Claude did not report a background session ID" >&2
-  exit 1
-fi
+}
+last_activity_signature="$(run_activity_signature)"
+MINOS_LEAD_MODEL="${MINOS_LEAD_MODEL:-$lead_default_model}"
+export MINOS_LEAD_MODEL
+lead_launch
 prelaunch=false
 lead_activity_seen=false
 last_activity_at="$(date +%s)"
 
 while :; do
-  agent_state=""
-  if agents="$("$MINOS_CLAUDE" agents --json --all)"; then
-    agent_state="$(printf '%s' "$agents" | jq -r --arg id "$session_id" '
-      (if type == "array" then . else .agents end)[] |
-      select(.id == $id) |
-      .state // empty
-    ' 2>/dev/null)" || agent_state=""
-  fi
+  agent_state="$(lead_state)"
 
   # 1. The lead has declared that all terminal obligations are complete. The
   #    result is scratch; the forge and failure log carry the durable outcome.
@@ -459,30 +510,25 @@ while :; do
   #    isolated home. Exclude home because both this supervisor's roster poll
   #    and Claude's daemon can update config, job state, caches and updater
   #    downloads there without useful lead work.
-  activity_signature="$(
-    find "$MINOS_RUN_DIR" -mindepth 1 \( -path "$HOME" -o -path "$pressure_signal" -o -path "$MINOS_RUN_DIR/memory-peak" \) -prune \
-      -o -printf '%T@:%i:%s\n' 2>/dev/null |
-      LC_ALL=C sort -rn |
-      head -n 1
-  )"
+  activity_signature="$(run_activity_signature)"
   if [ "$activity_signature" != "$last_activity_signature" ]; then
     last_activity_signature="$activity_signature"
     lead_activity_seen=true
     last_activity_at="$(date +%s)"
   fi
 
-  # Claude also uses blocked for resumable waits after a turn, so it is not
-  # terminal once useful work has begun. Before the lead changes the run tree,
-  # however, blocked means the first turn cannot make progress and no lifecycle
-  # code exists yet to record or recover the failure.
+  # A blocked state is a resumable wait once useful work has begun (Claude
+  # reports it between turns), so it is not terminal then. Before the lead
+  # changes the run tree, however, blocked means the first turn cannot make
+  # progress and no lifecycle code exists yet to record or recover the failure.
   if [ "$agent_state" = "blocked" ] && [ "$lead_activity_seen" = false ]; then
     supervisor_failure=true
     failure_stage="lead-supervision"
-    failure_cause="Claude lead entered blocked state before producing run activity"
+    failure_cause="$MINOS_LEAD_ENGINE lead entered blocked state before producing run activity"
     exit 1
   fi
 
-  # 3. Claude has reported an unrecoverable terminal state.
+  # 3. The lead has reported an unrecoverable terminal state.
   if [ "$agent_state" = "failed" ] || [ "$agent_state" = "stopped" ]; then
     if ! capture_cgroup_death_evidence; then
       supervisor_failure=true
@@ -497,11 +543,38 @@ while :; do
   if [ $((now - last_activity_at)) -ge "$silence_timeout" ]; then
     supervisor_failure=true
     failure_stage="lead-supervision"
-    failure_cause="Claude lead produced no run activity for ${silence_timeout} seconds (last state: ${agent_state:-unknown})"
+    failure_cause="$MINOS_LEAD_ENGINE lead produced no run activity for ${silence_timeout} seconds (last state: ${agent_state:-unknown})"
     exit 1
   fi
-  sleep "${MINOS_CLAUDE_POLL_SECONDS:-3}"
+  sleep "${MINOS_LEAD_POLL_SECONDS:-3}"
 done
 
 stop_session
 session_id=""
+
+# The unit's exit status says whether this head is spent. A clean or
+# attention outcome leaves a completion marker on the head, so the unit
+# succeeds and its OnSuccess= hook enqueues the sweep pass that re-fills the
+# slot. Anything else — an incomplete outcome, a lead that failed or stopped
+# before its marker, a non-clean stop with no recorded attention status —
+# leaves the head eligible, so the unit exits 75 and triggers no pass: the
+# head waits for the timer, and one that keeps ending incomplete re-runs at
+# timer pace, never at run pace. The lead writes `clean` only after the
+# clean status landed, so that marker alone proves the head spent; any
+# other ending — a `non-clean` marker, which covers attention and
+# incomplete alike, or no marker at all — is judged by the last status
+# `minos forge status` applied, recorded beside the marker: clean or
+# attention on the forge is a spent head whatever the lead did afterwards.
+# A continuation leaves the head eligible by design, and its successor
+# resuming at once is the point of it.
+head_spent=false
+if grep -Eqx 'clean|continuation' "$completion_marker" 2>/dev/null; then
+  head_spent=true
+elif grep -Eqx 'clean|attention' "$MINOS_RUN_DIR/forge-status" 2>/dev/null; then
+  head_spent=true
+fi
+if [ "$head_spent" = false ]; then
+  last_status="$(cat "$MINOS_RUN_DIR/forge-status" 2>/dev/null || printf 'none')"
+  echo "run-body: head ${MINOS_HEAD_SHA:-unknown} stays eligible (last applied status: ${last_status}); exiting 75 so the unit's exit triggers no sweep pass"
+  exit 75
+fi

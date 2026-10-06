@@ -14,17 +14,23 @@ import (
 	"time"
 )
 
+// fixtureStatusDetailsURL mirrors the Details link guarded-set-status writes
+// when Minos has left no review on the head: the pull request's web URL.
+func fixtureStatusDetailsURL(apiBase string, facts Facts) string {
+	webBase := strings.TrimSuffix(strings.TrimSuffix(apiBase, "/"), "/api/v1")
+	return fmt.Sprintf("%s/%s/%s/pulls/%s", webBase, facts.Owner, facts.Repo, facts.PR)
+}
+
 func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	codeRepository, head := createGitRepository(t, "code.txt", "estate reviewed head\n")
-	annexeRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n\nDistinctive grounding value: cinnabar-orbit-719.\n")
+	secondaryRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n\nDistinctive grounding value: cinnabar-orbit-719.\n")
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["sha"] = head
-		pullRequest["head"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 		pullRequest["base"].(map[string]any)["sha"] = head
-		pullRequest["base"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 	})
-	state.setAnnexeCloneURL(annexeRepository)
+	state.setRepositoryCloneURL(codeRepository)
+	state.setSecondaryCloneURL(secondaryRepository)
 
 	cfg, repo, facts := state.service(t)
 	runBody, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "run-body"))
@@ -32,6 +38,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo.Adaptation.RunBody = runBody
+	repo.GuidanceSources = []GuidanceSource{{Repository: "minos-e2e-owner/subject-plans", Path: "README.md"}}
 	record := writeEstateRunBodyConfig(t, cfg.Root)
 	writeServiceConfig(t, cfg)
 
@@ -40,22 +47,23 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	t.Setenv("MINOS_OWNER", facts.Owner)
 	t.Setenv("MINOS_REPO_NAME", facts.Repo)
 	t.Setenv("MINOS_PR", facts.PR)
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 	for attempt := 1; attempt <= 2; attempt++ {
 		if err := ForgeCommand(t.Context(), []string{"claim"}, &strings.Builder{}); err != nil {
 			t.Fatalf("claim attempt %d: %v", attempt, err)
 		}
 	}
 	state.mu.Lock()
-	assignmentWrites := state.assignmentWrites
+	reviewRequestWrites := state.reviewRequestWrites
 	obsoleteAssignmentWrites := state.obsoleteAssignmentWrites
 	reactionWrites := state.reactionWrites
-	assignees := append([]string(nil), state.assignees...)
+	requestedReviewers := append([]string(nil), state.requestedReviewers...)
 	reactions := append([]string(nil), state.reactions...)
 	state.mu.Unlock()
-	if assignmentWrites != 1 || obsoleteAssignmentWrites != 0 || reactionWrites != 1 ||
-		!slices.Contains(assignees, "Minos") || !slices.Contains(reactions, "eyes") {
-		t.Fatalf("claim facts = assignment:%d obsolete:%d reaction:%d assignees:%v reactions:%v",
-			assignmentWrites, obsoleteAssignmentWrites, reactionWrites, assignees, reactions)
+	if reviewRequestWrites != 1 || obsoleteAssignmentWrites != 0 || reactionWrites != 1 ||
+		!slices.Equal(requestedReviewers, []string{"Minos"}) || !slices.Contains(reactions, "eyes") {
+		t.Fatalf("claim facts = review request:%d assignee:%d reaction:%d requested:%v reactions:%v",
+			reviewRequestWrites, obsoleteAssignmentWrites, reactionWrites, requestedReviewers, reactions)
 	}
 
 	original := commandCombinedOutput
@@ -91,9 +99,8 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		t.Fatalf("first admission = %q, starts = %d; want one start", result, len(starts))
 	}
 	firstEnvironment := systemdEnvironment(t, starts[0])
-	firstEnvironment["MINOS_TEST_CONTINUATION_FINISH"] = "1"
 	runRecordedBody(t, runBody, firstEnvironment)
-	assertContainsFile(t, filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "lead-complete"), "continuation")
+	assertContainsFile(t, filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "lead-complete"), "clean")
 
 	workspace := firstEnvironment["MINOS_WORKSPACE"]
 	orientationPath := firstEnvironment["MINOS_ORIENTATION"]
@@ -101,40 +108,30 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 		t.Fatalf("workspace head = %q, want admitted head %q", got, head)
 	}
 	orientation := readOrientation(t, orientationPath)
-	if orientation.Repository != workspace || orientation.Head != head || orientation.Grounding != "annexe" {
-		t.Fatalf("orientation = %+v, want admitted workspace, head and annexe grounding", orientation)
+	if orientation.Repository != workspace || orientation.Head != head || len(orientation.Guidance) != 1 {
+		t.Fatalf("orientation = %+v, want admitted workspace, head and one configured guidance source", orientation)
 	}
-	if orientation.Annexe != filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "subject-Annexe") ||
-		orientation.Guidance != filepath.Join(orientation.Annexe, "README.md") {
-		t.Fatalf("orientation paths = %+v, want adjacent subject annexe README", orientation)
+	guidance := orientation.Guidance[0]
+	if guidance.Origin != "configured" || guidance.Source.Repository != "minos-e2e-owner/subject-plans" ||
+		guidance.Location != filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "guidance", "minos-e2e-owner", "subject-plans", "README.md") {
+		t.Fatalf("orientation guidance = %+v, want the configured secondary README cloned beside the workspace", guidance)
 	}
-	assertContainsFile(t, orientation.Guidance, "cinnabar-orbit-719")
+	assertContainsFile(t, guidance.Location, "cinnabar-orbit-719")
 	assertContainsFile(t, record+".grounding", "cinnabar-orbit-719")
 	assertContainsFile(t, record+".acceptance", `"hasCompletedOnboarding":true`)
 	assertContainsFile(t, record+".acceptance", `"bypassPermissionsModeAccepted":true`)
 	assertContainsFile(t, record+".auth", "claude-auth-present")
 	assertContainsFile(t, record+".auth", "codex-auth-present")
-	assertContainsFile(t, record+".argv", "read the commission in the recorded annexe README")
+	assertContainsFile(t, record+".argv", "Read every guidance entry it lists")
 	runHome := filepath.Join(firstEnvironment["MINOS_RUN_DIR"], "home")
 	for _, value := range []string{
 		"HOME=" + runHome,
 		"CLAUDE_CONFIG_DIR=" + filepath.Join(runHome, ".claude"),
 		"CODEX_HOME=" + filepath.Join(runHome, ".codex"),
-		"GIT_AUTHOR_NAME=Minos",
-		"GIT_AUTHOR_EMAIL=minos@example.invalid",
 	} {
 		assertContainsFile(t, record+".env", value)
 	}
-	assertContainsFile(t, record+".argv", "claude-opus-5")
-
-	if err := os.WriteFile(filepath.Join(workspace, "estate-repair.txt"), []byte("repair\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, workspace, "add", "estate-repair.txt")
-	runGit(t, workspace, "commit", "-m", "fix: exercise estate author")
-	if got := gitOutput(t, workspace, "log", "-1", "--format=%an <%ae>"); got != "Minos <minos@example.invalid>" {
-		t.Fatalf("repair author = %q, want Minos identity", got)
-	}
+	assertContainsFile(t, record+".argv", "claude-opus-5-5")
 
 	state.changePullRequest(func(pullRequest map[string]any) { pullRequest["number"] = float64(2) })
 	secondFacts := facts
@@ -156,7 +153,7 @@ func TestRebuildEstateAdmissionBootstrapsGroundedLead(t *testing.T) {
 	}
 }
 
-func TestRebuildEstateStopsNonCleanLeadWithoutHoldingItForSilence(t *testing.T) {
+func TestRebuildEstateStopsNonCleanLead(t *testing.T) {
 	runBody, record, environment := startEstateRunBody(t)
 	environment["MINOS_TEST_NON_CLEAN_FINISH"] = "1"
 	environment["MINOS_LEAD_SILENCE_TIMEOUT"] = "1"
@@ -169,12 +166,17 @@ func TestRebuildEstateStopsNonCleanLeadWithoutHoldingItForSilence(t *testing.T) 
 	if ctx.Err() != nil {
 		t.Fatalf("non-clean run body reached the outer timeout: %v\n%s", ctx.Err(), output)
 	}
-	if err != nil {
-		t.Fatalf("non-clean run body failed: %v\n%s", err, output)
+	// An incomplete verdict leaves the head eligible, so the unit must not
+	// succeed: exit 75 keeps its OnSuccess= hook from re-claiming the head.
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 75 {
+		t.Fatalf("non-clean run body exit = %v, want 75 (head not spent)\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "stays eligible") {
+		t.Fatalf("a non-spent head exits without saying so:\n%s", output)
 	}
 
 	assertContainsFile(t, filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete"), "non-clean")
-	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=brief-fix cause=repairs-incomplete")
+	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=review cause=verdict-incomplete")
 	assertContainsFile(t, record+".terminal", `"state":"done"`)
 	assertContainsFile(t, record+".calls", "stop abcdef12")
 	attemptsData, err := os.ReadFile(record + ".attempts")
@@ -194,7 +196,7 @@ func TestRebuildEstateSupervisesTerminalLeadWithoutCompletionMarker(t *testing.T
 	runBody, record, environment := startEstateRunBody(t)
 	environment["MINOS_TEST_UNMARKED_FINISH"] = "1"
 	environment["MINOS_LEAD_SILENCE_TIMEOUT"] = "2"
-	environment["MINOS_CLAUDE_POLL_SECONDS"] = "0.1"
+	environment["MINOS_LEAD_POLL_SECONDS"] = "0.1"
 	environment["MINOS_FAILURE_LOG"] = filepath.Join(environment["MINOS_RUN_DIR"], "failures.log")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -211,7 +213,7 @@ func TestRebuildEstateSupervisesTerminalLeadWithoutCompletionMarker(t *testing.T
 	if _, statErr := os.Stat(filepath.Join(environment["MINOS_RUN_DIR"], "lead-complete")); !os.IsNotExist(statErr) {
 		t.Fatalf("unmarked terminal lead wrote a completion marker or stat failed: %v", statErr)
 	}
-	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=lead-supervision cause=Claude lead produced no run activity for 2 seconds (last state: done)")
+	assertContainsFile(t, environment["MINOS_FAILURE_LOG"], "stage=lead-supervision cause=claude lead produced no run activity for 2 seconds (last state: unknown)")
 	assertContainsFile(t, record+".terminal", `"state":"done"`)
 	assertContainsFile(t, record+".calls", "stop abcdef12")
 }
@@ -219,15 +221,14 @@ func TestRebuildEstateSupervisesTerminalLeadWithoutCompletionMarker(t *testing.T
 func startEstateRunBody(t *testing.T) (string, string, map[string]string) {
 	t.Helper()
 	codeRepository, head := createGitRepository(t, "AGENTS.md", "NON_CLEAN_TERMINAL_SENTINEL_719\n")
-	annexeRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n")
+	secondaryRepository := createGitRepositoryAtHead(t, "README.md", "# Estate commission\n")
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["sha"] = head
-		pullRequest["head"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 		pullRequest["base"].(map[string]any)["sha"] = head
-		pullRequest["base"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 	})
-	state.setAnnexeCloneURL(annexeRepository)
+	state.setRepositoryCloneURL(codeRepository)
+	state.setSecondaryCloneURL(secondaryRepository)
 
 	cfg, repo, facts := state.service(t)
 	runBody, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "run-body"))
@@ -235,6 +236,7 @@ func startEstateRunBody(t *testing.T) (string, string, map[string]string) {
 		t.Fatal(err)
 	}
 	repo.Adaptation.RunBody = runBody
+	repo.GuidanceSources = []GuidanceSource{{Repository: "minos-e2e-owner/subject-plans", Path: "README.md"}}
 	record := writeEstateRunBodyConfig(t, cfg.Root)
 	writeServiceConfig(t, cfg)
 
@@ -276,8 +278,8 @@ func TestRebuildEstateBootstrapRefusesHeadMoveBeforeLeadLaunch(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	state.changePullRequest(func(pullRequest map[string]any) {
 		pullRequest["head"].(map[string]any)["sha"] = admittedHead
-		pullRequest["head"].(map[string]any)["repo"].(map[string]any)["clone_url"] = codeRepository
 	})
+	state.setRepositoryCloneURL(codeRepository)
 	cfg, repo, facts := state.service(t)
 	runBody, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "run-body"))
 	if err != nil {
@@ -285,6 +287,7 @@ func TestRebuildEstateBootstrapRefusesHeadMoveBeforeLeadLaunch(t *testing.T) {
 	}
 	repo.Adaptation.RunBody = runBody
 	record := writeEstateRunBodyConfig(t, cfg.Root)
+	writeServiceConfig(t, cfg)
 
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
@@ -331,88 +334,7 @@ func TestRebuildEstateBootstrapRefusesHeadMoveBeforeLeadLaunch(t *testing.T) {
 	}
 }
 
-func TestRebuildEstateTerminalRecoveryBindsPullRequestHeadTargetAndStatus(t *testing.T) {
-	for _, test := range []struct {
-		name          string
-		changeStatus  func(map[string]any)
-		wantRecovered bool
-	}{
-		{name: "matching terminal status", wantRecovered: false},
-		{name: "different pull request", wantRecovered: true, changeStatus: func(status map[string]any) {
-			status["target_url"] = strings.Replace(status["target_url"].(string), "/pulls/1#", "/pulls/2#", 1)
-		}},
-		{name: "different target", wantRecovered: true, changeStatus: func(status map[string]any) {
-			status["target_url"] = strings.Replace(status["target_url"].(string), "#minos-target-", "#minos-target-other-", 1)
-		}},
-		{name: "different terminal state", wantRecovered: true, changeStatus: func(status map[string]any) {
-			status["status"] = "failure"
-		}},
-		{name: "different status description", wantRecovered: true, changeStatus: func(status map[string]any) {
-			status["description"] = "Not the Minos terminal description"
-		}},
-		{name: "different status creator", wantRecovered: true, changeStatus: func(status map[string]any) {
-			status["creator"] = map[string]any{"login": "another-bot"}
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			state := newForgejoFixtureState(t)
-			state.setReviews([]map[string]any{{
-				"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
-				"body": "terminal review", "user": map[string]any{"login": "Minos"},
-			}})
-			cfg, repo, facts := state.service(t)
-			facts.HeadSHA = state.headSHA()
-			facts.BaseSHA = state.targetSHA()
-			status := map[string]any{
-				"id": 7, "context": "Minos", "status": "success", "description": "Changes approved",
-				"target_url": statusTargetURL(cfg.Forges["forgejo"].APIBase, facts),
-				"creator":    map[string]any{"login": "Minos"},
-			}
-			if test.changeStatus != nil {
-				test.changeStatus(status)
-			}
-			state.setStatuses([]map[string]any{status})
-
-			original := commandCombinedOutput
-			t.Cleanup(func() { commandCombinedOutput = original })
-			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
-				t.Fatalf("terminally reviewed pull request reached %s", name)
-				return nil, nil
-			}
-
-			result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := ReconcileNothing
-			if test.wantRecovered {
-				want = ReconcileRecovered
-			}
-			if result.Decision != want {
-				t.Fatalf("result = %q, want %q", result, want)
-			}
-			writes, repairedTarget := state.statusWriteFacts()
-			if test.wantRecovered {
-				if writes != 1 || repairedTarget != statusTargetURL(cfg.Forges["forgejo"].APIBase, facts) {
-					t.Fatalf("recovery writes = %d, target = %v; want one exact identity write", writes, repairedTarget)
-				}
-			} else if writes != 0 {
-				t.Fatalf("matching status caused %d recovery writes", writes)
-			}
-			statusReads := state.statusReadFacts()
-			if len(statusReads) == 0 {
-				t.Fatal("terminal reconciliation made no current-head status read")
-			}
-			for _, commit := range statusReads {
-				if commit != facts.HeadSHA {
-					t.Fatalf("status read commit = %q, want current head %q", commit, facts.HeadSHA)
-				}
-			}
-		})
-	}
-}
-
-func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *testing.T) {
+func TestRebuildEstateIncompleteStatusBindsTheHeadNotTheTarget(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, facts := state.service(t)
 	writeServiceConfig(t, cfg)
@@ -445,9 +367,7 @@ func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *t
 	state.mu.Unlock()
 	if writes != 1 || written["state"] != "error" || written["context"] != "Minos" ||
 		written["description"] != "Review incomplete" ||
-		written["target_url"] != statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
-			Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target,
-		}) {
+		written["target_url"] != fixtureStatusDetailsURL(cfg.Forges[facts.Forge].APIBase, facts) {
 		t.Fatalf("incomplete status writes = %d, payload = %#v", writes, written)
 	}
 	creator, ok := written["creator"].(map[string]any)
@@ -456,8 +376,9 @@ func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *t
 	}
 
 	// A status is a head-bound statement: a pinned target the branch has
-	// since left behind still publishes, anchored to that pinned target, so
-	// a mid-run target push cannot end the round.
+	// since left behind still publishes, so a mid-run target push cannot end
+	// the round — and the target is no part of the status, so the write
+	// converges on the one already there.
 	stdout.Reset()
 	if err := ForgeCommand(t.Context(), []string{"status", head, target + "-stale", "incomplete"}, &stdout); err != nil {
 		t.Fatalf("pinned-target status after target moved: %v\n%s", err, stdout.String())
@@ -467,19 +388,9 @@ func TestRebuildEstateIncompleteStatusBindsTheHeadAndAnchorsThePinnedTarget(t *t
 	}
 	state.mu.Lock()
 	writesAfterMove := state.statusWrites
-	var movedAnchor any
-	if len(state.statuses) > 1 {
-		movedAnchor = state.statuses[0]["target_url"]
-	}
 	state.mu.Unlock()
-	if writesAfterMove != 2 {
-		t.Fatalf("pinned-target status write count = %d, want two", writesAfterMove)
-	}
-	wantMovedAnchor := statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
-		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target + "-stale",
-	})
-	if movedAnchor != wantMovedAnchor {
-		t.Fatalf("pinned-target status anchor = %#v, want %q", movedAnchor, wantMovedAnchor)
+	if writesAfterMove != 1 {
+		t.Fatalf("status write count after the target moved = %d, want the one write", writesAfterMove)
 	}
 }
 
@@ -519,26 +430,23 @@ func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 		t.Fatalf("status with new head: %v\n%s", err, stdout.String())
 	}
 
+	// The repeated `working` and the `attention` re-pinned to the new target
+	// are identical desired statuses on the same head, so neither posts; the
+	// moved head is a fresh commit with no status, so its write posts.
 	posts := state.statusPostFacts()
-	if len(posts) != 4 {
-		t.Fatalf("forge received %d status posts, want exactly four: %#v", len(posts), posts)
+	if len(posts) != 3 {
+		t.Fatalf("forge received %d status posts, want exactly three: %#v", len(posts), posts)
 	}
-	wantTarget := statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
-		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: target,
-	})
-	wantNewTarget := statusTargetURL(cfg.Forges[facts.Forge].APIBase, Facts{
-		Owner: facts.Owner, Repo: facts.Repo, PR: facts.PR, BaseSHA: newTarget,
-	})
+	details := fixtureStatusDetailsURL(cfg.Forges[facts.Forge].APIBase, facts)
 	for index, want := range []struct {
 		head        string
 		target      string
 		state       string
 		description string
 	}{
-		{head: head, target: wantTarget, state: "pending", description: "Reviewing changes"},
-		{head: head, target: wantTarget, state: "failure", description: "Changes need attention"},
-		{head: head, target: wantNewTarget, state: "failure", description: "Changes need attention"},
-		{head: newHead, target: wantNewTarget, state: "failure", description: "Changes need attention"},
+		{head: head, target: details, state: "pending", description: "Reviewing changes"},
+		{head: head, target: details, state: "failure", description: "Changes need attention"},
+		{head: newHead, target: details, state: "failure", description: "Changes need attention"},
 	} {
 		post := posts[index]
 		if post.Head != want.head || post.Payload["state"] != want.state || post.Payload["description"] != want.description ||
@@ -548,164 +456,27 @@ func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 	}
 }
 
-func TestRebuildEstateReviewCompletionReactionJourneys(t *testing.T) {
-	for _, test := range []struct {
-		name        string
-		findingsFix bool
-	}{
-		{name: "clean brief stage"},
-		{name: "brief findings fixed on a fresh head", findingsFix: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			state := newForgejoFixtureState(t)
-			if test.findingsFix {
-				installAnchoredWorkspace(t, state, "internal/state.go", 41)
-			}
-			cfg, _, facts := state.service(t)
-			writeServiceConfig(t, cfg)
-			t.Setenv("MINOS_CONFIG", cfg.Root)
-			t.Setenv("MINOS_FORGE", facts.Forge)
-			t.Setenv("MINOS_OWNER", facts.Owner)
-			t.Setenv("MINOS_REPO_NAME", facts.Repo)
-			t.Setenv("MINOS_PR", facts.PR)
+func TestRebuildEstateCleanReviewAddsCompletionReaction(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	writeServiceConfig(t, cfg)
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+	t.Setenv("MINOS_PR", facts.PR)
+	t.Setenv("MINOS_MARKERS", defaultMarkersJSON)
 
-			target := state.targetSHA()
-			head := state.headSHA()
-			wantReviews := 0
-			if test.findingsFix {
-				directory := t.TempDir()
-				bodyPath := filepath.Join(directory, "brief.md")
-				commentsPath := filepath.Join(directory, "comments.json")
-				if err := os.WriteFile(bodyPath, []byte("Repository review brief findings.\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(commentsPath, []byte(`[{"path":"internal/state.go","body":"Brief concern.","line":41}]`), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := ForgeCommand(t.Context(), []string{"review", head, target, "comment", bodyPath, commentsPath}, &bytes.Buffer{}); err != nil {
-					t.Fatal(err)
-				}
-				wantReviews = 1
-				state.changePullRequest(func(pullRequest map[string]any) {
-					pullRequest["head"].(map[string]any)["sha"] = "feedfacefeedfacefeedfacefeedfacefeedface"
-				})
-				head = state.headSHA()
-			}
-
-			for attempt := 1; attempt <= 2; attempt++ {
-				if err := ForgeCommand(t.Context(), []string{"reaction", head, target, "+1"}, &bytes.Buffer{}); err != nil {
-					t.Fatalf("reaction attempt %d: %v", attempt, err)
-				}
-			}
-
-			state.mu.Lock()
-			defer state.mu.Unlock()
-			if state.reactionWrites != 1 || !slices.Contains(state.reactions, "+1") {
-				t.Fatalf("reactions = %v, writes = %d, want one +1 write", state.reactions, state.reactionWrites)
-			}
-			if state.reviewWrites != wantReviews {
-				t.Fatalf("review writes = %d, want %d", state.reviewWrites, wantReviews)
-			}
-			if test.findingsFix && state.reviewPayloads[0]["commit_id"] == head {
-				t.Fatalf("brief findings review and completion reaction both used %q; want reaction on the fresh repaired head", head)
-			}
-		})
-	}
-}
-
-func TestRebuildEstateBriefFixIncompleteResultStopsBeforeSuccessFields(t *testing.T) {
-	lifecyclePath := filepath.Join("..", "..", "lifecycle", "lifecycle.md")
-	lifecycle, err := os.ReadFile(lifecyclePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	instruction := string(lifecycle)
-	start := strings.Index(instruction, `> "$MINOS_RUN_DIR/brief-fix-result.json"`)
-	if start < 0 {
-		t.Fatal("lifecycle omits the brief-fix result")
-	}
-	end := strings.Index(instruction[start:], "`integration.commits`")
-	if end < 0 {
-		t.Fatal("lifecycle omits the brief-fix success fields")
-	}
-	briefFixStop := instruction[start : start+end]
-
-	for _, clause := range []string{
-		"Before reading any other result field, read `status`.",
-		"If it is `incomplete`",
-		"append its `reason` to `$MINOS_FAILURE_LOG`",
-		"set `\"$MINOS_BIN\" forge status",
-		`CURRENT_HEAD "$MINOS_TARGET_SHA" incomplete`,
-		`remove the 👀 with`,
-		`"$MINOS_BIN" forge reaction-remove CURRENT_HEAD "$MINOS_TARGET_SHA" eyes`,
-		"write the non-clean terminal marker, and stop",
-	} {
-		at := strings.Index(briefFixStop, clause)
-		if at < 0 {
-			t.Fatalf("brief-fix incomplete stop omits %q", clause)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := ForgeCommand(t.Context(), []string{"marker", state.headSHA(), state.targetSHA(), "clean", "add"}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("reaction attempt %d: %v", attempt, err)
 		}
-		briefFixStop = briefFixStop[at+len(clause):]
 	}
-}
 
-func TestRebuildEstateAllRunReachedTerminalOutcomesBindEyesCleanup(t *testing.T) {
-	lifecyclePath := filepath.Join("..", "..", "lifecycle", "lifecycle.md")
-	lifecycle, err := os.ReadFile(lifecyclePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name        string
-		instruction string
-		merged      bool
-		remove      bool
-	}{
-		{name: "merged", instruction: "Merged,", merged: true, remove: true},
-		{name: "request changes", instruction: "request-changes", remove: true},
-		{name: "clean without auto merge", instruction: "clean-without-auto-merge", remove: true},
-		{name: "held", instruction: "held,", remove: true},
-		{name: "incomplete", instruction: "every incomplete outcome", remove: true},
-		{name: "crash", instruction: "a crash alone leaves it", remove: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if !strings.Contains(string(lifecycle), test.instruction) {
-				t.Fatalf("lifecycle omits terminal outcome instruction %q", test.instruction)
-			}
-			state := newForgejoFixtureState(t)
-			state.reactions = []string{"eyes"}
-			if test.merged {
-				state.changePullRequest(func(pullRequest map[string]any) {
-					pullRequest["merged"] = true
-					pullRequest["state"] = "closed"
-				})
-			}
-			cfg, _, facts := state.service(t)
-			writeServiceConfig(t, cfg)
-			t.Setenv("MINOS_CONFIG", cfg.Root)
-			t.Setenv("MINOS_FORGE", facts.Forge)
-			t.Setenv("MINOS_OWNER", facts.Owner)
-			t.Setenv("MINOS_REPO_NAME", facts.Repo)
-			t.Setenv("MINOS_PR", facts.PR)
-
-			if test.remove {
-				for attempt := 1; attempt <= 2; attempt++ {
-					if err := ForgeCommand(t.Context(), []string{"reaction-remove", state.headSHA(), state.targetSHA(), "eyes"}, &bytes.Buffer{}); err != nil {
-						t.Fatalf("reaction removal attempt %d: %v", attempt, err)
-					}
-				}
-			}
-
-			state.mu.Lock()
-			defer state.mu.Unlock()
-			if test.remove {
-				if slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 1 {
-					t.Fatalf("reactions = %v, delete writes = %d, want eyes absent after one write", state.reactions, state.reactionDeleteWrites)
-				}
-			} else if !slices.Contains(state.reactions, "eyes") || state.reactionDeleteWrites != 0 {
-				t.Fatalf("crash cleanup changed reactions = %v, delete writes = %d", state.reactions, state.reactionDeleteWrites)
-			}
-		})
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.reactionWrites != 1 || !slices.Contains(state.reactions, "+1") {
+		t.Fatalf("reactions = %v, writes = %d, want one +1 write", state.reactions, state.reactionWrites)
 	}
 }
 
@@ -726,18 +497,10 @@ case "$1" in
     test -f "$CLAUDE_CONFIG_DIR/.credentials.json"
     test -f "$CODEX_HOME/auth.json"
     printf '%s\n%s\n' 'claude-auth-present' 'codex-auth-present' >"$record.auth"
-    guidance="$(jq -r '.guidance' "$MINOS_ORIENTATION")"
+    guidance="$(jq -r '.guidance[0].location' "$MINOS_ORIENTATION")"
     cat "$guidance" >"$record.grounding"
-    if [ "${MINOS_TEST_CONTINUATION_FINISH:-}" = "1" ]; then
-      jq -n \
-        --arg owner "$MINOS_OWNER" --arg repo "$MINOS_REPO_NAME" --arg number "$MINOS_PR" \
-        --arg head "$MINOS_HEAD_SHA" --arg run_dir "$MINOS_RUN_DIR" \
-        '{kind:"minos-run-handoff-v1",pullRequest:{owner:$owner,repo:$repo,number:$number},head:$head,runDir:$run_dir,stoppedAt:"estate fixture",writtenAt:"fixture",runRecord:{round:0,confirmedUnfixed:[]}}' \
-        >"$MINOS_HANDOFF.tmp"
-      mv "$MINOS_HANDOFF.tmp" "$MINOS_HANDOFF"
-      printf 'continuation\n' >"$MINOS_RUN_DIR/lead-complete"
-    elif [ "${MINOS_TEST_NON_CLEAN_FINISH:-}" = "1" ]; then
-      printf 'timestamp=fixture pull_request=owner/repository#1 head=fixture stage=brief-fix cause=repairs-incomplete\n' \
+    if [ "${MINOS_TEST_NON_CLEAN_FINISH:-}" = "1" ]; then
+      printf 'timestamp=fixture pull_request=owner/repository#1 head=fixture stage=review cause=verdict-incomplete\n' \
         >>"$MINOS_FAILURE_LOG"
       printf 'non-clean\n' >"$MINOS_RUN_DIR/lead-complete"
     elif [ "${MINOS_TEST_UNMARKED_FINISH:-}" = "1" ]; then
@@ -777,16 +540,6 @@ esac
 	if err := os.WriteFile(filepath.Join(codexSeed, "auth.json"), []byte("fixture Codex ChatGPT state\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	skills := filepath.Join(root, "skills")
-	for _, casting := range []string{"claude-code", "codex"} {
-		skill := filepath.Join(skills, casting, "root-cause")
-		if err := os.MkdirAll(skill, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("# Root Cause\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
 	setup, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "setup-workspace"))
 	if err != nil {
 		t.Fatal(err)
@@ -797,18 +550,14 @@ esac
 	}
 	values := map[string]string{
 		"MINOS_CLAUDE":                claude,
-		"MINOS_LEAD_MODEL":            "claude-opus-5",
-		"MINOS_GIT_AUTHOR_NAME":       "Minos",
-		"MINOS_GIT_AUTHOR_EMAIL":      "minos@example.invalid",
+		"MINOS_LEAD_MODEL":            "claude-opus-5-5",
 		"MINOS_CLAUDE_CONFIG_SEED":    claudeSeed,
 		"MINOS_CODEX_CONFIG_SEED":     codexSeed,
 		"MINOS_LIFECYCLE_INSTRUCTION": instruction,
 		"MINOS_REVIEW_WORKFLOW":       "/opt/minos/workflows/adjudicated-review",
-		"MINOS_ROOT_CAUSE_SKILL":      filepath.Join(skills, "codex", "root-cause"),
-		"MINOS_SKILLS_DIR":            skills,
 		"MINOS_SETUP_WORKSPACE":       setup,
-		"MINOS_BIN":                   "/usr/local/bin/minos",
-		"MINOS_CLAUDE_POLL_SECONDS":   "0",
+		"MINOS_BIN":                   buildMinos(t),
+		"MINOS_LEAD_POLL_SECONDS":     "0",
 		"MINOS_TEST_RECORD":           record,
 	}
 	var config strings.Builder

@@ -2,7 +2,7 @@
 set -eu
 
 : "${MINOS_API_BASE:?MINOS_API_BASE is required}"
-: "${MINOS_FORGE_TOKEN:?MINOS_FORGE_TOKEN is required}"
+: "${MINOS_FORGE_CREDENTIAL:?MINOS_FORGE_CREDENTIAL is required}"
 
 api() {
   method="$1"
@@ -10,7 +10,7 @@ api() {
   shift 2
   curl -fsS \
     -X "$method" \
-    -H "Authorization: token ${MINOS_FORGE_TOKEN}" \
+    -H "Authorization: token ${MINOS_FORGE_CREDENTIAL}" \
     -H "Accept: application/json" \
     "$@" \
     "${MINOS_API_BASE%/}${path}"
@@ -28,7 +28,7 @@ api_with_status() {
     -o "$api_status_file" \
     -w '%{http_code}' \
     -X "$method" \
-    -H "Authorization: token ${MINOS_FORGE_TOKEN}" \
+    -H "Authorization: token ${MINOS_FORGE_CREDENTIAL}" \
     -H "Accept: application/json" \
     "$@" \
     "${MINOS_API_BASE%/}${path}")"; then
@@ -46,10 +46,6 @@ api_with_status() {
   return 1
 }
 
-json_string_array() {
-  jq -r '[.[]] | @json'
-}
-
 # Some Forgejo collection endpoints accept a page parameter but return the
 # complete collection for every value. Stop when the forge repeats the prior
 # non-empty response so those endpoints terminate without duplicating records,
@@ -61,9 +57,87 @@ repeats_previous_page() {
 write_result() {
   outcome="$1"
   reason="${2:-}"
-  sha="${3:-}"
-  jq -nc --arg outcome "$outcome" --arg reason "$reason" --arg sha "$sha" \
-    '{outcome:$outcome} + (if $reason == "" then {} else {reason:$reason} end) + (if $sha == "" then {} else {sha:$sha} end)'
+  jq -nc --arg outcome "$outcome" --arg reason "$reason" \
+    '{outcome:$outcome} + (if $reason == "" then {} else {reason:$reason} end)'
+}
+
+# Every review on the pull request as one JSON array of review objects, paged
+# until the empty page or a repeated one; returns 1 when the forge could not
+# be read or answered with something other than an array of objects — a
+# `null` listing is a malformed read here, not emptiness (only the reaction
+# endpoint answers an empty collection with null).
+pull_request_reviews() {
+  reviews_path="/api/v1/repos/$1/$2/pulls/$3/reviews"
+  reviews_all='[]'
+  reviews_previous=''
+  reviews_page=1
+  while :; do
+    reviews_current="$(api GET "${reviews_path}?limit=50&page=${reviews_page}")" || return 1
+    reviews_count="$(printf '%s' "$reviews_current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected reviews array") end')" || return 1
+    ! repeats_previous_page "$reviews_current" "$reviews_previous" || break
+    [ "$reviews_count" -gt 0 ] || break
+    reviews_all="$(jq -cn --argjson all "$reviews_all" --argjson page "$reviews_current" '$all + $page')" || return 1
+    reviews_previous="$reviews_current"
+    reviews_page=$((reviews_page + 1))
+  done
+  printf '%s' "$reviews_all"
+}
+
+# The page anchor of the newest review this login left on the given head,
+# as the forge itself reports it — the fragment of the review's `html_url`
+# (Forgejo anchors a review's timeline entry as `issuecomment-<comment id>`,
+# a different number from the review id; a review-request row carries no
+# `commit_id` and no anchor and is never selected): returns 0 and prints the
+# fragment without its `#`, 1 when the login has no anchored review on that
+# head, 2 when the reviews could not be read.
+latest_own_review_anchor() {
+  own_reviews="$(pull_request_reviews "$1" "$2" "$3" 2>/dev/null)" || return 2
+  own_review_anchor="$(printf '%s' "$own_reviews" | jq -er --arg head "$4" --arg login "$5" '
+    [.[] | select(.commit_id == $head and (.user.login // .user.username // "") == $login)] |
+    if length == 0 then empty else
+      max_by(.id) | (.html_url // "" | if type == "string" then . else error("review html_url is not a string") end) |
+      split("#") | .[1:] | join("#") | if . == "" then empty else . end
+    end')" || { own_review_status=$?; [ "$own_review_status" -eq 4 ] && return 1; return 2; }
+  printf '%s\n' "$own_review_anchor"
+}
+
+# Whether the login's reaction with this content is on the pull request:
+# returns 0 present, 1 absent, 2 when the reactions could not be read. Pages
+# until an empty page (array or null), or until the forge repeats the previous page.
+reaction_present() {
+  reaction_path="/api/v1/repos/$1/$2/issues/$3/reactions"
+  reaction_page=1
+  reaction_previous=''
+  while :; do
+    reaction_current="$(api GET "${reaction_path}?limit=50&page=${reaction_page}" 2>/dev/null)" || return 2
+    if printf '%s' "$reaction_current" | json_match --arg content "$4" --arg login "$5" '
+      (if . == null then [] else . end) |
+      if type != "array" or any(.[]; type != "object") then error("expected reactions array") else
+        any(.[]; .content == $content and (.user.login // .user.username // "") == $login)
+      end
+    ' >/dev/null; then
+      return 0
+    else
+      reaction_status=$?
+      [ "$reaction_status" -eq 1 ] || return 2
+    fi
+    ! repeats_previous_page "$reaction_current" "$reaction_previous" || return 1
+    [ "$(printf '%s' "$reaction_current" | jq 'length')" -gt 0 ] || return 1
+    reaction_previous="$reaction_current"
+    reaction_page=$((reaction_page + 1))
+  done
+}
+
+# jq's false result is confirmed absence; any decoding, shape or evaluation
+# failure leaves the forge state unknown. Callers preserve this distinction.
+json_match() {
+  if jq -e "$@" >/dev/null; then
+    return 0
+  else
+    json_match_status=$?
+    [ "$json_match_status" -ne 1 ] || return 1
+    return 2
+  fi
 }
 
 urlencode() {
@@ -74,46 +148,47 @@ urlencode() {
 # verb. A caller's earlier snapshot is evidence for reasoning, not permission
 # for a later mutation.
 #
-# The guard binds the head, never the target: every guarded write except the
-# merge is a statement about the change under review, which the target
-# advancing does not invalidate — target movement is reconciled at finishing,
-# not treated as staleness here. The merge is the one write whose meaning
-# changes with the target, so guarded-merge alone compares the pinned target
-# against guard_actual_target, which this guard leaves populated for it.
+# The guard binds the head, never the target: every guarded write is a
+# statement about the change under review, which the target advancing does
+# not invalidate.
 guard_open_pull_request() {
   guard_owner="$1"
   guard_repo="$2"
   guard_pr="$3"
   guard_expected_head="$4"
-  # $5 is the caller's pinned target, accepted for a stable calling
-  # convention; only guarded-merge consumes it, via guard_actual_target.
+  # $5 is the caller's pinned target, accepted so every guarded script
+  # passes the same coordinates; the guard does not compare it.
   guard_expected_login="$6"
   guard_reason=""
 
   guard_user_json="$(api GET "/api/v1/user")" || return 2
-  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -r '.login // .username // ""')"
+  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -er 'if type != "object" then error("expected user object") else .login // .username // "" end')" || return 2
   if [ "$guard_actual_login" != "$guard_expected_login" ]; then
     guard_reason="authenticated forge identity is ${guard_actual_login:-missing}, expected ${guard_expected_login}"
     return 1
   fi
 
   guard_pr_json="$(api GET "/api/v1/repos/${guard_owner}/${guard_repo}/pulls/${guard_pr}")" || return 2
-  guard_base_ref="$(printf '%s' "$guard_pr_json" | jq -r '.base.ref // ""')"
-  guard_base_json="$(api GET "/api/v1/repos/${guard_owner}/${guard_repo}/branches/$(urlencode "$guard_base_ref")")" || return 2
-  guard_actual_target="$(printf '%s' "$guard_base_json" | jq -r '.commit.id // .commit.sha // ""')"
 
-  if ! printf '%s' "$guard_pr_json" | jq -e \
+  if printf '%s' "$guard_pr_json" | json_match \
     --arg repository "${guard_owner}/${guard_repo}" \
     --argjson pr "$guard_pr" \
-    '.number == $pr and .base.repo.full_name == $repository' >/dev/null; then
+    'if type != "object" then error("expected pull request object") else .number == $pr and .base.repo.full_name == $repository end' >/dev/null; then
+    :
+  else
+    guard_status=$?
+    [ "$guard_status" -eq 1 ] || return 2
     guard_reason="pull request identity no longer matches"
     return 1
   fi
-  if [ "$(printf '%s' "$guard_pr_json" | jq -r '.state')" != "open" ] || [ "$(printf '%s' "$guard_pr_json" | jq -r '.merged // false')" = "true" ]; then
+  guard_state="$(printf '%s' "$guard_pr_json" | jq -r '.state')" || return 2
+  guard_merged="$(printf '%s' "$guard_pr_json" | jq -r '.merged // false')" || return 2
+  if [ "$guard_state" != "open" ] || [ "$guard_merged" = "true" ]; then
     guard_reason="pull request is no longer open"
     return 1
   fi
-  if [ "$(printf '%s' "$guard_pr_json" | jq -r '.head.sha // ""')" != "$guard_expected_head" ]; then
+  guard_head="$(printf '%s' "$guard_pr_json" | jq -r '.head.sha // ""')" || return 2
+  if [ "$guard_head" != "$guard_expected_head" ]; then
     # The guarded caller reports this shared rejection reason.
     # shellcheck disable=SC2034
     guard_reason="head moved"
@@ -134,26 +209,114 @@ guard_merged_pull_request() {
   guard_reason=""
 
   guard_user_json="$(api GET "/api/v1/user")" || return 2
-  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -r '.login // .username // ""')"
+  guard_actual_login="$(printf '%s' "$guard_user_json" | jq -er 'if type != "object" then error("expected user object") else .login // .username // "" end')" || return 2
   if [ "$guard_actual_login" != "$guard_expected_login" ]; then
     guard_reason="authenticated forge identity is ${guard_actual_login:-missing}, expected ${guard_expected_login}"
     return 1
   fi
 
   guard_pr_json="$(api GET "/api/v1/repos/${guard_owner}/${guard_repo}/pulls/${guard_pr}")" || return 2
-  if ! printf '%s' "$guard_pr_json" | jq -e \
+  if printf '%s' "$guard_pr_json" | json_match \
     --arg repository "${guard_owner}/${guard_repo}" \
     --arg head "$guard_expected_head" \
     --argjson pr "$guard_pr" '
+      if type != "object" then error("expected pull request object") else
       .number == $pr and
       .base.repo.full_name == $repository and
       .head.sha == $head and
-      (.merged // false)
+      (.merged // false) end
     ' >/dev/null; then
-  # Callers report this shared rejection reason after the sourced helper returns.
-  # shellcheck disable=SC2034
+    :
+  else
+    guard_status=$?
+    [ "$guard_status" -eq 1 ] || return 2
+    # Callers report this shared rejection reason after the sourced helper returns.
+    # shellcheck disable=SC2034
     guard_reason="merged pull request identity no longer matches"
     return 1
   fi
   return 0
+}
+
+# issue_label_id prints the id of the named label the pull request carries.
+# It returns 1 when the pull request does not carry it and 2 when the
+# forge could not be read. A label has no author, so presence is the pull
+# request's, not the writer's.
+issue_label_id() {
+  label_issue_json="$(api GET "/api/v1/repos/${1}/${2}/issues/${3}/labels" 2>/dev/null)" || return 2
+  label_found="$(printf '%s' "$label_issue_json" | jq -r --arg name "$4" 'first(.[]? | select(.name == $name) | .id) // ""')" || return 2
+  [ -n "$label_found" ] || return 1
+  printf '%s\n' "$label_found"
+}
+
+# defined_label_id prints the id of the named label as the repository
+# defines it, or else as its owning organisation does. It returns 1 when
+# neither defines it — Minos never creates labels on someone's forge — and
+# 2 when the forge could not be read.
+defined_label_id() {
+  label_page=1
+  label_previous=''
+  while :; do
+    label_current="$(api GET "/api/v1/repos/${1}/${2}/labels?limit=50&page=${label_page}" 2>/dev/null)" || return 2
+    if repeats_previous_page "$label_current" "$label_previous"; then
+      break
+    fi
+    label_found="$(printf '%s' "$label_current" | jq -r --arg name "$3" 'first(.[]? | select(.name == $name) | .id) // ""')" || return 2
+    if [ -n "$label_found" ]; then
+      printf '%s\n' "$label_found"
+      return 0
+    fi
+    [ "$(printf '%s' "$label_current" | jq 'length')" -gt 0 ] || break
+    label_previous="$label_current"
+    label_page=$((label_page + 1))
+  done
+  label_page=1
+  label_previous=''
+  while :; do
+    api_with_status GET "/api/v1/orgs/${1}/labels?limit=50&page=${label_page}" || return 2
+    case "$api_status_code" in
+      404) return 1 ;;
+      2??) ;;
+      *) return 2 ;;
+    esac
+    if repeats_previous_page "$api_status_body" "$label_previous"; then
+      return 1
+    fi
+    label_found="$(printf '%s' "$api_status_body" | jq -r --arg name "$3" 'first(.[]? | select(.name == $name) | .id) // ""')" || return 2
+    if [ -n "$label_found" ]; then
+      printf '%s\n' "$label_found"
+      return 0
+    fi
+    [ "$(printf '%s' "$api_status_body" | jq 'length')" -gt 0 ] || return 1
+    label_previous="$api_status_body"
+    label_page=$((label_page + 1))
+  done
+}
+
+# missing_label_reason is the refusal an operator acts on: create the label,
+# or configure the marker as a reaction.
+missing_label_reason() {
+  printf 'label %s is not defined on %s/%s or its organisation; create it there or configure this marker as a reaction' "$3" "$1" "$2"
+}
+
+# commit_statuses prints the commit's complete normalised status history,
+# newest id first, refusing records whose identity cannot be used by readers.
+commit_statuses() {
+  status_path="/api/v1/repos/$1/$2/commits/$3/statuses"
+  status_all='[]'
+  status_previous=''
+  status_page=1
+  while :; do
+    status_current="$(api GET "${status_path}?limit=50&page=${status_page}")" || return 1
+    ! repeats_previous_page "$status_current" "$status_previous" || break
+    status_count="$(printf '%s' "$status_current" | jq 'if type == "array" then length else error("expected status array") end')" || return 1
+    [ "$status_count" -gt 0 ] || break
+    status_all="$(jq -cn --argjson all "$status_all" --argjson page "$status_current" '$all + $page')" || return 1
+    status_previous="$status_current"
+    status_page=$((status_page + 1))
+  done
+  printf '%s' "$status_all" | jq --arg provider forgejo '[.[] |
+    if ((.id | type) != "number" or .id <= 0) then error("Forgejo status is missing a positive id") else
+      {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // "")}
+    end] | sort_by(.id) | reverse'
 }

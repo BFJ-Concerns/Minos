@@ -1,27 +1,126 @@
 [service]
 bot-login = "REPLACE_WITH_FORGEJO_BOT_LOGIN"
+# The identity on every commit Minos makes (filed issue logs, the failure
+# ledger). Unset, the name is the bot login and the email is that login at
+# minos.invalid.
+# commit-author-name = "Minos"
+# commit-author-email = "minos@example.org"
+# The context of every commit status Minos writes, and the only context the
+# sweep reads as its completion marker; a status under any other context is
+# not Minos's. Unset, it is Minos.
+# status-context = "Minos"
 
 [listener]
 bind = ":8919"
 
+# One [forges.<key>] table per forge Minos reviews on; the key is the
+# webhook route suffix (/hooks/<key>) and the "forge" value of each
+# repository file. The credential file's content is handed whole to the
+# adaptation: a Forgejo access token, or a GitHub App registration.
 [forges.forgejo]
 adaptation = "/opt/minos/adaptations/forgejo"
 api-base = "REPLACE_WITH_FORGEJO_BASE_URL"
+# Canonical web base for status Details links (absolute http(s) URL).
+# Unset, links use api-base with a trailing /api/v1 removed.
+# web-base = "https://forge.example"
 webhook-secret-file = "/etc/minos/webhook.secret"
 credential-file = "/etc/minos/forgejo.token"
 signature-header = "X-Forgejo-Signature"
 
+# GitHub: Minos acts as a GitHub App installed on each reviewed repository.
+# The credential file is a JSON object naming the App's id, the
+# installation id on the reviewed repositories and the path of the App's
+# private key; the adaptation mints short-lived installation tokens from
+# it. The App's webhook posts every installed repository's events to
+# /hooks/github with the secret in webhook-secret-file, signed in
+# X-Hub-Signature-256. The service's bot-login is the App's slug with
+# GitHub's "[bot]" suffix, for example "minos-review[bot]".
+# [forges.github]
+# adaptation = "/opt/minos/adaptations/github"
+# api-base = "https://api.github.com"
+# webhook-secret-file = "/etc/minos/github-webhook.secret"
+# credential-file = "/etc/minos/github-app.json"
+# signature-header = "X-Hub-Signature-256"
+
+# Per-repository knobs, set once here for every opted-in repository; any
+# repository's own file under repos/ overrides a knob whole. Unset at both
+# levels, a repository gets: threshold High, its own checked-in guidance
+# (the first present of AGENTS.md, CLAUDE.md, README.md), a pull-request
+# comment as its filing destination, and no work-in-progress prefixes.
+[repositories]
+# work-in-progress-branch-prefixes = ["structural/"]
+# [repositories.review]
+# threshold = "High"
+# Guidance sources: the documents that carry each project's declared intent,
+# read in this order. A source names a path in the reviewed repository, or a
+# path in a named secondary repository on the same forge (cloned read-only
+# beside the workspace).
+# [[repositories.guidance-sources]]
+# path = "AGENTS.md"
+# Filing destination for a clean run's confirmed advisory material and brief
+# diagnostics: kind "file" (path required; repository optional, the reviewed
+# repository's default branch when omitted), "issue" (repository required),
+# "pull-request-comment", or "none".
+# [repositories.filing-destination]
+# kind = "pull-request-comment"
+# Markers Minos writes on a pull request, each a reaction or a label: in-flight
+# while a run reviews it, clean on a clean outcome, and attention on a
+# request-changes outcome. Unset, in-flight is the eyes reaction, clean the +1
+# reaction, and no attention marker is written. A label must already be
+# defined on the repository or its organisation; Minos never creates labels,
+# and refuses the marker write when the label is missing. A repository's own
+# markers table replaces this one whole.
+# [repositories.markers]
+# in-flight = {reaction = "eyes"}
+# clean = {reaction = "+1"}
+# attention = {label = "REPLACE_WITH_ATTENTION_LABEL"}
+
+# Workflow role routing: which engine, model and effort each role runs on.
+# Roles: exploration, proposer, verifier, engagement-gate, brief-planner.
+# A role left unset defaults at run time: with both engines provisioned
+# (both configuration seeds named in run-body.env) every proposing and
+# planning role runs on codex (gpt-6-sol) and the verifier on claude
+# (claude-opus-5-5) — the documented recommendation, so a finding is
+# checked by the family that did not propose it; with one engine
+# provisioned every role runs on it. A model needs its engine named.
+[routing]
+# [routing.verifier]
+# engine = "claude"
+# model = "claude-opus-5-5"
+# effort = "medium"
+
 [runs]
 dir = "/var/lib/minos/runs"
 failure-log = "/var/lib/minos/failures.log"
-failures-repo = "/var/lib/minos/Minos-Annexe"
+failures-repo = "/var/lib/minos/failure-ledger"
+# Forge serving the ledger origin; defaults to the sole configured forge.
+# Required with failures-repo when several forges are configured.
+# failures-forge = "REPLACE_WITH_FORGE_KEY"
+# The selected adaptation interprets this credential (token or App registration).
 failures-credential-file = "/etc/minos/forgejo.token"
 archive-command = "/opt/minos/run-body/archive-run"
-max-concurrent = 3
+# How many review runs may be live at once; unset, one (runs are
+# serialised). Raising it reviews more pull requests in parallel, each run
+# taking its share of the memory envelope below.
+# max-concurrent = 1
+# Service-only limits; omitted values take these defaults. The concurrency
+# cap must not exceed the envelope in GiB. Keep the installed runs slice's
+# MemoryMax at this envelope and MemoryHigh below it.
+# memory-envelope-gib = 22
+# Go duration of at least 1us (for example "12h" or "90m").
+# duration-ceiling = "12h"
+# Percentage of the run ceiling in anonymous memory plus swap (1–100).
+# pressure-threshold-percent = 85
 
 [ensemble]
-concurrency-claude = 10
-concurrency-codex = 6
-# Caps a workflow's live agents across both engines together; unset leaves
-# the runtime's default.
-agent-ceiling = 12
+# Live agents a review workflow may run at once on each engine. Set both or
+# neither: with both unset each defaults to 2. Raising one finishes a run
+# sooner at the cost of more concurrent load on that engine's allowance and
+# on the box's memory.
+# concurrency-claude = 2
+# concurrency-codex = 2
+# Caps a workflow's live agents across both engines together. Unset, there
+# is no combined cap: only the per-engine limits above apply. Setting it
+# bounds a run's total agents; raising it lets more run at once across both
+# engines, up to the per-engine limits.
+# agent-ceiling = 4

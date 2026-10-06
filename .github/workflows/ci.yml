@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+      - uses: extractions/setup-just@v4
+      # jq ships on the hosted Ubuntu image. The same command a dev box and
+      # the Forgejo gate run: what the gate checks lives in the justfile.
+      - name: Verify
+        run: just verify

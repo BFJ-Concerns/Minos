@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+
+# A forge answer other than 200 is the lookup's outcome, reported as its
+# status for the caller to word; only an unreachable forge fails the script.
+if ! api_with_status GET "/api/v1/repos/${owner}/${repo}"; then
+  echo "repository-metadata: the forge could not be reached" >&2
+  exit 1
+fi
+if [ "$api_status_code" != "200" ]; then
+  jq -nc --argjson status "$api_status_code" '{lookup_status: $status}'
+  exit 0
+fi
+printf '%s' "$api_status_body" | jq -ec --arg repository "${owner}/${repo}" '
+  if (.clone_url | type) != "string" or .clone_url == ""
+    or (.default_branch | type) != "string" or .default_branch == ""
+  then error("repository metadata for \($repository) omitted its clone URL or default branch")
+  else {clone_url, default_branch} end'

@@ -1,7 +1,0 @@
-schema_version = 1
-target = "codex"
-kind = "skill"
-
-[[units]]
-name = "playwright"
-version = "2026.7.6"

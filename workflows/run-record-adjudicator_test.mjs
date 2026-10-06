@@ -1,27 +1,25 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-
+import { fixtureArchive as archiveFixture } from "./archive-fixture.mjs";
 import { adjudicate } from "./run-record-adjudicator.mjs";
 
 const legs = [
-  { label: "exploration", role: "exploration", pinnedModel: "gpt-5.6-terra" },
-  { label: "specialist-1", role: "specialist", pinnedModel: "gpt-5.6-sol" },
-  { label: "verify-1", role: "verifier", pinnedModel: "claude-opus-5" },
+  { label: "exploration", role: "exploration", pinnedModel: "gpt-6-sol" },
+  { label: "specialist-1", role: "specialist", pinnedModel: "gpt-6-sol" },
+  { label: "verify-1", role: "verifier", pinnedModel: "claude-opus-5-5" },
 ];
 
 const envelope = {
   reviewed: { target: "target-sha", head: "head-sha", occasion: null },
-  members: [{ id: "primary" }],
   stage: "present",
   requiredModelEvidence: legs,
   proposedFindings: [{
     id: "specialist-1:1",
     source: "Correctness",
-    member: "primary",
     title: "Distinct failure",
     severity: "High",
     confidence: 86,
@@ -40,7 +38,6 @@ const envelope = {
 
 const zeroLegEnvelope = {
   reviewed: { target: "target-sha", head: "head-sha", occasion: null },
-  members: [{ id: "primary" }],
   stage: "absent",
   requiredModelEvidence: [],
   proposedFindings: [],
@@ -50,36 +47,15 @@ const zeroLegEnvelope = {
   reviewers: [],
 };
 
-function fixtureArchive(t, {
-  manifestStatus = "complete",
-  records = {
-    exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
-    "specialist-1": { status: "complete", resolved_model: "gpt-5.6-sol-served" },
-    "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
-  },
-  duplicateRecords = [],
-  rawAgentRecords = [],
-  manifests = 1,
-  agentsDirectory = true,
-} = {}) {
-  const recordDir = mkdtempSync(join(tmpdir(), "minos-adjudicator-fixture-"));
-  t.after(() => rmSync(recordDir, { recursive: true, force: true }));
-  for (let run = 0; run < manifests; run += 1) {
-    const archive = join(recordDir, "runs", "cwd", `namespace-${run}`, `run-${run}`);
-    mkdirSync(agentsDirectory ? join(archive, "agents") : archive, { recursive: true });
-    writeFileSync(join(archive, "manifest.json"), JSON.stringify({ kind: "run_manifest", status: manifestStatus }));
-    const agentRecords = [
-      ...[...Object.entries(records), ...duplicateRecords]
-        .map(([label, record]) => JSON.stringify({ label, ...record })),
-      ...rawAgentRecords,
-    ];
-    agentRecords.forEach((record, index) => {
-      const directory = join(archive, "agents", String(index + 1).padStart(6, "0"));
-      mkdirSync(directory, { recursive: true });
-      writeFileSync(join(directory, "agent.json"), record);
-    });
-  }
-  return recordDir;
+function fixtureArchive(t, options = {}) {
+  return archiveFixture(t, {
+    records: {
+      exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
+      "specialist-1": { status: "complete", resolved_model: "gpt-6-sol-served" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
+    },
+    ...options,
+  });
 }
 
 function assertWithheld(adapterVerdict, condition) {
@@ -93,8 +69,6 @@ function assertWithheld(adapterVerdict, condition) {
       adapterVerdict.incomplete.join("\n"),
     );
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
-  assert.equal(adapterVerdict.briefFixRequired, false);
 }
 
 function missingRecordDirectory(t) {
@@ -111,24 +85,28 @@ test("complete legs and a complete verifier result produce a complete adapter ve
   assert.equal(adapterVerdict.status, "complete");
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-1:1"]);
-  assert.equal(adapterVerdict.reviewBody.comments.length, 1);
+  // The verdict carries the finding and its model evidence as data; what the
+  // author reads is the publication composer's rendering, never the
+  // adjudicator's.
   assert.deepEqual(
-    adapterVerdict.reviewBody.comments.map(({ path, line }) => ({ path, line })),
-    [{ path: "internal/review.go", line: 42 }],
+    adapterVerdict.confirmedFindings.map(({ path, line, proposingModel, verifyingModel }) => ({ path, line, proposingModel, verifyingModel })),
+    [{
+      path: "internal/review.go",
+      line: 42,
+      proposingModel: { pinnedModel: "gpt-6-sol", resolvedModel: "gpt-6-sol-served" },
+      verifyingModel: { pinnedModel: "claude-opus-5-5", resolvedModel: "claude-opus-5-5" },
+    }],
   );
-  assert.equal("new_position" in adapterVerdict.reviewBody.comments[0], false);
-  assert.equal(adapterVerdict.reviewBody.body, "Repository review brief findings.");
-  assert.deepEqual(adapterVerdict.memberReviews, []);
-  assert.equal(adapterVerdict.briefFixRequired, true);
+  assert.equal("reviewBody" in adapterVerdict, false);
   assert.deepEqual(adapterVerdict.ran, [{ brief: ".review/errors.md", title: "Error handling" }]);
   assert.deepEqual(adapterVerdict.skipped, []);
   assert.deepEqual(adapterVerdict.misconfigurations, []);
   assert.deepEqual(
     adapterVerdict.modelEvidence.map(({ label, resolvedModel, status }) => ({ label, resolvedModel, status })),
     [
-      { label: "exploration", resolvedModel: "gpt-5.6-terra-served", status: "complete" },
-      { label: "specialist-1", resolvedModel: "gpt-5.6-sol-served", status: "complete" },
-      { label: "verify-1", resolvedModel: "claude-opus-5", status: "complete" },
+      { label: "exploration", resolvedModel: "gpt-6-sol-served", status: "complete" },
+      { label: "specialist-1", resolvedModel: "gpt-6-sol-served", status: "complete" },
+      { label: "verify-1", resolvedModel: "claude-opus-5-5", status: "complete" },
     ],
   );
 });
@@ -188,8 +166,6 @@ test("a refuted verifier completes the run without publishing a finding", async 
   assert.equal(adapterVerdict.status, "complete");
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
-  assert.equal(adapterVerdict.briefFixRequired, false);
 });
 
 test("operator attention follows the combined-confidence threshold", async (t) => {
@@ -218,12 +194,68 @@ test("operator attention follows the combined-confidence threshold", async (t) =
   assert.deepEqual(highVerdict.operatorAttention, []);
 });
 
+test("adjudication retains every confirmed finding regardless of severity", async (t) => {
+  const lowSeverityLegs = [
+    ...legs,
+    { label: "specialist-2", role: "specialist", pinnedModel: "gpt-6-sol" },
+    { label: "verify-2", role: "verifier", pinnedModel: "claude-opus-5-5" },
+  ];
+  const recordsWithLowSeverityLegs = {
+    exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
+    "specialist-1": { status: "complete", resolved_model: "gpt-6-sol-served" },
+    "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
+    "specialist-2": { status: "complete", resolved_model: "gpt-6-sol-served" },
+    "verify-2": { status: "complete", resolved_model: "claude-opus-5-5" },
+  };
+  const fixtureArchiveDir = fixtureArchive(t, { records: recordsWithLowSeverityLegs });
+  const lowSeverityFinding = {
+    ...envelope.proposedFindings[0],
+    id: "specialist-2:1",
+    title: "Advisory wording obscures the recovery path",
+    severity: "Low",
+    path: "internal/review.go",
+    line: 7,
+    explanation: "The recovery path is correct but difficult to identify.",
+    confidence: 71,
+    proposingLabel: "specialist-2",
+    verifyLabel: "verify-2",
+    rawVerifier: { verdict: "upheld", confidence: 74, reason: "The wording reaches operators." },
+  };
+  const mixedVerdict = await adjudicate({
+    envelope: {
+      ...envelope,
+      requiredModelEvidence: lowSeverityLegs,
+      proposedFindings: [...envelope.proposedFindings, lowSeverityFinding],
+    },
+    recordDir: fixtureArchiveDir,
+  });
+
+  assert.equal(mixedVerdict.status, "complete", mixedVerdict.incomplete.join("\n"));
+  assert.deepEqual(
+    mixedVerdict.confirmedFindings.map(({ id, severity, path, line }) => ({ id, severity, path, line })),
+    [
+      { id: "specialist-1:1", severity: "High", path: "internal/review.go", line: 42 },
+      { id: "specialist-2:1", severity: "Low", path: "internal/review.go", line: 7 },
+    ],
+    "every confirmed finding, below threshold included, reaches the verdict",
+  );
+  assert.doesNotMatch(JSON.stringify(mixedVerdict.confirmedFindings), /proposingLabel|verifyLabel|rawVerifier/);
+
+  const lowOnlyFixtureArchiveDir = fixtureArchive(t, { records: recordsWithLowSeverityLegs });
+  const lowOnlyVerdict = await adjudicate({
+    envelope: { ...envelope, requiredModelEvidence: lowSeverityLegs, proposedFindings: [lowSeverityFinding] },
+    recordDir: lowOnlyFixtureArchiveDir,
+  });
+  assert.equal(lowOnlyVerdict.status, "complete", lowOnlyVerdict.incomplete.join("\n"));
+  assert.deepEqual(lowOnlyVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-2:1"]);
+});
+
 test("an unexpected resolved_model family does not withhold a complete verdict", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
-      exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
-      "specialist-1": { status: "complete", resolved_model: "claude-opus-5" },
-      "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
+      exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
+      "specialist-1": { status: "complete", resolved_model: "claude-opus-5-5" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
@@ -231,7 +263,7 @@ test("an unexpected resolved_model family does not withhold a complete verdict",
   assert.equal(adapterVerdict.status, "complete");
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings.map((finding) => finding.id), ["specialist-1:1"]);
-  assert.equal(adapterVerdict.modelEvidence.find((entry) => entry.label === "specialist-1").resolvedModel, "claude-opus-5");
+  assert.equal(adapterVerdict.modelEvidence.find((entry) => entry.label === "specialist-1").resolvedModel, "claude-opus-5-5");
 });
 
 test("missing resolved_model does not withhold a complete verdict", async (t) => {
@@ -399,15 +431,14 @@ test("an unreadable record directory cannot become publishable", { timeout: 1000
 test("a non-complete leg makes the run incomplete", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
-      exploration: { status: "complete", resolved_model: "gpt-5.6-terra" },
-      "specialist-1": { status: "failed", resolved_model: "gpt-5.6-sol" },
-      "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
+      exploration: { status: "complete", resolved_model: "gpt-6-sol" },
+      "specialist-1": { status: "failed", resolved_model: "gpt-6-sol" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
   assert.equal(adapterVerdict.status, "incomplete");
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
   assert.match(adapterVerdict.incomplete.join("\n"), /specialist-1 has status failed; expected complete/);
   assert.match(adapterVerdict.incomplete.join("\n"), /no complete verdict/);
 });
@@ -415,8 +446,8 @@ test("a non-complete leg makes the run incomplete", async (t) => {
 test("an absent required agent record makes the run incomplete", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
     records: {
-      exploration: { status: "complete", resolved_model: "gpt-5.6-terra-served" },
-      "verify-1": { status: "complete", resolved_model: "claude-opus-5" },
+      exploration: { status: "complete", resolved_model: "gpt-6-sol-served" },
+      "verify-1": { status: "complete", resolved_model: "claude-opus-5-5" },
     },
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
@@ -426,7 +457,7 @@ test("an absent required agent record makes the run incomplete", async (t) => {
 
 test("ambiguous agent records make the run incomplete", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t, {
-    duplicateRecords: [["specialist-1", { status: "complete", resolved_model: "gpt-5.6-sol-served" }]],
+    duplicateRecords: [["specialist-1", { status: "complete", resolved_model: "gpt-6-sol-served" }]],
   });
   const adapterVerdict = await adjudicate({ envelope, recordDir: fixtureArchiveDir });
   assert.equal(adapterVerdict.status, "incomplete");
@@ -479,25 +510,15 @@ test("a malformed proposed finding cannot become publishable", async (t) => {
   const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
   assert.equal(adapterVerdict.status, "incomplete");
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
   assert.match(adapterVerdict.incomplete.join("\n"), /proposed finding 1 is absent or malformed/);
 });
 
-for (const [description, finding] of [
-  ["missing attribution", (({ member, ...rest }) => rest)(envelope.proposedFindings[0])],
-  ["unknown attribution", { ...envelope.proposedFindings[0], member: "other-member" }],
-]) {
-  test(`a confirmed finding with ${description} withholds the verdict`, async (t) => {
-    const fixtureArchiveDir = fixtureArchive(t);
-    const adapterVerdict = await adjudicate({
-      envelope: { ...envelope, proposedFindings: [finding] },
-      recordDir: fixtureArchiveDir,
-    });
-    assertWithheld(adapterVerdict, /member attribution/);
-  });
-}
+test("the adjudicator carries no grouped-run members reader", () => {
+  const source = readFileSync(new URL("./run-record-adjudicator.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /\bmembers\b/);
+});
 
-test("a finding about a range reaches the review payload covering it", async (t) => {
+test("a finding about a range reaches the verdict with its end line", async (t) => {
   const fixtureArchiveDir = fixtureArchive(t);
   const rangeEnvelope = {
     ...envelope,
@@ -507,7 +528,7 @@ test("a finding about a range reaches the review payload covering it", async (t)
 
   assert.equal(adapterVerdict.status, "complete");
   assert.deepEqual(
-    adapterVerdict.reviewBody.comments.map(({ line, end_line: endLine }) => ({ line, endLine })),
+    adapterVerdict.confirmedFindings.map(({ line, endLine }) => ({ line, endLine })),
     [{ line: 42, endLine: 46 }],
   );
 });
@@ -758,11 +779,10 @@ test("a malformed misconfigurations field cannot become publishable", { timeout:
   const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
   assert.equal(adapterVerdict.status, "incomplete");
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
-  assert.equal(adapterVerdict.reviewBody, null);
   assert.match(adapterVerdict.incomplete.join("\n"), /envelope misconfigurations is absent or unreadable/);
 });
 
-test("a brief misconfiguration retains its member attribution", { timeout: 1000 }, async (t) => {
+test("a brief misconfiguration carries its review-only shape", { timeout: 1000 }, async (t) => {
   const fixtureArchiveDir = fixtureArchive(t);
   const adapterVerdict = await adjudicate({
     envelope: {
@@ -770,7 +790,6 @@ test("a brief misconfiguration retains its member attribution", { timeout: 1000 
       misconfigurations: [{
         brief: ".review/missing/scoped.md",
         title: "Scoped",
-        member: "primary",
         kind: "misconfigured-scope",
         reason: "brief scope missing/ matches no repository directory",
       }],
@@ -781,7 +800,6 @@ test("a brief misconfiguration retains its member attribution", { timeout: 1000 
   assert.deepEqual(adapterVerdict.misconfigurations, [{
     brief: ".review/missing/scoped.md",
     title: "Scoped",
-    member: "primary",
     kind: "misconfigured-scope",
     reason: "brief scope missing/ matches no repository directory",
   }]);
@@ -809,8 +827,6 @@ for (const [description, misconfiguration] of [
     const adapterVerdict = await adjudicate({ envelope: malformedEnvelope, recordDir: fixtureArchiveDir });
     assert.equal(adapterVerdict.status, "incomplete");
     assert.deepEqual(adapterVerdict.confirmedFindings, []);
-    assert.equal(adapterVerdict.reviewBody, null);
-    assert.equal(adapterVerdict.briefFixRequired, false);
     assert.match(adapterVerdict.incomplete.join("\n"), /envelope contains a malformed brief misconfiguration/);
   });
 }
