@@ -163,7 +163,17 @@ func TestQualityHandoffValidationFailureIsReported(t *testing.T) {
 	}
 }
 
+// skipUnderRoot skips a test whose failure comes from a read-only
+// directory, which root removes entries from regardless of mode.
+func skipUnderRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory write permission")
+	}
+}
+
 func TestQualitySpawnRollbackReportsDirectoryCleanupFailure(t *testing.T) {
+	skipUnderRoot(t)
 	output := qualityLog(t)
 	cfg, facts, _, _ := reviewContinuationFixture(t)
 	t.Cleanup(func() { _ = os.Chmod(cfg.Runs.Dir, 0o700) })
@@ -194,6 +204,7 @@ func TestQualitySpawnRollbackReportsDirectoryCleanupFailure(t *testing.T) {
 }
 
 func TestQualityRunCommandReportsCleanupWithoutChangingOutcome(t *testing.T) {
+	skipUnderRoot(t)
 	output := qualityLog(t)
 	root := t.TempDir()
 	runDir := filepath.Join(root, "run")
