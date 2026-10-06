@@ -104,7 +104,7 @@ func TestSweepRunResiduePreservesEvidenceWhenDurableSalvageFails(t *testing.T) {
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 
 	cfg := scratchTestConfig(t)
-	cfg.Runs.FailuresRepo = filepath.Join(t.TempDir(), "missing-Minos-Annexe")
+	cfg.Runs.FailuresRepo = filepath.Join(t.TempDir(), "missing-failure-ledger")
 	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr10-dead")
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -295,7 +295,7 @@ func TestPublishFailureDigestTimesOutAndRetainsLocalCommit(t *testing.T) {
 	failurePublishTimeout = 50 * time.Millisecond
 
 	root := t.TempDir()
-	checkout := filepath.Join(root, "Minos-Annexe")
+	checkout := filepath.Join(root, "failure-ledger")
 	runGit(t, root, "init", "-b", "main", checkout)
 	configureTestGit(t, checkout)
 	writeTestFile(t, filepath.Join(checkout, "FAILURES.md"), "# Failures\n")
@@ -508,7 +508,7 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
 	seed := filepath.Join(root, "seed")
-	checkout := filepath.Join(root, "Minos-Annexe")
+	checkout := filepath.Join(root, "failure-ledger")
 	operator := filepath.Join(root, "operator")
 	verification := filepath.Join(root, "verification")
 	runGit(t, root, "init", "--bare", remote)
@@ -606,7 +606,7 @@ func scratchTestConfig(t *testing.T) ServiceConfig {
 	var cfg ServiceConfig
 	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
 	cfg.Runs.Dir = filepath.Join(root, "runs")
-	cfg.Runs.FailuresRepo = filepath.Join(root, "Minos-Annexe")
+	cfg.Runs.FailuresRepo = filepath.Join(root, "failure-ledger")
 	cfg.Runs.ArchiveCommand = "/bin/true"
 	if err := os.MkdirAll(cfg.Runs.Dir, 0o700); err != nil {
 		t.Fatal(err)
