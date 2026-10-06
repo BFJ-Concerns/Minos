@@ -51,8 +51,6 @@ containment layer; it reviews and publishes to the forge, and nothing else.
   it — containment layers, policy gates, health and lifecycle bookkeeping —
   was deliberately removed and stays out.
 
-Planning and task records live in `../Minos-Annexe`.
-
 ## The vendored Ensemble runtime
 
 `runtime/ensemble.mjs` is a vendored copy of the `ensemble-workflow`
