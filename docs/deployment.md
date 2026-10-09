@@ -1,14 +1,14 @@
 # Deployment
 
 Minos runs on a disposable single-tenant Linux machine under a functioning
-systemd user manager. The machine needs Claude Code, the Codex CLI, Node.js,
+systemd user manager (systemd 250 or later). The machine needs Claude Code, the Codex CLI, Node.js,
 Git, Go, Bash, curl, jq, openssl, OpenSSH client utilities, ssh-keygen, tar,
 zstd, sha256sum and GNU find installed (openssl signs the GitHub App token;
 `scripts/expected-tool-versions` is the declared set for the versioned tools).
-The lead and its workers need access to both `claude-opus-5-5` and `gpt-6-sol`:
-a Claude Code subscription or gateway credential for the Claude engine, and a
-Codex (ChatGPT) account for the Codex engine — or a single engine with both
-roles routed to it via `[routing]`. The machine itself is the containment
+The default routing uses both `claude-opus-5-5` and `gpt-6-sol`: a Claude Code
+subscription or gateway credential for the Claude engine, and a Codex
+(ChatGPT) account for the Codex engine. A box with only one engine provisioned
+runs every role on it. The machine itself is the containment
 boundary. Reviews never build or test the reviewed repository, so no repository
 toolchains are needed.
 
@@ -143,6 +143,13 @@ toolchains are needed.
    a trailing `/api/v1`. GitHub links always derive the web host from the
    API base (`https://github.com` for the public API, the Enterprise host
    otherwise) and ignore `web-base`.
+
+   The status is review information, not a merge gate: do not make this
+   context a required status check in branch protection. It can be missing
+   or stale on a head. A run that fails before the lead launches writes no
+   status, a status write the forge does not confirm leaves the previous
+   status in place, and a lead that dies can leave `pending` behind until a
+   later run replaces it.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset; it must not exceed `runs.memory-envelope-gib`.
@@ -293,8 +300,8 @@ older names without the forge key.
 
 A run that exits cleanly triggers one sweep pass, so the freed slot is filled
 without waiting for the next periodic cycle: each run unit carries
-`OnSuccess=minos-sweep-after-run@minos-run-<forge>-<owner>-<repo>-pr<n>.service`
-(systemd 249 or later), and that instance enqueues `minos-sweep.service` and
+`OnSuccess=minos-sweep-after-run@minos-run-<forge>-<owner>-<repo>-pr<n>.service`,
+and that instance enqueues `minos-sweep.service` and
 exits. The indirection is what lets the user manager collect the exited run
 unit — a unit stays loaded while an exit hook it fired names a unit that
 stays loaded, so a hook on the sweep service itself kept every exited run
