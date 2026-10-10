@@ -1525,6 +1525,49 @@ func TestGitHubStatusOnlyCompletionSurvivesRetarget(t *testing.T) {
 	}
 }
 
+// A deployment reviewing on Forgejo and GitHub at once has two identities:
+// the service login is the Forgejo account's, and the GitHub forge names the
+// App's bot login. A completed GitHub run is recognised under the App's login.
+func TestGitHubForgeBotLoginRecognisesTheAppsCompletionBesideAnotherForgesLogin(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	state.pullRequest["draft"] = false
+	cfg := ServiceConfig{Root: t.TempDir()}
+	cfg.Runs.Dir = t.TempDir()
+	setTestRunCeilings(&cfg)
+	cfg.Service.BotLogin = "Minos"
+	cfg.Service.StatusContext = "Minos"
+	cfg.Forges = map[string]ForgeConfig{
+		"forgejo": {},
+		"github":  {Adaptation: state.adaptationPath, APIBase: state.server.URL, CredentialFile: state.credentialPath, BotLogin: githubFixtureBotLogin},
+	}
+	adapter, err := newBehaviouralForge(cfg, "github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := forge.Marker{Reaction: "+1"}
+	githubApplied(t, adapter.SetProductStatus(t.Context(), state.guard(), product.Clean()))
+	githubApplied(t, adapter.AddMarker(t.Context(), state.guard(), marker))
+	repo := RepoConfig{Forge: "github", Owner: "acme", Repo: "widgets"}
+	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+	repo.Markers.Clean = &marker
+	facts := Facts{Forge: repo.Forge, Owner: repo.Owner, Repo: repo.Repo, PR: "7"}
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var commands []string
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		commands = append(commands, name)
+		return nil, nil
+	}
+	before := len(state.operationWrites())
+	result, err := reconcilePullRequest(t.Context(), cfg, repo, facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != ReconcileNothing || result.DeferralReason != "completed-marker" || len(commands) != 0 || len(state.operationWrites()) != before {
+		t.Fatalf("reconciliation = %#v, commands %v, writes %d -> %d; want the App's clean status read as completion", result, commands, before, len(state.operationWrites()))
+	}
+}
+
 func TestGitHubCommitStatusContinuationPriority(t *testing.T) {
 	for _, outcome := range []product.State{product.Incomplete(), product.Working(), product.Continuation()} {
 		t.Run(outcome.Name(), func(t *testing.T) {
