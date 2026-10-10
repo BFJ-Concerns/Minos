@@ -207,6 +207,19 @@ type ForgeConfig struct {
 	WebhookSecretFile string `toml:"webhook-secret-file"`
 	CredentialFile    string `toml:"credential-file"`
 	SignatureHeader   string `toml:"signature-header"`
+	// BotLogin is the login this forge shows on every Minos write, when it
+	// differs from the service's bot-login — a GitHub App's "<slug>[bot]"
+	// beside a Forgejo service account, say. Unset, the service's applies.
+	BotLogin string `toml:"bot-login"`
+}
+
+// BotLogin is the login Minos writes as on the named forge: the forge's own
+// bot-login where it sets one, the service's otherwise.
+func (cfg ServiceConfig) BotLogin(forgeName string) string {
+	if login := cfg.Forges[forgeName].BotLogin; login != "" {
+		return login
+	}
+	return cfg.Service.BotLogin
 }
 
 // RepositoryKnobs are the per-repository knobs. Each is set once at

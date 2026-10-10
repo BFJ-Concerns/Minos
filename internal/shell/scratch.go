@@ -468,7 +468,7 @@ func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 		return fmt.Errorf("runs.failures-forge %q is not a configured forge; durable local append retained", cfg.Runs.FailuresForge)
 	}
 	forgeConfig.CredentialFile = cfg.Runs.FailuresCredentialFile
-	adapter, err := newBehaviouralForgeFromConfig(cfg, forgeConfig)
+	adapter, err := newBehaviouralForgeFromConfig(cfg, cfg.Runs.FailuresForge, forgeConfig)
 	if err != nil {
 		return fmt.Errorf("failure-ledger adapter: %w", err)
 	}

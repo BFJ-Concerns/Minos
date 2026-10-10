@@ -554,3 +554,27 @@ credential-file = "/credential"
 		})
 	}
 }
+
+func TestForgeBotLoginOverridesTheServiceLoginOnItsOwnForge(t *testing.T) {
+	root := t.TempDir()
+	contents := strings.Replace(testServiceConfig, "[runs]\n", `[forges.github]
+adaptation = "/adapt"
+api-base = "https://api.github.invalid"
+webhook-secret-file = "/secret"
+credential-file = "/credential"
+bot-login = "minos-review[bot]"
+[runs]
+failures-forge = "local"
+`, 1)
+	writeTestFile(t, filepath.Join(root, "service.toml"), contents)
+	cfg, err := LoadServiceConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.BotLogin("github"); got != "minos-review[bot]" {
+		t.Fatalf("github bot login = %q, want the forge's own", got)
+	}
+	if got := cfg.BotLogin("local"); got != "Minos" {
+		t.Fatalf("local bot login = %q, want the service's", got)
+	}
+}
