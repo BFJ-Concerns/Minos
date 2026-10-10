@@ -37,7 +37,7 @@ func currentContinuationPriority(ctx context.Context, cfg ServiceConfig, facts F
 	if err != nil {
 		return 0, err
 	}
-	return continuationPriority(forge.Snapshot{Statuses: statuses}, cfg.Service.BotLogin, cfg.Service.StatusContext), nil
+	return continuationPriority(forge.Snapshot{Statuses: statuses}, cfg.BotLogin(facts.Forge), cfg.Service.StatusContext), nil
 }
 
 // currentReview finds the bot's latest review of the current head. Minos
@@ -135,7 +135,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		{"clean", repo.Markers.Clean, product.Clean()},
 		{"attention", repo.Markers.Attention, product.Attention()},
 	} {
-		if terminal.marker == nil || !staleTerminalMarker(snapshot, cfg.Service.BotLogin, cfg.Service.StatusContext, terminal.state) {
+		if terminal.marker == nil || !staleTerminalMarker(snapshot, cfg.BotLogin(facts.Forge), cfg.Service.StatusContext, terminal.state) {
 			continue
 		}
 		if result := adapter.RemoveMarker(ctx, guard, *terminal.marker); result.Outcome != forge.WriteApplied {
@@ -208,13 +208,13 @@ func assessPullRequestAdmission(cfg ServiceConfig, repo RepoConfig, snapshot for
 		eligibility.workInProgress = true
 		eligibility.reasons = append(eligibility.reasons, fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))
 	}
-	if review, reviewed := currentReview(snapshot, cfg.Service.BotLogin); reviewed {
+	if review, reviewed := currentReview(snapshot, cfg.BotLogin(repo.Forge)); reviewed {
 		if state, terminal := terminalState(review); terminal {
 			eligibility.terminalOutcome = state.Name()
 		}
 	}
 	if eligibility.terminalOutcome == "" {
-		if status, found := latestOwnedStatus(snapshot, cfg.Service.BotLogin, cfg.Service.StatusContext); found {
+		if status, found := latestOwnedStatus(snapshot, cfg.BotLogin(repo.Forge), cfg.Service.StatusContext); found {
 			if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal {
 				eligibility.terminalOutcome = state.Name()
 			}

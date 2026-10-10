@@ -257,8 +257,10 @@ toolchains are needed.
    defers review until the next sweep pass.
 
    For a GitHub forge, register a GitHub App (permissions: pull
-   requests and commit statuses read and write, contents read, issues read
-   and write where a filing destination or alert needs them; subscribe it
+   requests and commit statuses read and write, contents read — and write
+   where a `file` filing destination or the failure ledger pushes to an
+   installed repository — and issues read and write where a filing
+   destination or alert needs them; subscribe it
    to pull request, pull request review and issue comment events; one
    webhook pointing at `/hooks/github` with the secret), install it on each
    repository Minos reviews, and write the credential file as JSON:
@@ -266,11 +268,14 @@ toolchains are needed.
    "private-key-file": "/etc/minos/github-app.pem"}` beside the downloaded
    private key. The adaptation mints an installation token from it for each
    invocation and caches the token until it nears expiry; the box needs
-   `openssl` for the App JWT. Set `service.bot-login` to the App's slug with
-   the `[bot]` suffix (`minos-review[bot]`) — that is the login GitHub shows
-   on every write the App makes, and the guards compare against it. A
-   GitHub App cannot be a requested reviewer, so the claim on GitHub is the
-   in-flight marker alone.
+   `openssl` for the App JWT. The App's login is its slug with the `[bot]`
+   suffix (`minos-review[bot]`) — the login GitHub shows on every write the
+   App makes, and the one the guards compare against. Set it as
+   `service.bot-login` when GitHub is the only forge; when another forge's
+   account holds `service.bot-login`, set it as `bot-login` in
+   `[forges.<key>]` instead, which overrides the service's login on that
+   forge alone. A GitHub App cannot be a requested reviewer, so the claim on
+   GitHub is the in-flight marker alone.
 5. Install `minos-sweep-alert.service` (the sweep's `OnFailure=` hook, which
    files an operator alert issue on the repository named by the `[service]`
    `alert-forge`/`alert-owner`/`alert-repo` keys; the sweep files the same
