@@ -1,9 +1,9 @@
 # Minos
 
 Minos is a pull-request review service. An authenticated webhook or the
-periodic sweep starts one trusted Claude Code lead on a disposable
-single-tenant box. The lead may clone and read without an internal
-containment layer; it reviews and publishes to the forge, and nothing else.
+periodic sweep starts one trusted Claude Code lead. The lead may clone and
+read without an internal containment layer; it reviews and publishes to the
+forge, and nothing else.
 
 ## Layout
 
@@ -47,9 +47,11 @@ containment layer; it reviews and publishes to the forge, and nothing else.
   clean/attention status on it — and any head movement is the author's,
   spending the marker. The sweep never writes statuses itself, and
   `runs.max-concurrent` caps how many runs are live at once.
-- The disposable box is the security boundary; run-scoped machinery inside
-  it — containment layers, policy gates, health and lifecycle bookkeeping —
-  was deliberately removed and stays out.
+- Minos carries no sandbox of its own: whatever isolates the deployment is
+  the security boundary, and the docs recommend a dedicated container or VM
+  without requiring one. Run-scoped machinery — containment layers, policy
+  gates, health and lifecycle bookkeeping — was deliberately removed and
+  stays out.
 
 ## The vendored Ensemble runtime
 

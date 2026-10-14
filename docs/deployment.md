@@ -1,16 +1,23 @@
 # Deployment
 
-Minos runs on a disposable single-tenant Linux machine under a functioning
-systemd user manager (systemd 250 or later). The machine needs Claude Code, the Codex CLI, Node.js,
-Git, Go, Bash, curl, jq, openssl, OpenSSH client utilities, ssh-keygen, tar,
-zstd, sha256sum and GNU find installed (openssl signs the GitHub App token;
-`scripts/expected-tool-versions` is the declared set for the versioned tools).
-The default routing uses both `claude-opus-5-5` and `gpt-6-sol`: a Claude Code
-subscription or gateway credential for the Claude engine, and a Codex
-(ChatGPT) account for the Codex engine. A box with only one engine provisioned
-runs every role on it. The machine itself is the containment
-boundary. Reviews never build or test the reviewed repository, so no repository
-toolchains are needed.
+Minos runs on Linux under a functioning systemd user manager (systemd 250 or
+later), because each review runs as a transient user unit; in a container,
+use an image that runs systemd as its init. The host needs Claude Code or the
+Codex CLI (at least one), Node.js, Git, Bash, curl, jq, openssl, OpenSSH
+client utilities, ssh-keygen, tar, zstd, sha256sum and GNU find installed
+(openssl signs the GitHub App token), plus Go wherever the service binary is
+built. `scripts/expected-tool-versions` records the versions the repository's
+checks run against. The default routing uses both `claude-opus-5-5` and
+`gpt-6-sol`: a Claude Code subscription or gateway credential for the Claude
+engine, and a Codex (ChatGPT) account for the Codex engine. A host with only
+one engine provisioned runs every role on it. Reviews never build or test the
+reviewed repository, so no repository toolchains are needed.
+
+Minos adds no sandbox of its own: the lead holds the engine and forge
+credentials and reads untrusted pull-request content with nothing between it
+and its host. Isolating the deployment — a dedicated container or VM — is
+recommended so that a misbehaving run can reach only what Minos itself
+needs; it is not required.
 
 1. Build and install `cmd/minos` as `/usr/local/bin/minos`.
 2. Install the whole of `scripts/adaptations/` under
@@ -45,11 +52,11 @@ toolchains are needed.
    directories like `~/.local/bin` and `~/.cargo/bin`, where the agent
    CLIs are commonly installed.
 3. Run `scripts/install-review-runtime /opt/minos`. Before installing
-   anything it checks the box's tool versions against
-   `scripts/expected-tool-versions` — the set the repository gate runs
-   against — and stops on any mismatch, naming each drifted tool with both
-   versions; upgrade the box's tools (or record a deliberate divergence as
-   `any` in that file) and re-run. It then installs the complete test-free
+   anything it checks the host's tools against
+   `scripts/expected-tool-versions`: it stops, naming every gap, when a
+   required tool is missing or neither engine CLI is installed, and warns
+   for each tool whose version differs from the one the repository's checks
+   run against. It then installs the complete test-free
    review runtime under `/opt/minos`: the vendored Ensemble launcher and
    its provenance files, the adjudication wrapper and adapter, and every
    non-test workflow file. It also verifies the launcher against
@@ -153,9 +160,9 @@ toolchains are needed.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset; it must not exceed `runs.memory-envelope-gib`.
-   That service-only knob defaults to 22 GiB. Run units share the configured
+   That service-only knob defaults to 8 GiB. Run units share the configured
    whole-box memory envelope live, through the `minos-runs.slice` unit.
-   The shipped slice holds `MemoryHigh=20G` and `MemoryMax=22G`, so no run feels any pressure
+   The shipped slice holds `MemoryHigh=6G` and `MemoryMax=8G`, so no run feels any pressure
    until the runs *together* approach the envelope — a lone run may use all
    of it — reclaim then pushes them back, and only combined demand the
    envelope cannot hold kills, taking the biggest consumer. Each unit also
@@ -169,8 +176,10 @@ toolchains are needed.
    `runs.pressure-threshold-percent` sets the continuation threshold as a
    percentage of the run ceiling (1–100, default 85); the watch signals after
    two consecutive samples of anonymous memory plus swap at that threshold.
-   A healthy run's unreclaimable footprint is around 1.2 GiB,
-   but each run also paces `ensemble.concurrency-claude` and
+   A review's unreclaimable footprint, its workers included, is typically
+   about 1 GiB and rarely above 5 GiB, so the default envelope holds a lone
+   run with room to spare; with a higher concurrency cap, raise it toward
+   the runs' combined peak. Each run paces `ensemble.concurrency-claude` and
    `concurrency-codex` workers of its own (the loader defaults both to 2
    when neither is set; the shipped example comments both at 2).
    `ensemble.agent-ceiling` optionally caps a workflow's agents across
@@ -219,7 +228,7 @@ toolchains are needed.
      credential file stops the run before Claude launches.
 
    Provision the seed directory of every engine the deployment runs when the
-   disposable box is launched — the lead's engine at least. Each run copies
+   host is provisioned — the lead's engine at least. Each run copies
    their contents into its private `HOME`: Claude state goes to
    `$HOME/.claude` and Codex state to `$HOME/.codex`; no skills are
    installed into either home — the lead needs none, and review workers run
@@ -291,7 +300,9 @@ toolchains are needed.
    memory envelope, so runs share that envelope rather than a copied
    default, and the timer and the `minos-sweep-after-run@.service` template
    verbatim.
-6. Configure the forge webhook to post to `/hooks/<forge key>` —
+6. Optionally, configure a forge webhook so a review starts as soon as a
+   pull request changes rather than on the sweep's next pass; the sweep
+   finds every pull request needing review without one. Point it at `/hooks/<forge key>` —
    `/hooks/forgejo` for the shipped Forgejo table, `/hooks/github` for a
    GitHub App — using the matching secret. The path suffix after `/hooks/`
    must match the key used in `[forges.<key>]` in `service.toml`; a
