@@ -9,5 +9,5 @@
 Description=Minos run memory envelope
 
 [Slice]
-MemoryHigh=20G
-MemoryMax=22G
+MemoryHigh=6G
+MemoryMax=8G

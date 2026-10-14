@@ -117,7 +117,7 @@ func (cfg ServiceConfig) RecentTimingsCacheTTL() time.Duration {
 }
 
 const (
-	defaultRunMemoryEnvelopeGiB        = 22
+	defaultRunMemoryEnvelopeGiB        = 8
 	defaultRunDurationCeiling          = "12h"
 	defaultRunPressureThresholdPercent = 85
 )

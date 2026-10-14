@@ -825,7 +825,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	assertArgument(t, systemdArgs, "--property=KillMode=control-group")
 	assertArgument(t, systemdArgs, "--property=RuntimeMaxSec=43200.000000000s")
 	assertArgument(t, systemdArgs, "--slice=minos-runs.slice")
-	assertArgument(t, systemdArgs, "--property=MemoryMax=22G")
+	assertArgument(t, systemdArgs, "--property=MemoryMax=8G")
 	assertArgument(t, systemdArgs, "--property=OnSuccess=minos-sweep-after-run@minos-run-forgejo-owner-repo-pr7.service")
 	for _, argument := range systemdArgs {
 		if strings.HasPrefix(argument, "--property=OnFailure=") {
