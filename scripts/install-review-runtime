@@ -14,8 +14,12 @@ source_root="$(dirname "$script_dir")"
 # present, because a deployment may provision a single engine. A version
 # other than the tested one is reported as a warning and installed over:
 # the box's tools update on their own schedule, and the tested version is
-# a reference point for diagnosing a drift, not a requirement. Every
-# missing tool is reported before the stop.
+# a reference point for diagnosing a drift, not a requirement. Version
+# commands run from the repository root, so a declaration can name a file
+# in the tree: the review runtime is declared that way, because it refuses
+# to start on a Node below the floor it was built for and its refusal, not
+# a version pin here, is what stops the install. Every problem is reported
+# before the stop.
 # MINOS_EXPECTED_TOOLS points a non-deploy invocation (the repository's
 # own tests, which install for reasons other than deploying) at a fixture
 # set; a deploy leaves it unset and gets the shipped declarations.
@@ -24,7 +28,7 @@ if [ ! -f "$declared_tools" ]; then
   echo "preflight: declared tool set missing: $declared_tools" >&2
   exit 1
 fi
-missing_tools=0
+blockers=0
 engine_names=""
 engines_present=0
 while IFS="	" read -r tool version_command tested need; do
@@ -39,12 +43,14 @@ while IFS="	" read -r tool version_command tested need; do
   esac
   # </dev/null keeps a stdin-reading version command from swallowing the
   # remaining declaration lines the loop is still reading.
-  if ! observed="$($version_command < /dev/null 2>&1)"; then
+  if ! observed="$(cd "$source_root" && $version_command < /dev/null 2>&1)"; then
     if [ "$need" = engine ]; then
       echo "preflight: $tool: not installed"
     else
-      echo "preflight: $tool: missing (${version_command%% *} not runnable)" >&2
-      missing_tools=$((missing_tools + 1))
+      # The failing command's first line says why: the shell's own
+      # not-found message for an absent tool, or the tool's refusal.
+      echo "preflight: $tool: missing — $(printf '%s\n' "$observed" | head -n 1)" >&2
+      blockers=$((blockers + 1))
     fi
     continue
   fi
@@ -67,10 +73,10 @@ while IFS="	" read -r tool version_command tested need; do
 done < "$declared_tools"
 if [ -n "$engine_names" ] && [ "$engines_present" -eq 0 ]; then
   echo "preflight: no engine CLI installed; install at least one of: $engine_names" >&2
-  missing_tools=$((missing_tools + 1))
+  blockers=$((blockers + 1))
 fi
-if [ "$missing_tools" -gt 0 ]; then
-  echo "preflight: $missing_tools required tool(s) missing; nothing installed" >&2
+if [ "$blockers" -gt 0 ]; then
+  echo "preflight: $blockers blocking problem(s); nothing installed" >&2
   exit 1
 fi
 

@@ -5,9 +5,14 @@
 # output, or `any` where none is pinned), and the tool's need. `required`
 # tools must be present; of the `engine` CLIs, at least one must be. A
 # version other than the tested one draws a warning, never a stop. Update
-# a tested version when the gate's own toolchain moves.
+# a tested version when the gate's own toolchain moves. Version commands
+# run from the repository root: review-runtime is the vendored launcher's
+# own version command, which refuses to start on a Node below the floor it
+# was built for, naming both versions, so a Node too old for a review stops
+# the install here.
 jq	jq --version	jq-1.8.2	required
 node	node --version	v24.14.0	required
+review-runtime	node runtime/ensemble.mjs --version	any	required
 git	git --version	any	required
 bash	bash --version	any	required
 curl	curl --version	any	required

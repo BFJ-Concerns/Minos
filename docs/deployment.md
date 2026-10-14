@@ -54,9 +54,10 @@ needs; it is not required.
 3. Run `scripts/install-review-runtime /opt/minos`. Before installing
    anything it checks the host's tools against
    `scripts/expected-tool-versions`: it stops, naming every gap, when a
-   required tool is missing or neither engine CLI is installed, and warns
-   for each tool whose version differs from the one the repository's checks
-   run against. It then installs the complete test-free
+   required tool is missing, neither engine CLI is installed, or the review
+   runtime refuses to start under the installed Node, and warns for each
+   tool whose version differs from the one the repository's checks run
+   against. It then installs the complete test-free
    review runtime under `/opt/minos`: the vendored Ensemble launcher and
    its provenance files, the adjudication wrapper and adapter, and every
    non-test workflow file. It also verifies the launcher against

@@ -10,8 +10,9 @@ import (
 
 // The installer checks the declared tool set before installing. A missing
 // required tool, or no engine CLI at all, stops it with every gap reported
-// and the previous installation preserved; a version other than the tested
-// one is reported and installed over.
+// and the previous installation preserved, as does a Node the review runtime
+// refuses to start on; a version other than the tested one is reported and
+// installed over.
 
 // stubTool shadows a real tool on PATH with a script that reports the
 // given version line, so the preflight is exercised against controlled
@@ -63,7 +64,7 @@ func TestInstallReviewRuntimePreflightStopsOnMissingRequiredTools(t *testing.T) 
 		t.Fatalf("installer succeeded without its required tools\n%s", output)
 	}
 	// The report names every missing tool, not just the first one met.
-	for _, fragment := range []string{"vanished: missing", "absent: missing", "2 required tool(s) missing"} {
+	for _, fragment := range []string{"vanished: missing", "absent: missing", "2 blocking problem(s)"} {
 		if !strings.Contains(output, fragment) {
 			t.Fatalf("preflight report missing %q:\n%s", fragment, output)
 		}
@@ -132,6 +133,31 @@ func TestInstallReviewRuntimePreflightStopsWithNoEngine(t *testing.T) {
 	}
 	if !strings.Contains(output, "install at least one of: claude, codex") {
 		t.Fatalf("preflight did not name the engines to install:\n%s", output)
+	}
+	assertNothingInstalled(t, destination)
+}
+
+func TestInstallReviewRuntimePreflightStopsWhenTheRuntimeRefusesNode(t *testing.T) {
+	sourceRoot := preflightSourceRoot(t,
+		"node\tnode --version\tv24.14.0\trequired",
+		"review-runtime\tnode runtime/ensemble.mjs --version\tany\trequired",
+	)
+	binDir := t.TempDir()
+	// A Node that runs but is older than the review runtime's floor: the
+	// runtime refuses to start on it, naming both versions.
+	script := "#!/bin/sh\ncase \"$1\" in\n  --version) printf 'v16.20.2\\n' ;;\n  *) printf 'Ensemble requires Node >=24.14.0; detected Node 16.20.2\\n' >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(binDir, "node"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "opt", "minos")
+	output, err := runInstallerWithPath(t, sourceRoot, destination, binDir)
+	if err == nil {
+		t.Fatalf("installer succeeded on a Node the runtime refuses\n%s", output)
+	}
+	for _, fragment := range []string{"review-runtime: missing — Ensemble requires Node >=24.14.0; detected Node 16.20.2", "1 blocking problem(s)"} {
+		if !strings.Contains(output, fragment) {
+			t.Fatalf("preflight report missing %q:\n%s", fragment, output)
+		}
 	}
 	assertNothingInstalled(t, destination)
 }

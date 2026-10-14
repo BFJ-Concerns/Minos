@@ -78,7 +78,8 @@ defect; incorrect behaviour in the code the change does carry still is.
   Go to build the service binary.
   [`scripts/expected-tool-versions`](scripts/expected-tool-versions) records
   the versions Minos is tested against; the installer warns where yours
-  differ and stops only when a tool is missing.
+  differ and stops only when a tool is missing or the review runtime will
+  not start under the installed Node.
 - Model access: a Claude Code subscription or gateway credential, a Codex
   (ChatGPT) account, or both. One engine is enough.
 - Memory: concurrent runs share an 8 GiB envelope by default
@@ -113,7 +114,8 @@ sudo install -m 0755 minos /usr/local/bin/minos
 
 # Install the forge adaptations, per-run scripts and lead prompt under
 # /opt/minos (see the guide for the exact layout), then the review runtime.
-# The installer stops if a required tool is missing.
+# The installer stops if a required tool is missing or Node is too old
+# for the review runtime.
 scripts/install-review-runtime /opt/minos
 
 # Copy the example configuration and fill in the placeholders.
