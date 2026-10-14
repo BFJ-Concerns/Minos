@@ -4,7 +4,7 @@
 
 Minos is a self-hosted pull-request review service for GitHub and Forgejo.
 When a pull request opens or its head changes, Minos starts an AI lead
-(Claude Code by default) on a disposable Linux box. A panel of model
+(Claude Code by default) to review it. A panel of model
 reviewers examines the whole diff, and a verifier, by default from a
 different model family, checks every finding they raise. The lead then
 reports the result on the pull request with a commit status, a reaction or
@@ -70,18 +70,22 @@ defect; incorrect behaviour in the code the change does carry still is.
 
 ## Requirements
 
-- A disposable, single-tenant Linux machine with a systemd user manager
-  (systemd 250 or later). The machine is the security boundary: the lead runs
-  inside it without any further sandbox.
-- Claude Code, the Codex CLI, Node.js, Git, Go, Bash, curl, jq, openssl, the
-  OpenSSH client tools, tar, zstd, sha256sum and GNU find.
-  [`scripts/expected-tool-versions`](scripts/expected-tool-versions) lists the
-  versions the installer checks for.
+- Linux with a systemd user manager (systemd 250 or later): each review runs
+  as a transient user unit. In a container, that means an image that runs
+  systemd as its init.
+- Claude Code or the Codex CLI (one is enough), Node.js, Git, Bash, curl, jq,
+  openssl, the OpenSSH client tools, tar, zstd, sha256sum and GNU find, plus
+  Go to build the service binary.
+  [`scripts/expected-tool-versions`](scripts/expected-tool-versions) records
+  the versions Minos is tested against; the installer warns where yours
+  differ and stops only when a tool is missing or the review runtime will
+  not start under the installed Node.
 - Model access: a Claude Code subscription or gateway credential, a Codex
   (ChatGPT) account, or both. One engine is enough.
-- Memory: concurrent runs share a 22 GiB envelope by default
-  (`runs.memory-envelope-gib`), and the [deployment guide](docs/deployment.md)
-  covers sizing.
+- Memory: concurrent runs share an 8 GiB envelope by default
+  (`runs.memory-envelope-gib`). A review typically holds about 1 GiB and
+  rarely more than 5 GiB; the [deployment guide](docs/deployment.md) covers
+  sizing.
 - On GitHub, a GitHub App installed on each reviewed repository. On Forgejo,
   a bot account and an access token.
 - Project guidance in each reviewed repository: a configured source, or a
@@ -90,6 +94,13 @@ defect; incorrect behaviour in the code the change does carry still is.
 
 The reviewed repositories' own toolchains are not needed, because Minos never
 builds them.
+
+Minos adds no sandbox of its own. The lead holds the engine and forge
+credentials and reads untrusted pull-request content, so run Minos somewhere
+isolated — a dedicated container (Docker, for example) or VM — rather than on
+a machine whose other data and access you would not want a pull request's
+author to reach. This is a recommendation, not a requirement: Minos runs
+anywhere the requirements above hold.
 
 ## Installation
 
@@ -103,7 +114,8 @@ sudo install -m 0755 minos /usr/local/bin/minos
 
 # Install the forge adaptations, per-run scripts and lead prompt under
 # /opt/minos (see the guide for the exact layout), then the review runtime.
-# The installer stops if a tool's version does not match the declared set.
+# The installer stops if a required tool is missing or Node is too old
+# for the review runtime.
 scripts/install-review-runtime /opt/minos
 
 # Copy the example configuration and fill in the placeholders.
@@ -115,10 +127,12 @@ systemctl --user daemon-reload
 systemctl --user enable --now minos-receiver.service minos-sweep.timer
 ```
 
-Then point each forge's webhook at the receiver's `/hooks/<forge key>` route
-(`/hooks/github` for a GitHub App) with the matching secret. The shipped
-configuration listens on port 8919, and the shipped timer runs the sweep
-every 10 to 12 minutes.
+The shipped timer runs the sweep every 10 to 12 minutes, and the sweep finds
+every pull request that needs a review on its own. A webhook is optional: it
+starts a review as soon as a pull request changes instead of on the next
+pass. To use one, point each forge's webhook at the receiver's
+`/hooks/<forge key>` route (`/hooks/github` for a GitHub App) with the
+matching secret; the shipped configuration listens on port 8919.
 
 ## Configuration
 

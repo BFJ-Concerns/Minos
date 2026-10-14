@@ -1,15 +1,28 @@
-# The tool versions a deploy expects on the box — the set the repository
-# gate runs against. One tab-separated line per tool: name, the command
-# that reports its version, and the token that must appear in the first
-# line of that command's output. `any` records an accepted divergence: the
-# observed version is reported, never failing the preflight — absence of
-# the tool still fails it. Update a line when the gate's own toolchain
-# moves; a deploy onto a box whose versions drift instead stops loudly
-# before anything is installed (see install-review-runtime).
-jq	jq --version	jq-1.8.2
-node	node --version	v24.14.0
-go	go version	go1.27.0
-git	git --version	any
-openssl	openssl version	any
-claude	claude --version	2.1.251
-codex	codex --version	codex-cli 0.151.0
+# The tools a run needs on the box, checked by install-review-runtime
+# before it installs anything. One tab-separated line per tool: name, the
+# command that reports its version, the version the repository gate tested
+# against (a token that appears in the first line of that command's
+# output, or `any` where none is pinned), and the tool's need. `required`
+# tools must be present; of the `engine` CLIs, at least one must be. A
+# version other than the tested one draws a warning, never a stop. Update
+# a tested version when the gate's own toolchain moves. Version commands
+# run from the repository root: review-runtime is the vendored launcher's
+# own version command, which refuses to start on a Node below the floor it
+# was built for, naming both versions, so a Node too old for a review stops
+# the install here. A declaration may likewise probe for an option the run
+# scripts depend on, as the jq --argjson line does.
+jq	jq --version	jq-1.8.2	required
+jq --argjson	jq --argjson probe 1 -n $probe	any	required
+node	node --version	v24.14.0	required
+review-runtime	node runtime/ensemble.mjs --version	any	required
+git	git --version	any	required
+bash	bash --version	any	required
+curl	curl --version	any	required
+openssl	openssl version	any	required
+ssh	ssh -V	any	required
+tar	tar --version	any	required
+zstd	zstd --version	any	required
+sha256sum	sha256sum --version	any	required
+find	find --version	any	required
+claude	claude --version	2.1.251	engine
+codex	codex --version	codex-cli 0.151.0	engine

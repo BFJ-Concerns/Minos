@@ -31,7 +31,7 @@ func unitsTestConfig(t *testing.T, envelopeGiB string) ServiceConfig {
 }
 
 func TestInstallUnitsRendersTheRunsSliceFromTheConfiguredEnvelope(t *testing.T) {
-	cfg := unitsTestConfig(t, "8")
+	cfg := unitsTestConfig(t, "14")
 	directory := filepath.Join(t.TempDir(), "systemd", "user")
 	var report bytes.Buffer
 	if err := installUnits(cfg, directory, &report); err != nil {
@@ -56,10 +56,10 @@ func TestInstallUnitsRendersTheRunsSliceFromTheConfiguredEnvelope(t *testing.T) 
 		original, _ := fs.ReadFile(deploy.Units, "systemd/user/"+entry.Name())
 		switch {
 		case entry.Name() == runsSliceUnit:
-			if !strings.Contains(string(installed), "MemoryHigh=6G\nMemoryMax=8G\n") {
+			if !strings.Contains(string(installed), "MemoryHigh=12G\nMemoryMax=14G\n") {
 				t.Fatalf("installed slice does not carry the configured envelope:\n%s", installed)
 			}
-			if strings.Contains(string(installed), "22G") {
+			if strings.Contains(string(installed), "MemoryMax=8G") {
 				t.Fatalf("installed slice still carries the shipped default:\n%s", installed)
 			}
 		case strings.HasSuffix(entry.Name(), ".service") && runsShippedBinary(original):
