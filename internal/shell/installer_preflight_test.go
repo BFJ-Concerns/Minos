@@ -8,9 +8,10 @@ import (
 	"testing"
 )
 
-// The installer checks tool versions against the declared set before installing.
-// A mismatch reports each affected tool and both versions, preserving the
-// previous installation.
+// The installer checks the declared tool set before installing. A missing
+// required tool, or no engine CLI at all, stops it with every gap reported
+// and the previous installation preserved; a version other than the tested
+// one is reported and installed over.
 
 // stubTool shadows a real tool on PATH with a script that reports the
 // given version line, so the preflight is exercised against controlled
@@ -31,66 +32,118 @@ func runInstallerWithPath(t *testing.T, sourceRoot, destination, binDir string) 
 	return string(output), err
 }
 
-func TestInstallReviewRuntimePreflightStopsOnVersionMismatch(t *testing.T) {
+func preflightSourceRoot(t *testing.T, declarations ...string) string {
+	t.Helper()
 	sourceRoot := installerSourceRoot(t)
 	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "review.js"), []byte("export const meta = {};\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	declareExpectedTools(t, sourceRoot,
-		"jq\tjq --version\tjq-1.8.2",
-		"vanished\tno-such-tool-minos-preflight --version\t1.0.0",
-	)
-	binDir := t.TempDir()
-	stubTool(t, binDir, "jq", "jq-1.7")
+	declareExpectedTools(t, sourceRoot, declarations...)
+	return sourceRoot
+}
 
-	destination := filepath.Join(t.TempDir(), "opt", "minos")
-	output, err := runInstallerWithPath(t, sourceRoot, destination, binDir)
-	if err == nil {
-		t.Fatalf("installer succeeded against a drifted tool set\n%s", output)
-	}
-	// The report names every drifted tool with both versions, not just the
-	// first one met.
-	for _, fragment := range []string{"jq-1.8.2", "jq-1.7", "vanished", "not runnable"} {
-		if !strings.Contains(output, fragment) {
-			t.Fatalf("preflight report missing %q:\n%s", fragment, output)
-		}
-	}
-	// Nothing may land past a mismatch — the runtime install and workflow
-	// swap both sit behind the preflight.
+func assertNothingInstalled(t *testing.T, destination string) {
+	t.Helper()
+	// The runtime install and workflow swap both sit behind the preflight.
 	for _, name := range []string{"runtime", "workflows"} {
 		if _, err := os.Stat(filepath.Join(destination, name)); !os.IsNotExist(err) {
-			t.Fatalf("%s installed despite a preflight mismatch: %v", name, err)
+			t.Fatalf("%s installed despite a failed preflight: %v", name, err)
 		}
 	}
 }
 
-func TestInstallReviewRuntimePreflightReportsParityAndAcceptedDivergence(t *testing.T) {
-	sourceRoot := installerSourceRoot(t)
-	if err := os.WriteFile(filepath.Join(sourceRoot, "workflows", "review.js"), []byte("export const meta = {};\n"), 0o644); err != nil {
-		t.Fatal(err)
+func TestInstallReviewRuntimePreflightStopsOnMissingRequiredTools(t *testing.T) {
+	sourceRoot := preflightSourceRoot(t,
+		"vanished\tno-such-tool-minos-preflight --version\t1.0.0\trequired",
+		"absent\tno-such-other-tool-minos-preflight --version\tany\trequired",
+	)
+	destination := filepath.Join(t.TempDir(), "opt", "minos")
+	output, err := runInstallerWithPath(t, sourceRoot, destination, t.TempDir())
+	if err == nil {
+		t.Fatalf("installer succeeded without its required tools\n%s", output)
 	}
-	declareExpectedTools(t, sourceRoot,
-		"jq\tjq --version\tjq-1.8.2",
-		"git\tgit --version\tany",
+	// The report names every missing tool, not just the first one met.
+	for _, fragment := range []string{"vanished: missing", "absent: missing", "2 required tool(s) missing"} {
+		if !strings.Contains(output, fragment) {
+			t.Fatalf("preflight report missing %q:\n%s", fragment, output)
+		}
+	}
+	assertNothingInstalled(t, destination)
+}
+
+func TestInstallReviewRuntimePreflightWarnsOnVersionDriftAndInstalls(t *testing.T) {
+	sourceRoot := preflightSourceRoot(t,
+		"jq\tjq --version\tjq-1.8.2\trequired",
+		"node\tnode --version\tv24.14.0\trequired",
+		"git\tgit --version\tany\trequired",
 	)
 	binDir := t.TempDir()
-	stubTool(t, binDir, "jq", "jq-1.8.2")
+	stubTool(t, binDir, "jq", "jq-1.7")
+	stubTool(t, binDir, "node", "v24.14.0")
 	stubTool(t, binDir, "git", "git version 9.9.9")
 
 	destination := filepath.Join(t.TempDir(), "opt", "minos")
 	output, err := runInstallerWithPath(t, sourceRoot, destination, binDir)
 	if err != nil {
-		t.Fatalf("install review runtime: %v\n%s", err, output)
+		t.Fatalf("installer stopped on a version drift: %v\n%s", err, output)
 	}
-	if !strings.Contains(output, "jq: parity (jq-1.8.2)") {
-		t.Fatalf("preflight did not report parity:\n%s", output)
-	}
-	// An accepted divergence is reported with the observed version rather
-	// than silently skipped, so the deploy log still says what the box ran.
-	if !strings.Contains(output, "git: accepted divergence (git version 9.9.9)") {
-		t.Fatalf("preflight did not report the accepted divergence:\n%s", output)
+	// The deploy log still says what the box ran and where it differs from
+	// the tested set.
+	for _, fragment := range []string{
+		"jq: jq-1.7 — warning: the repository gate tested jq-1.8.2",
+		"node: v24.14.0 (the tested version)",
+		"git: git version 9.9.9",
+	} {
+		if !strings.Contains(output, fragment) {
+			t.Fatalf("preflight report missing %q:\n%s", fragment, output)
+		}
 	}
 	assertRegularFile(t, filepath.Join(destination, "workflows", "review.js"))
+}
+
+func TestInstallReviewRuntimePreflightAcceptsASingleEngine(t *testing.T) {
+	sourceRoot := preflightSourceRoot(t,
+		"claude\tclaude --version\t2.1.251\tengine",
+		"codex\tno-such-codex-minos-preflight --version\tcodex-cli 0.151.0\tengine",
+	)
+	binDir := t.TempDir()
+	stubTool(t, binDir, "claude", "2.1.251 (Claude Code)")
+
+	destination := filepath.Join(t.TempDir(), "opt", "minos")
+	output, err := runInstallerWithPath(t, sourceRoot, destination, binDir)
+	if err != nil {
+		t.Fatalf("installer stopped with one engine present: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "codex: not installed") {
+		t.Fatalf("preflight did not report the absent engine:\n%s", output)
+	}
+	assertRegularFile(t, filepath.Join(destination, "workflows", "review.js"))
+}
+
+func TestInstallReviewRuntimePreflightStopsWithNoEngine(t *testing.T) {
+	sourceRoot := preflightSourceRoot(t,
+		"claude\tno-such-claude-minos-preflight --version\t2.1.251\tengine",
+		"codex\tno-such-codex-minos-preflight --version\tcodex-cli 0.151.0\tengine",
+	)
+	destination := filepath.Join(t.TempDir(), "opt", "minos")
+	output, err := runInstallerWithPath(t, sourceRoot, destination, t.TempDir())
+	if err == nil {
+		t.Fatalf("installer succeeded with no engine CLI\n%s", output)
+	}
+	if !strings.Contains(output, "install at least one of: claude, codex") {
+		t.Fatalf("preflight did not name the engines to install:\n%s", output)
+	}
+	assertNothingInstalled(t, destination)
+}
+
+func TestInstallReviewRuntimePreflightRejectsAnUnknownNeed(t *testing.T) {
+	sourceRoot := preflightSourceRoot(t, "jq\tjq --version\tany\toptional")
+	destination := filepath.Join(t.TempDir(), "opt", "minos")
+	output, err := runInstallerWithPath(t, sourceRoot, destination, t.TempDir())
+	if err == nil || !strings.Contains(output, "declares need 'optional'") {
+		t.Fatalf("installer accepted an unknown need: %v\n%s", err, output)
+	}
+	assertNothingInstalled(t, destination)
 }
 
 func TestInstallReviewRuntimePreflightRequiresTheDeclaredToolSet(t *testing.T) {

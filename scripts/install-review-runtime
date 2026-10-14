@@ -5,14 +5,17 @@ destination_root="${1:?usage: install-review-runtime DESTINATION_ROOT}"
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 source_root="$(dirname "$script_dir")"
 
-# Preflight: the box's tool versions are checked against the declared set
-# before anything is installed, so a deploy cannot quietly land onto a box
-# whose tools differ from the ones the gate ran against. The declared set
-# is data (scripts/expected-tool-versions), one tab-separated line per
-# tool: name, version command, expected token. `any` marks an accepted
-# divergence — reported, never fatal — though a tool that is missing
-# outright fails whatever the expectation says. Every mismatch is
-# reported before the stop, naming the tool with both versions.
+# Preflight: every tool a run needs must be runnable before anything is
+# installed. The declared set is data (scripts/expected-tool-versions), one
+# tab-separated line per tool: name, version command, the version the
+# repository gate tested against (`any` where none is pinned), and the
+# tool's need — `required`, or `engine` for an engine CLI. A missing
+# required tool stops the install; of the engine CLIs only one need be
+# present, because a deployment may provision a single engine. A version
+# other than the tested one is reported as a warning and installed over:
+# the box's tools update on their own schedule, and the tested version is
+# a reference point for diagnosing a drift, not a requirement. Every
+# missing tool is reported before the stop.
 # MINOS_EXPECTED_TOOLS points a non-deploy invocation (the repository's
 # own tests, which install for reasons other than deploying) at a fixture
 # set; a deploy leaves it unset and gets the shipped declarations.
@@ -21,34 +24,53 @@ if [ ! -f "$declared_tools" ]; then
   echo "preflight: declared tool set missing: $declared_tools" >&2
   exit 1
 fi
-preflight_mismatches=0
-while IFS="	" read -r tool version_command expected; do
+missing_tools=0
+engine_names=""
+engines_present=0
+while IFS="	" read -r tool version_command tested need; do
   case "$tool" in ''|\#*) continue ;; esac
+  case "$need" in
+    required) ;;
+    engine) engine_names="${engine_names:+$engine_names, }$tool" ;;
+    *)
+      echo "preflight: $declared_tools: $tool declares need '$need'; expected required or engine" >&2
+      exit 1
+      ;;
+  esac
   # </dev/null keeps a stdin-reading version command from swallowing the
   # remaining declaration lines the loop is still reading.
-  if observed="$($version_command < /dev/null 2>&1)"; then
-    observed="$(printf '%s\n' "$observed" | head -n 1)"
-  else
-    echo "preflight: $tool: mismatch — expected $expected, observed missing (${version_command%% *} not runnable)" >&2
-    preflight_mismatches=$((preflight_mismatches + 1))
+  if ! observed="$($version_command < /dev/null 2>&1)"; then
+    if [ "$need" = engine ]; then
+      echo "preflight: $tool: not installed"
+    else
+      echo "preflight: $tool: missing (${version_command%% *} not runnable)" >&2
+      missing_tools=$((missing_tools + 1))
+    fi
     continue
   fi
-  if [ "$expected" = "any" ]; then
-    echo "preflight: $tool: accepted divergence ($observed)"
+  observed="$(printf '%s\n' "$observed" | head -n 1)"
+  if [ "$need" = engine ]; then
+    engines_present=$((engines_present + 1))
+  fi
+  if [ "$tested" = any ]; then
+    echo "preflight: $tool: $observed"
     continue
   fi
   case "$observed" in
-    *"$expected"*)
-      echo "preflight: $tool: parity ($observed)"
+    *"$tested"*)
+      echo "preflight: $tool: $observed (the tested version)"
       ;;
     *)
-      echo "preflight: $tool: mismatch — expected $expected, observed $observed" >&2
-      preflight_mismatches=$((preflight_mismatches + 1))
+      echo "preflight: $tool: $observed — warning: the repository gate tested $tested" >&2
       ;;
   esac
 done < "$declared_tools"
-if [ "$preflight_mismatches" -gt 0 ]; then
-  echo "preflight: $preflight_mismatches tool version mismatch(es); nothing installed" >&2
+if [ -n "$engine_names" ] && [ "$engines_present" -eq 0 ]; then
+  echo "preflight: no engine CLI installed; install at least one of: $engine_names" >&2
+  missing_tools=$((missing_tools + 1))
+fi
+if [ "$missing_tools" -gt 0 ]; then
+  echo "preflight: $missing_tools required tool(s) missing; nothing installed" >&2
   exit 1
 fi
 

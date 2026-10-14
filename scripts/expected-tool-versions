@@ -1,15 +1,14 @@
-# The tool versions a deploy expects on the box — the set the repository
-# gate runs against. One tab-separated line per tool: name, the command
-# that reports its version, and the token that must appear in the first
-# line of that command's output. `any` records an accepted divergence: the
-# observed version is reported, never failing the preflight — absence of
-# the tool still fails it. Update a line when the gate's own toolchain
-# moves; a deploy onto a box whose versions drift instead stops loudly
-# before anything is installed (see install-review-runtime).
-jq	jq --version	jq-1.8.2
-node	node --version	v24.14.0
-go	go version	go1.27.0
-git	git --version	any
-openssl	openssl version	any
-claude	claude --version	2.1.251
-codex	codex --version	codex-cli 0.151.0
+# The tools a run needs on the box, checked by install-review-runtime
+# before it installs anything. One tab-separated line per tool: name, the
+# command that reports its version, the version the repository gate tested
+# against (a token that appears in the first line of that command's
+# output, or `any` where none is pinned), and the tool's need. `required`
+# tools must be present; of the `engine` CLIs, at least one must be. A
+# version other than the tested one draws a warning, never a stop. Update
+# a tested version when the gate's own toolchain moves.
+jq	jq --version	jq-1.8.2	required
+node	node --version	v24.14.0	required
+git	git --version	any	required
+openssl	openssl version	any	required
+claude	claude --version	2.1.251	engine
+codex	codex --version	codex-cli 0.151.0	engine
