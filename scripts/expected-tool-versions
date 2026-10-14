@@ -9,6 +9,13 @@
 jq	jq --version	jq-1.8.2	required
 node	node --version	v24.14.0	required
 git	git --version	any	required
+bash	bash --version	any	required
+curl	curl --version	any	required
 openssl	openssl version	any	required
+ssh	ssh -V	any	required
+tar	tar --version	any	required
+zstd	zstd --version	any	required
+sha256sum	sha256sum --version	any	required
+find	find --version	any	required
 claude	claude --version	2.1.251	engine
 codex	codex --version	codex-cli 0.151.0	engine
