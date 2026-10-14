@@ -9,8 +9,10 @@
 # run from the repository root: review-runtime is the vendored launcher's
 # own version command, which refuses to start on a Node below the floor it
 # was built for, naming both versions, so a Node too old for a review stops
-# the install here.
+# the install here. A declaration may likewise probe for an option the run
+# scripts depend on, as the jq --argjson line does.
 jq	jq --version	jq-1.8.2	required
+jq --argjson	jq --argjson probe 1 -n $probe	any	required
 node	node --version	v24.14.0	required
 review-runtime	node runtime/ensemble.mjs --version	any	required
 git	git --version	any	required
