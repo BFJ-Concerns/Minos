@@ -174,9 +174,9 @@ test("the script emits an envelope with every routed leg and raw verifier output
   assert.deepEqual(
     result.requiredModelEvidence.map(({ role, pinnedModel }) => ({ role, pinnedModel })),
     [
-      { role: "exploration", pinnedModel: "gpt-6-sol" },
-      { role: "specialist", pinnedModel: "gpt-6-sol" },
-      { role: "specialist", pinnedModel: "gpt-6-sol" },
+      { role: "exploration", pinnedModel: "gpt-6.1-sol" },
+      { role: "specialist", pinnedModel: "gpt-6.1-sol" },
+      { role: "specialist", pinnedModel: "gpt-6.1-sol" },
       { role: "verifier", pinnedModel: "claude-opus-5-5" },
     ],
   );
@@ -204,7 +204,7 @@ test("malformed exploration scope entries fail closed before specialist dispatch
       requiredModelEvidence: [{
         label: "exploration",
         role: "exploration",
-        pinnedModel: "gpt-6-sol",
+        pinnedModel: "gpt-6.1-sol",
       }],
       proposedFindings: [],
       outOfScopeObservations: [],
@@ -291,8 +291,8 @@ test("all findings are proposed on Sol and verified cross-family on Claude", asy
   const correctness = calls.find((call) => call.opts.label === "specialist-1-correctness-codex");
   const security = calls.find((call) => call.opts.label === "specialist-2-security-codex");
   const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
-  assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-6-sol"]);
-  assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-6-sol"]);
+  assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-6.1-sol"]);
+  assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-6.1-sol"]);
   assert.ok(verifiers.length > 0);
   assert.ok(verifiers.every((call) => call.opts.engine === "claude" && call.opts.model === "claude-opus-5-5"));
   assert.ok(specialistCalls(calls).every((call) => call.opts.engine !== "claude"));
@@ -765,7 +765,7 @@ test("an exploration null still emits its required leg for archive adjudication"
   assert.deepEqual(result.requiredModelEvidence, [{
     label: "exploration",
     role: "exploration",
-    pinnedModel: "gpt-6-sol",
+    pinnedModel: "gpt-6.1-sol",
   }]);
   assert.equal(result.reviewers[0].status, "no-result");
 });

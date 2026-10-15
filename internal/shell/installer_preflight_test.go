@@ -11,8 +11,8 @@ import (
 // The installer checks the declared tool set before installing. A missing
 // required tool, or no engine CLI at all, stops it with every gap reported
 // and the previous installation preserved, as does a Node the review runtime
-// refuses to start on; a version other than the tested one is reported and
-// installed over.
+// refuses to start on; a version outside the recommended range warns without
+// preventing installation.
 
 // stubTool shadows a real tool on PATH with a script that reports the
 // given version line, so the preflight is exercised against controlled
@@ -55,7 +55,7 @@ func assertNothingInstalled(t *testing.T, destination string) {
 
 func TestInstallReviewRuntimePreflightStopsOnMissingRequiredTools(t *testing.T) {
 	sourceRoot := preflightSourceRoot(t,
-		"vanished\tno-such-tool-minos-preflight --version\t1.0.0\trequired",
+		"vanished\tno-such-tool-minos-preflight --version\t>=1.0.0\trequired",
 		"absent\tno-such-other-tool-minos-preflight --version\tany\trequired",
 	)
 	destination := filepath.Join(t.TempDir(), "opt", "minos")
@@ -72,10 +72,10 @@ func TestInstallReviewRuntimePreflightStopsOnMissingRequiredTools(t *testing.T) 
 	assertNothingInstalled(t, destination)
 }
 
-func TestInstallReviewRuntimePreflightWarnsOnVersionDriftAndInstalls(t *testing.T) {
+func TestInstallReviewRuntimePreflightWarnsBelowRangeAndInstalls(t *testing.T) {
 	sourceRoot := preflightSourceRoot(t,
-		"jq\tjq --version\tjq-1.8.2\trequired",
-		"node\tnode --version\tv24.14.0\trequired",
+		"jq\tjq --version\t>=1.8.2\trequired",
+		"node\tnode --version\t>=24.14.0\trequired",
 		"git\tgit --version\tany\trequired",
 	)
 	binDir := t.TempDir()
@@ -88,11 +88,10 @@ func TestInstallReviewRuntimePreflightWarnsOnVersionDriftAndInstalls(t *testing.
 	if err != nil {
 		t.Fatalf("installer stopped on a version drift: %v\n%s", err, output)
 	}
-	// The deploy log still says what the box ran and where it differs from
-	// the tested set.
+	// The deploy log names older versions while accepting the range boundary.
 	for _, fragment := range []string{
-		"jq: jq-1.7 — warning: the repository gate tested jq-1.8.2",
-		"node: v24.14.0 (the tested version)",
+		"jq: jq-1.7 — warning: recommended >=1.8.2",
+		"node: v24.14.0 (meets >=24.14.0)",
 		"git: git version 9.9.9",
 	} {
 		if !strings.Contains(output, fragment) {
@@ -104,11 +103,11 @@ func TestInstallReviewRuntimePreflightWarnsOnVersionDriftAndInstalls(t *testing.
 
 func TestInstallReviewRuntimePreflightAcceptsASingleEngine(t *testing.T) {
 	sourceRoot := preflightSourceRoot(t,
-		"claude\tclaude --version\t2.1.251\tengine",
-		"codex\tno-such-codex-minos-preflight --version\tcodex-cli 0.151.0\tengine",
+		"claude\tclaude --version\t>=2.1.300\tengine",
+		"codex\tno-such-codex-minos-preflight --version\t>=0.162.1\tengine",
 	)
 	binDir := t.TempDir()
-	stubTool(t, binDir, "claude", "2.1.251 (Claude Code)")
+	stubTool(t, binDir, "claude", "2.1.300 (Claude Code)")
 
 	destination := filepath.Join(t.TempDir(), "opt", "minos")
 	output, err := runInstallerWithPath(t, sourceRoot, destination, binDir)
@@ -123,8 +122,8 @@ func TestInstallReviewRuntimePreflightAcceptsASingleEngine(t *testing.T) {
 
 func TestInstallReviewRuntimePreflightStopsWithNoEngine(t *testing.T) {
 	sourceRoot := preflightSourceRoot(t,
-		"claude\tno-such-claude-minos-preflight --version\t2.1.251\tengine",
-		"codex\tno-such-codex-minos-preflight --version\tcodex-cli 0.151.0\tengine",
+		"claude\tno-such-claude-minos-preflight --version\t>=2.1.300\tengine",
+		"codex\tno-such-codex-minos-preflight --version\t>=0.162.1\tengine",
 	)
 	destination := filepath.Join(t.TempDir(), "opt", "minos")
 	output, err := runInstallerWithPath(t, sourceRoot, destination, t.TempDir())
@@ -139,7 +138,7 @@ func TestInstallReviewRuntimePreflightStopsWithNoEngine(t *testing.T) {
 
 func TestInstallReviewRuntimePreflightStopsWhenTheRuntimeRefusesNode(t *testing.T) {
 	sourceRoot := preflightSourceRoot(t,
-		"node\tnode --version\tv24.14.0\trequired",
+		"node\tnode --version\t>=24.14.0\trequired",
 		"review-runtime\tnode runtime/ensemble.mjs --version\tany\trequired",
 	)
 	binDir := t.TempDir()
@@ -189,5 +188,51 @@ func TestInstallReviewRuntimePreflightRequiresTheDeclaredToolSet(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(destination, "runtime")); !os.IsNotExist(err) {
 		t.Fatalf("runtime installed despite the missing declared set: %v", err)
+	}
+}
+
+func TestInstallReviewRuntimePreflightAcceptsNewerVersions(t *testing.T) {
+	for _, version := range []string{"2.1.300", "2.1.301", "2.2.0", "3.0.0", "10.0.0"} {
+		t.Run(version, func(t *testing.T) {
+			sourceRoot := preflightSourceRoot(t, "claude\tclaude --version\t>=2.1.300\tengine")
+			binDir := t.TempDir()
+			stubTool(t, binDir, "claude", version+" (Claude Code)")
+			destination := filepath.Join(t.TempDir(), "opt", "minos")
+			output, err := runInstallerWithPath(t, sourceRoot, destination, binDir)
+			if err != nil || strings.Contains(output, "warning:") || !strings.Contains(output, "meets >=2.1.300") {
+				t.Fatalf("installer did not accept newer stable version: %v\n%s", err, output)
+			}
+			assertRegularFile(t, filepath.Join(destination, "workflows", "review.js"))
+		})
+	}
+}
+
+func TestInstallReviewRuntimePreflightWarnsOnOlderOrUnknownVersions(t *testing.T) {
+	for _, version := range []string{"codex-cli 0.162.0", "codex-cli 0.161.1000", "codex-cli 0.162.1-beta.1", "codex-cli unknown"} {
+		t.Run(version, func(t *testing.T) {
+			sourceRoot := preflightSourceRoot(t, "codex\tcodex --version\t>=0.162.1\tengine")
+			binDir := t.TempDir()
+			stubTool(t, binDir, "codex", version)
+			destination := filepath.Join(t.TempDir(), "opt", "minos")
+			output, err := runInstallerWithPath(t, sourceRoot, destination, binDir)
+			if err != nil || !strings.Contains(output, "warning: recommended >=0.162.1") {
+				t.Fatalf("installer did not warn without blocking: %v\n%s", err, output)
+			}
+			assertRegularFile(t, filepath.Join(destination, "workflows", "review.js"))
+		})
+	}
+}
+
+func TestInstallReviewRuntimePreflightRejectsInvalidRanges(t *testing.T) {
+	for _, versionRange := range []string{"2.1.300", "claude 2.1.300", ">=", ">=2..300", ">=2.1.x", ">=2.1.300.1"} {
+		t.Run(versionRange, func(t *testing.T) {
+			sourceRoot := preflightSourceRoot(t, "claude\tclaude --version\t"+versionRange+"\tengine")
+			destination := filepath.Join(t.TempDir(), "opt", "minos")
+			output, err := runInstallerWithPath(t, sourceRoot, destination, t.TempDir())
+			if err == nil || !strings.Contains(output, "preflight: claude:") {
+				t.Fatalf("installer accepted invalid range: %v\n%s", err, output)
+			}
+			assertNothingInstalled(t, destination)
+		})
 	}
 }

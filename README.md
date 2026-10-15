@@ -40,7 +40,7 @@ verdict, the run is incomplete: Minos publishes no review and sets no clean
 status, and the sweep picks the pull request up again on a later pass.
 
 With both engines available, the proposing and planning roles run on Codex
-(`gpt-6-sol`) and the verifier on Claude (`claude-opus-5-5`), so every finding
+(`gpt-6.1-sol`) and the verifier on Claude (`claude-opus-5-5`), so every finding
 is checked by the family that did not propose it. `[routing]` in
 `service.toml` moves any role to another engine, model or effort, and a box
 with only one engine runs every role on it.
@@ -60,7 +60,7 @@ label on the pull request, and, where there are findings, a review.
 
 Each finding comment opens with **Blocking** or **Advisory** and its
 severity, and closes with the models that proposed and verified it (for
-example, *Proposed by `gpt-6-sol`; verified by `claude-opus-5-5`.*). The
+example, *Proposed by `gpt-6.1-sol`; verified by `claude-opus-5-5`.*). The
 review body names the briefs it applied and the lead model that signed it.
 
 Reviewers treat the pull request's description as the author's account of
@@ -77,9 +77,10 @@ defect; incorrect behaviour in the code the change does carry still is.
   openssl, the OpenSSH client tools, tar, zstd, sha256sum and GNU find, plus
   Go to build the service binary.
   [`scripts/expected-tool-versions`](scripts/expected-tool-versions) records
-  the versions Minos is tested against; the installer warns where yours
-  differ and stops only when a tool is missing or the review runtime will
-  not start under the installed Node.
+  recommended minimum version ranges. The installer accepts newer stable
+  versions. For tools with a recommended minimum, older or unrecognised
+  versions draw a warning. Failed required tool checks or no engine CLI stop
+  installation, including when the review runtime refuses the installed Node.
 - Model access: a Claude Code subscription or gateway credential, a Codex
   (ChatGPT) account, or both. One engine is enough.
 - Memory: concurrent runs share an 8 GiB envelope by default

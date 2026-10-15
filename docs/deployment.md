@@ -6,9 +6,10 @@ use an image that runs systemd as its init. The host needs Claude Code or the
 Codex CLI (at least one), Node.js, Git, Bash, curl, jq, openssl, OpenSSH
 client utilities, ssh-keygen, tar, zstd, sha256sum and GNU find installed
 (openssl signs the GitHub App token), plus Go wherever the service binary is
-built. `scripts/expected-tool-versions` records the versions the repository's
-checks run against. The default routing uses both `claude-opus-5-5` and
-`gpt-6-sol`: a Claude Code subscription or gateway credential for the Claude
+built. `scripts/expected-tool-versions` records recommended minimum version
+ranges. Newer stable versions satisfy those ranges without a warning. The
+default routing uses both `claude-opus-5-5` and
+`gpt-6.1-sol`: a Claude Code subscription or gateway credential for the Claude
 engine, and a Codex (ChatGPT) account for the Codex engine. A host with only
 one engine provisioned runs every role on it. Reviews never build or test the
 reviewed repository, so no repository toolchains are needed.
@@ -54,10 +55,10 @@ needs; it is not required.
 3. Run `scripts/install-review-runtime /opt/minos`. Before installing
    anything it checks the host's tools against
    `scripts/expected-tool-versions`: it stops, naming every gap, when a
-   required tool is missing, neither engine CLI is installed, or the review
-   runtime refuses to start under the installed Node, and warns for each
-   tool whose version differs from the one the repository's checks run
-   against. It then installs the complete test-free
+   required tool check fails, neither engine CLI is installed, or the review
+   runtime refuses to start under the installed Node. For tools with a
+   recommended minimum, it warns about older or unrecognised versions.
+   It then installs the complete test-free
    review runtime under `/opt/minos`: the vendored Ensemble launcher and
    its provenance files, the adjudication wrapper and adapter, and every
    non-test workflow file. It also verifies the launcher against
@@ -84,7 +85,7 @@ needs; it is not required.
      from step 2), so both the absolute variable and PATH must be correct;
    - set `MINOS_LEAD_ENGINE` to `claude` or `codex` (`claude` by default)
      and `MINOS_LEAD_MODEL` to the model the lead runs on — `claude-opus-5-5`
-     by default for Claude, `gpt-6-sol` for Codex; a Codex lead needs
+     by default for Claude, `gpt-6.1-sol` for Codex; a Codex lead needs
      `MINOS_CODEX` set to the installed Codex executable;
    - set `MINOS_CLAUDE_CONFIG_SEED` to a directory containing known-good,
      non-interactive Claude configuration — required when the lead engine is
@@ -191,7 +192,7 @@ needs; it is not required.
    `verifier`, `engagement-gate`, `brief-planner` — to an engine, model
    and effort. A role left unset defaults at run time: with both engines
    provisioned, proposing and planning roles (`exploration`, `proposer`,
-   `engagement-gate`, `brief-planner`) run on Codex (`gpt-6-sol`) and the
+   `engagement-gate`, `brief-planner`) run on Codex (`gpt-6.1-sol`) and the
    `verifier` on Claude (`claude-opus-5-5`); with one engine provisioned,
    every role runs on it with that engine's default model. Default effort
    is `high` for `exploration`, `proposer` and `brief-planner`, and

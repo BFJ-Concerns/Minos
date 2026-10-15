@@ -5,21 +5,10 @@ destination_root="${1:?usage: install-review-runtime DESTINATION_ROOT}"
 script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 source_root="$(dirname "$script_dir")"
 
-# Preflight: every tool a run needs must be runnable before anything is
-# installed. The declared set is data (scripts/expected-tool-versions), one
-# tab-separated line per tool: name, version command, the version the
-# repository gate tested against (`any` where none is pinned), and the
-# tool's need — `required`, or `engine` for an engine CLI. A missing
-# required tool stops the install; of the engine CLIs only one need be
-# present, because a deployment may provision a single engine. A version
-# other than the tested one is reported as a warning and installed over:
-# the box's tools update on their own schedule, and the tested version is
-# a reference point for diagnosing a drift, not a requirement. Version
-# commands run from the repository root, so a declaration can name a file
-# in the tree: the review runtime is declared that way, because it refuses
-# to start on a Node below the floor it was built for and its refusal, not
-# a version pin here, is what stops the install. Every problem is reported
-# before the stop.
+# Preflight checks the declared tool set before installing. Missing required
+# tools or no engine CLI stops installation; versions outside a recommended
+# open-ended minimum range only warn. The runtime's own Node check enforces
+# its actual compatibility floor. Every problem is reported before stopping.
 # MINOS_EXPECTED_TOOLS points a non-deploy invocation (the repository's
 # own tests, which install for reasons other than deploying) at a fixture
 # set; a deploy leaves it unset and gets the shipped declarations.
@@ -28,16 +17,64 @@ if [ ! -f "$declared_tools" ]; then
   echo "preflight: declared tool set missing: $declared_tools" >&2
   exit 1
 fi
+# Extract the first numeric version from a tool's first output line. The
+# supported format is major.minor[.patch], with an omitted patch meaning 0.
+# Prereleases and unfamiliar output remain advisory, rather than being
+# silently treated as a supported stable release.
+version_numbers() {
+  version_text="$1"
+  while [ -n "$version_text" ]; do
+    case "$version_text" in [0-9]*) break ;; esac
+    version_text="${version_text#?}"
+  done
+  version_text="${version_text%% *}"
+  major="${version_text%%.*}"
+  remainder="${version_text#*.}"
+  [ "$remainder" != "$version_text" ] || return 1
+  minor="${remainder%%.*}"
+  if [ "$minor" = "$remainder" ]; then patch=0; else patch="${remainder#*.}"; fi
+  case "$major:$minor:$patch" in *[!0-9:]*|:*|*::*|*:) return 1 ;; esac
+  printf '%s %s %s\n' "$major" "$minor" "$patch"
+}
+
+version_at_least() {
+  actual_numbers="$(version_numbers "$1")" || return 1
+  minimum_numbers="$(version_numbers "$2")" || return 1
+  # These expansions contain only validated numbers and spaces.
+  set -- $actual_numbers $minimum_numbers
+  [ "$1" -gt "$4" ] || {
+    [ "$1" -eq "$4" ] && {
+      [ "$2" -gt "$5" ] || { [ "$2" -eq "$5" ] && [ "$3" -ge "$6" ]; }
+    }
+  }
+}
+
 blockers=0
 engine_names=""
 engines_present=0
-while IFS="	" read -r tool version_command tested need; do
+while IFS="	" read -r tool version_command recommended need; do
   case "$tool" in ''|\#*) continue ;; esac
   case "$need" in
     required) ;;
     engine) engine_names="${engine_names:+$engine_names, }$tool" ;;
     *)
       echo "preflight: $declared_tools: $tool declares need '$need'; expected required or engine" >&2
+      exit 1
+      ;;
+  esac
+  case "$recommended" in
+    any) ;;
+    '>='*)
+      minimum="${recommended#>=}"
+      case "$minimum" in ''|*[!0-9.]*) minimum="" ;; esac
+      case "$minimum" in *.*.*) ;; *) minimum="" ;; esac
+      if [ -z "$minimum" ] || ! version_numbers "$minimum" > /dev/null; then
+        echo "preflight: $tool: invalid minimum range '$recommended'" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "preflight: $tool: expected any or >=MAJOR.MINOR.PATCH, got '$recommended'" >&2
       exit 1
       ;;
   esac
@@ -58,18 +95,13 @@ while IFS="	" read -r tool version_command tested need; do
   if [ "$need" = engine ]; then
     engines_present=$((engines_present + 1))
   fi
-  if [ "$tested" = any ]; then
+  if [ "$recommended" = any ]; then
     echo "preflight: $tool: $observed"
-    continue
+  elif version_at_least "$observed" "${recommended#>=}"; then
+    echo "preflight: $tool: $observed (meets $recommended)"
+  else
+    echo "preflight: $tool: $observed — warning: recommended $recommended" >&2
   fi
-  case "$observed" in
-    *"$tested"*)
-      echo "preflight: $tool: $observed (the tested version)"
-      ;;
-    *)
-      echo "preflight: $tool: $observed — warning: the repository gate tested $tested" >&2
-      ;;
-  esac
 done < "$declared_tools"
 if [ -n "$engine_names" ] && [ "$engines_present" -eq 0 ]; then
   echo "preflight: no engine CLI installed; install at least one of: $engine_names" >&2

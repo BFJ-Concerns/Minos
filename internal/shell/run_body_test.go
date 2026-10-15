@@ -1827,7 +1827,7 @@ func TestRunBodyCodexLaunch(t *testing.T) {
 			fixture.runWithin(t, 10*time.Second, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
 			wantModel := model
 			if wantModel == "" {
-				wantModel = "gpt-6-sol"
+				wantModel = "gpt-6.1-sol"
 			}
 			argv, err := os.ReadFile(fixture.record + ".argv")
 			if err != nil {

@@ -82,7 +82,7 @@ signature-header = "X-Forgejo-Signature"
 # Roles: exploration, proposer, verifier, engagement-gate, brief-planner.
 # A role left unset defaults at run time: with both engines provisioned
 # (both configuration seeds named in run-body.env) every proposing and
-# planning role runs on codex (gpt-6-sol) and the verifier on claude
+# planning role runs on codex (gpt-6.1-sol) and the verifier on claude
 # (claude-opus-5-5) — the documented recommendation, so a finding is
 # checked by the family that did not propose it; with one engine
 # provisioned every role runs on it. A model needs its engine named.

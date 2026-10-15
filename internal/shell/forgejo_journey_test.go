@@ -2018,7 +2018,7 @@ func adjudicatedReviewPayload(t *testing.T, findings []map[string]any) map[strin
 		t.Fatal(err)
 	}
 	for index, record := range []map[string]any{
-		{"label": "specialist", "status": "complete", "resolved_model": "gpt-6-sol-served"},
+		{"label": "specialist", "status": "complete", "resolved_model": "gpt-6.1-sol-served"},
 		{"label": "verifier", "status": "complete", "resolved_model": "claude-opus-5-5"},
 	} {
 		directory := filepath.Join(archive, "agents", strconv.Itoa(index+1))
@@ -2036,7 +2036,7 @@ func adjudicatedReviewPayload(t *testing.T, findings []map[string]any) map[strin
 	envelope := map[string]any{
 		"reviewed": map[string]any{"target": "target-sha", "head": "head-sha", "occasion": nil}, "stage": "present",
 		"requiredModelEvidence": []any{
-			map[string]any{"label": "specialist", "role": "specialist", "pinnedModel": "gpt-6-sol"},
+			map[string]any{"label": "specialist", "role": "specialist", "pinnedModel": "gpt-6.1-sol"},
 			map[string]any{"label": "verifier", "role": "verifier", "pinnedModel": "claude-opus-5-5"},
 		}, "proposedFindings": findings,
 		"briefs": []any{}, "misconfigurations": []any{}, "dispatches": []any{}, "reviewers": []any{},

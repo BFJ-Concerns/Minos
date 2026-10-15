@@ -153,7 +153,7 @@ test("relevance gates full-extent briefs and remains an explicit Sol leg", async
   const met = await run(args({ briefs: [candidate] }), responder({ specialist: () => specialistResult([]) }));
   assert.equal(met.result.dispatches.length, 1);
   assert.equal(met.result.briefs[0].status, "run");
-  assert.deepEqual([met.calls[0].opts.engine, met.calls[0].opts.model], ["codex", "gpt-6-sol"]);
+  assert.deepEqual([met.calls[0].opts.engine, met.calls[0].opts.model], ["codex", "gpt-6.1-sol"]);
 
   const missed = await run(args({ briefs: [candidate] }), responder({
     relevance: () => ({ decisions: [{ brief: candidate.path, applicable: false, reason: "no error path changed" }] }),
@@ -161,7 +161,7 @@ test("relevance gates full-extent briefs and remains an explicit Sol leg", async
   assert.deepEqual(missed.result.requiredModelEvidence, [{
     label: "brief-relevance",
     role: "relevance",
-    pinnedModel: "gpt-6-sol",
+    pinnedModel: "gpt-6.1-sol",
   }]);
   assert.equal(missed.result.briefs[0].skipKind, "relevance");
   assert.equal(missed.calls.length, 1);
@@ -288,7 +288,7 @@ test("per-file partitioning follows repository structure and clamps to a lossles
   assert.equal(new Set(result.dispatches.flatMap((entry) => entry.files)).size, trackedFiles.length);
   const partitionCall = calls.find((call) => call.opts.label?.startsWith("brief-partition-"));
   assert.ok(partitionCall);
-  assert.deepEqual([partitionCall.opts.engine, partitionCall.opts.model], ["codex", "gpt-6-sol"]);
+  assert.deepEqual([partitionCall.opts.engine, partitionCall.opts.model], ["codex", "gpt-6.1-sol"]);
   assert.match(partitionCall.prompt, /Judge every file/);
   assert.match(partitionCall.prompt, /pkg\/api\/f0\.go/);
 });
@@ -493,7 +493,7 @@ test("all applicable findings are proposed on Sol and verified cross-family on C
   const specialists = calls.filter((call) => call.opts.label?.startsWith("repository-"));
   const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
   assert.ok(specialists.every((call) =>
-    call.opts.engine === "codex" && call.opts.model === "gpt-6-sol"));
+    call.opts.engine === "codex" && call.opts.model === "gpt-6.1-sol"));
   assert.ok(verifiers.every((call) =>
     call.opts.engine === "claude" && call.opts.model === "claude-opus-5-5"));
   assert.ok(specialists.every((specialist) =>

@@ -28,7 +28,7 @@ function finding(id, overrides = {}) {
     path: "internal/review.go",
     line: 42,
     explanation: `Explanation for ${id}.`,
-    proposingModel: { pinnedModel: "gpt-6-sol", resolvedModel: "gpt-6-sol" },
+    proposingModel: { pinnedModel: "gpt-6.1-sol", resolvedModel: "gpt-6.1-sol" },
     verifyingModel: { pinnedModel: "claude-opus-5-5", resolvedModel: "claude-opus-5-5" },
     ...overrides,
   };
