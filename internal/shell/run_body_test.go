@@ -55,8 +55,7 @@ func TestRunBodyLaunchesAndStopsIsolatedResidentClaude(t *testing.T) {
 			t.Fatalf("run body created %s (err=%v); no skills belong in a run-private home", skills, err)
 		}
 	}
-	assertContainsFile(t, filepath.Join(configDir, ".claude.json"), `"hasCompletedOnboarding":true`)
-	assertContainsFile(t, filepath.Join(configDir, ".claude.json"), `"bypassPermissionsModeAccepted":true`)
+	assertClaudeStateTrustsOnlyRunDirectory(t, filepath.Join(configDir, ".claude.json"), fixture.runDir)
 	assertRegularFile(t, filepath.Join(configDir, ".credentials.json"))
 	assertRegularFile(t, filepath.Join(codexConfigDir, "auth.json"))
 	if info, err := os.Stat(projectsDir); err != nil || !info.IsDir() {
@@ -1260,6 +1259,34 @@ type runBodyFixture struct {
 	setupStub         string
 	ambientHome       string
 	ambientHomeBefore map[string]string
+}
+
+// assertClaudeStateTrustsOnlyRunDirectory checks the run-private Claude state:
+// onboarding and bypass-permissions accepted, and the run directory — where
+// the lead runs — the only trusted workspace, keyed by its resolved path.
+func assertClaudeStateTrustsOnlyRunDirectory(t *testing.T, path, runDir string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		HasCompletedOnboarding        bool `json:"hasCompletedOnboarding"`
+		BypassPermissionsModeAccepted bool `json:"bypassPermissionsModeAccepted"`
+		Projects                      map[string]struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	if !state.HasCompletedOnboarding || !state.BypassPermissionsModeAccepted {
+		t.Fatalf("Claude state %s = %s, want onboarding and bypass-permissions accepted", path, data)
+	}
+	project, found := state.Projects[resolvedPath(runDir)]
+	if len(state.Projects) != 1 || !found || !project.HasTrustDialogAccepted {
+		t.Fatalf("Claude trusted workspaces = %+v, want only the run directory %q", state.Projects, resolvedPath(runDir))
+	}
 }
 
 func newRunBodyFixture(t *testing.T) runBodyFixture {
