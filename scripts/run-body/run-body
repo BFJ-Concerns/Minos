@@ -248,7 +248,7 @@ case "$MINOS_LEAD_ENGINE" in
   codex)
     require_variable MINOS_CODEX
     lead_seed_variable="MINOS_CODEX_CONFIG_SEED"
-    lead_default_model="gpt-6-sol"
+    lead_default_model="gpt-6.1-sol"
     ;;
   *)
     failure_cause="MINOS_LEAD_ENGINE must be claude or codex; the $MINOS_LEAD_ENGINE lead is not available in this build"

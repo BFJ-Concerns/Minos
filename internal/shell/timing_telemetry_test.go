@@ -822,7 +822,7 @@ func writeTimingPhaseAgentRecord(t *testing.T, path, label, phase string, execut
 	}
 	record := map[string]any{
 		"id": 1, "engine": "codex", "label": label, "phase": phase,
-		"model": nil, "resolved_model": "gpt-6-sol", "status": "complete",
+		"model": nil, "resolved_model": "gpt-6.1-sol", "status": "complete",
 		"queued_ms": 12, "execution_ms": executionMs,
 		"attempts": []map[string]any{{"attempt": 1, "started_at": startedAt, "ended_at": endedAt}},
 	}
@@ -841,7 +841,7 @@ func writeTimingFixtureAgentRecord(t *testing.T, path, startedAt, endedAt string
 		t.Fatal(err)
 	}
 	record := `{"id":1,"engine":"codex","label":"specialist-1-correctness-gpt",` +
-		`"phase":"Specialise","model":null,"resolved_model":"gpt-6-sol",` +
+		`"phase":"Specialise","model":null,"resolved_model":"gpt-6.1-sol",` +
 		`"status":"complete","queued_ms":12,"execution_ms":345,` +
 		`"attempts":[{"attempt":1,"started_at":"` + startedAt + `","ended_at":"` + endedAt + `"}]}`
 	if err := os.WriteFile(path, []byte(record+"\n"), 0o644); err != nil {
@@ -915,7 +915,7 @@ this line is not JSON and must cost one event, never the record
 		if worker.Engine == nil || *worker.Engine != "codex" {
 			t.Fatalf("worker engine = %+v", worker.Engine)
 		}
-		if worker.Model == nil || *worker.Model != "gpt-6-sol" {
+		if worker.Model == nil || *worker.Model != "gpt-6.1-sol" {
 			t.Fatalf("worker model = %+v", worker.Model)
 		}
 		if worker.ExecutionMs == nil || *worker.ExecutionMs != 345 {

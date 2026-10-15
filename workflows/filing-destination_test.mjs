@@ -583,11 +583,16 @@ if (args.join(" ") === "forge snapshot") {
       },
       async deliver(entries = [advisory, misconfiguration], module = false) {
         if (module) {
-          const previous = process.env;
-          process.env = env;
+          const previous = Object.fromEntries(Object.keys(env).map((name) => [name, process.env[name]]));
+          Object.assign(process.env, env);
           try {
             return await deliverFilingEntries({ destination: { kind: "pull-request-comment" }, entries, source, reviewedRepository, runDir: directory, identity });
-          } finally { process.env = previous; }
+          } finally {
+            for (const [name, value] of Object.entries(previous)) {
+              if (value === undefined) delete process.env[name];
+              else process.env[name] = value;
+            }
+          }
         }
         writeFileSync(entriesPath, JSON.stringify(entries));
         const result = await runCli([entriesPath, orientationPath], env);

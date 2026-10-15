@@ -14,7 +14,7 @@ export const ENGINES = ["claude", "codex"];
 // refused at dispatch.
 export const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
 
-const DEFAULT_MODEL = { claude: "claude-opus-5-5", codex: "gpt-6-sol" };
+const DEFAULT_MODEL = { claude: "claude-opus-5-5", codex: "gpt-6.1-sol" };
 const DEFAULT_EFFORT = {
   exploration: "high",
   proposer: "high",

@@ -25,7 +25,7 @@ const confirmed = {
   path: "internal/store.go",
   line: 41,
   verifyLabel: "verify-1-claude",
-  proposingModel: { pinnedModel: "gpt-6-sol", resolvedModel: "gpt-6-sol-served" },
+  proposingModel: { pinnedModel: "gpt-6.1-sol", resolvedModel: "gpt-6.1-sol-served" },
   verifyingModel: { pinnedModel: "claude-opus-5-5", resolvedModel: "claude-opus-5-5" },
 };
 
@@ -39,7 +39,7 @@ test("a blocking finding comment leads with its disposition and severity, then o
     comment.body,
     "**Blocking · High: Lost update on concurrent write**\n\n" +
       "Two writers read the same revision and the later write wins silently.\n\n" +
-      "Proposed by `gpt-6-sol-served` (pinned `gpt-6-sol`); verified by `claude-opus-5-5`.",
+      "Proposed by `gpt-6.1-sol-served` (pinned `gpt-6.1-sol`); verified by `claude-opus-5-5`.",
   );
   // The exact-body assertion above is the contract; these name the leaks
   // it exists to prevent, so a loosened rendering fails with the leak's
@@ -146,7 +146,7 @@ test("an issue-log entry is one list item carrying the finding, its site, proven
     entry,
     "- **Advisory · High: Lost update on concurrent write** (`internal/store.go:41`) — " +
       "Two writers read the same revision and the later write wins silently. " +
-      "Proposed by `gpt-6-sol-served` (pinned `gpt-6-sol`); verified by `claude-opus-5-5`. " +
+      "Proposed by `gpt-6.1-sol-served` (pinned `gpt-6.1-sol`); verified by `claude-opus-5-5`. " +
       "Filed by Minos from owner/repository#17, 2026-09-12.",
   );
   for (const leaked of LEAKS) assert.ok(!entry.includes(leaked), `entry leaked ${leaked}`);
