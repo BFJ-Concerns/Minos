@@ -215,14 +215,14 @@ systemctl --user start minos-sweep.service   # run a sweep pass now
 
 ## Building from source
 
-The service binary needs only Go 1.26 or later:
+The service binary needs only Go 1.27.2 or later:
 
 ```sh
 go build -o minos ./cmd/minos
 ```
 
 To check a build against Minos's own test suites as well, you also need
-Node.js 24, jq and [just](https://github.com/casey/just):
+Node.js (26.12 or later recommended), jq and [just](https://github.com/casey/just):
 
 ```sh
 just verify
