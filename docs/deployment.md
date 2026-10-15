@@ -235,10 +235,12 @@ needs; it is not required.
    `$HOME/.claude` and Codex state to `$HOME/.codex`; no skills are
    installed into either home — the lead needs none, and review workers run
    with their skill surfaces stripped. After copying, `run-body` overwrites
-   `$HOME/.claude/.claude.json` with an onboarding-acceptance stub
-   (`hasCompletedOnboarding` and `bypassPermissionsModeAccepted`), so any
-   seed content in that file is not preserved — put seed configuration in
-   other files within the seed directory. Each run also gets a private disk-backed `TMPDIR` beneath the
+   `$HOME/.claude/.claude.json` with an acceptance stub — onboarding and
+   bypass-permissions accepted (`hasCompletedOnboarding` and
+   `bypassPermissionsModeAccepted`), and the run directory the lead runs
+   from trusted as the run's only workspace — so any seed content in that
+   file is not preserved; put seed configuration in other files within the
+   seed directory. Each run also gets a private disk-backed `TMPDIR` beneath the
    storage root's `tmp/` directory, alongside `runs/` (the shared tmpfs `/tmp`
    cannot hold concurrent runs' artefacts). The lead and Ensemble workers
    therefore inherit both

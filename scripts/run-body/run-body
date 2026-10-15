@@ -343,11 +343,20 @@ fi
 failure_stage="runtime-home"
 failure_cause="could not secure copied Claude and Codex configuration"
 chmod -R go-rwx "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"
+# Claude refuses to start a background session in a workspace its state
+# file has not trusted, and the run-private state starts empty. The lead
+# runs from the run directory, so that directory, under the path Claude
+# resolves it to, is the one workspace the run trusts.
 failure_stage="claude-seed"
-failure_cause="could not write Claude onboarding acceptance"
-printf '%s\n' '{"hasCompletedOnboarding":true,"bypassPermissionsModeAccepted":true}' \
-  >"$CLAUDE_CONFIG_DIR/.claude.json"
-failure_cause="could not secure Claude onboarding acceptance"
+failure_cause="could not resolve the run directory for Claude workspace trust"
+trusted_workspace="$(cd "$MINOS_RUN_DIR" && pwd -P)"
+failure_cause="could not write Claude onboarding and workspace acceptance"
+jq -cn --arg workspace "$trusted_workspace" '{
+  hasCompletedOnboarding: true,
+  bypassPermissionsModeAccepted: true,
+  projects: {($workspace): {hasTrustDialogAccepted: true}}
+}' >"$CLAUDE_CONFIG_DIR/.claude.json"
+failure_cause="could not secure Claude onboarding and workspace acceptance"
 chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json"
 failure_stage="workspace-setup"
 failure_cause="workspace setup failed"
