@@ -62,7 +62,7 @@ else
   fi
 fi
 
-api POST "/api/v1/repos/${owner}/${repo}/statuses/${head}" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+api_json POST "/api/v1/repos/${owner}/${repo}/statuses/${head}" "$payload" >/dev/null 2>&1 || true
 
 if status_present; then
   write_result applied

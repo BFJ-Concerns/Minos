@@ -32,7 +32,7 @@ fi
 
 reactions_path="/api/v1/repos/${owner}/${repo}/issues/${pr}/reactions"
 payload="$(jq -nc --arg content "$content" '{content:$content}')"
-api POST "$reactions_path" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+api_json POST "$reactions_path" "$payload" >/dev/null 2>&1 || true
 
 if reaction_present "$owner" "$repo" "$pr" "$content" "$login"; then
   write_result applied
