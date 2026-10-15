@@ -26,9 +26,8 @@ existing="$(printf '%s' "$issues" | jq -r --arg title "$title" 'if any(.[]; type
 }
 
 if [ -n "$existing" ]; then
-  comment_payload="$(jq -nc --arg body "$body" '{body:$body}')"
-  if api POST "/repos/${owner}/${repo}/issues/${existing}/comments" \
-    -H "Content-Type: application/json" --data "$comment_payload" >/dev/null 2>&1; then
+  comment_payload="$(printf '%s' "$body" | jq -Rsc '{body:.}')"
+  if api_json POST "/repos/${owner}/${repo}/issues/${existing}/comments" "$comment_payload" >/dev/null 2>&1; then
     write_result applied "commented on issue ${existing}"
   else
     write_result uncertain "alert comment could not be confirmed"
@@ -36,9 +35,8 @@ if [ -n "$existing" ]; then
   exit 0
 fi
 
-issue_payload="$(jq -nc --arg title "$title" --arg body "$body" '{title:$title,body:$body}')"
-if api POST "/repos/${owner}/${repo}/issues" \
-  -H "Content-Type: application/json" --data "$issue_payload" >/dev/null 2>&1; then
+issue_payload="$(printf '%s' "$body" | jq -Rsc --arg title "$title" '{title:$title,body:.}')"
+if api_json POST "/repos/${owner}/${repo}/issues" "$issue_payload" >/dev/null 2>&1; then
   write_result applied "opened alert issue"
 else
   write_result uncertain "alert issue could not be confirmed"

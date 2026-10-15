@@ -46,6 +46,38 @@ api_with_status() {
   return 1
 }
 
+# A payload whose size the forge or the lead decides reaches jq and curl on
+# standard input, never as an argument: Linux caps one exec argument at
+# 128 KiB (MAX_ARG_STRLEN), and a single page of pull requests with long
+# bodies passes that. Shell functions and the printf builtin exec nothing,
+# so handing a payload to them as an argument is safe.
+
+# api_json sends $3 as the request's JSON body; api_json_with_status is the
+# same over api_with_status. The heredoc ends the body with a newline, which
+# JSON ignores.
+api_json() {
+  api_json_method="$1"
+  api_json_path="$2"
+  api_json_body="$3"
+  api "$api_json_method" "$api_json_path" -H "Content-Type: application/json" --data-binary @- <<EOF
+$api_json_body
+EOF
+}
+
+api_json_with_status() {
+  api_json_method="$1"
+  api_json_path="$2"
+  api_json_body="$3"
+  api_with_status "$api_json_method" "$api_json_path" -H "Content-Type: application/json" --data-binary @- <<EOF
+$api_json_body
+EOF
+}
+
+# json_concat prints the JSON arrays $1 and $2 as one array.
+json_concat() {
+  printf '%s\n%s\n' "$1" "$2" | jq -cs 'if length == 2 then .[0] + .[1] else error("expected two JSON arrays") end'
+}
+
 # Some Forgejo collection endpoints accept a page parameter but return the
 # complete collection for every value. Stop when the forge repeats the prior
 # non-empty response so those endpoints terminate without duplicating records,
@@ -76,7 +108,7 @@ pull_request_reviews() {
     reviews_count="$(printf '%s' "$reviews_current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected reviews array") end')" || return 1
     ! repeats_previous_page "$reviews_current" "$reviews_previous" || break
     [ "$reviews_count" -gt 0 ] || break
-    reviews_all="$(jq -cn --argjson all "$reviews_all" --argjson page "$reviews_current" '$all + $page')" || return 1
+    reviews_all="$(json_concat "$reviews_all" "$reviews_current")" || return 1
     reviews_previous="$reviews_current"
     reviews_page=$((reviews_page + 1))
   done
@@ -311,7 +343,7 @@ commit_statuses() {
     ! repeats_previous_page "$status_current" "$status_previous" || break
     status_count="$(printf '%s' "$status_current" | jq 'if type == "array" then length else error("expected status array") end')" || return 1
     [ "$status_count" -gt 0 ] || break
-    status_all="$(jq -cn --argjson all "$status_all" --argjson page "$status_current" '$all + $page')" || return 1
+    status_all="$(json_concat "$status_all" "$status_current")" || return 1
     status_previous="$status_current"
     status_page=$((status_page + 1))
   done

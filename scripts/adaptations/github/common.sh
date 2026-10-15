@@ -147,6 +147,38 @@ api_with_status() {
   return 1
 }
 
+# A payload whose size the forge or the lead decides reaches jq and curl on
+# standard input, never as an argument: Linux caps one exec argument at
+# 128 KiB (MAX_ARG_STRLEN), and a single page of pull requests with long
+# bodies passes that. Shell functions and the printf builtin exec nothing,
+# so handing a payload to them as an argument is safe.
+
+# api_json sends $3 as the request's JSON body; api_json_with_status is the
+# same over api_with_status. The heredoc ends the body with a newline, which
+# JSON ignores.
+api_json() {
+  api_json_method="$1"
+  api_json_path="$2"
+  api_json_body="$3"
+  api "$api_json_method" "$api_json_path" -H "Content-Type: application/json" --data-binary @- <<EOF
+$api_json_body
+EOF
+}
+
+api_json_with_status() {
+  api_json_method="$1"
+  api_json_path="$2"
+  api_json_body="$3"
+  api_with_status "$api_json_method" "$api_json_path" -H "Content-Type: application/json" --data-binary @- <<EOF
+$api_json_body
+EOF
+}
+
+# json_concat prints the JSON arrays $1 and $2 as one array.
+json_concat() {
+  printf '%s\n%s\n' "$1" "$2" | jq -cs 'if length == 2 then .[0] + .[1] else error("expected two JSON arrays") end'
+}
+
 # collect prints every page of a GitHub collection endpoint as one array.
 # GitHub pages by per_page and page and answers [] past the last page; a
 # page shorter than the limit is the last, so it is not fetched twice.
@@ -159,7 +191,7 @@ collect() {
     collect_current="$(api GET "${collect_path}?per_page=100&page=${collect_page}${collect_query:+&$collect_query}")" || return 1
     collect_count="$(printf '%s' "$collect_current" | jq -e 'if type == "array" then length else error("expected a JSON array") end')" || return 1
     [ "$collect_count" -gt 0 ] || break
-    collect_all="$(jq -cn --argjson all "$collect_all" --argjson page "$collect_current" '$all + $page')"
+    collect_all="$(json_concat "$collect_all" "$collect_current")" || return 1
     [ "$collect_count" -ge 100 ] || break
     collect_page=$((collect_page + 1))
   done

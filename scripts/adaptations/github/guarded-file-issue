@@ -49,13 +49,14 @@ fi
 # Even a lost POST response can represent an applied write. Discover it
 # before deciding whether another run may attempt delivery.
 post_status=''
-if api_with_status POST "$issues_path" -H "Content-Type: application/json" --data "$payload"; then
+if api_json_with_status POST "$issues_path" "$payload"; then
   post_status="$api_status_code"
 fi
 if issue_presence; then
-  if printf '%s' "$found" | jq -e --argjson requested "$payload" --arg login "$login" '
+  if printf '%s\n%s\n' "$found" "$payload" | jq -es --arg login "$login" '
+    length == 2 and (. as [$found, $requested] | $found |
     .title == $requested.title and .body == $requested.body and
-    (.user.login // .user.username // "") == $login
+    (.user.login // .user.username // "") == $login)
   ' >/dev/null; then
     file_result 1
   else

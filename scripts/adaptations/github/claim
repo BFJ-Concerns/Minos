@@ -71,13 +71,13 @@ else
       exit 0
     fi
     payload="$(jq -nc --arg name "$in_flight_label" '{labels:[$name]}')"
-    api POST "${issue_path}/labels" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
+    api_json POST "${issue_path}/labels" "$payload" >/dev/null || {
       write_result uncertain "in-flight label could not be written"
       exit 0
     }
   else
     payload="$(jq -nc --arg content "$in_flight_reaction" '{content:$content}')"
-    api POST "$reactions_path" -H "Content-Type: application/json" --data "$payload" >/dev/null || {
+    api_json POST "$reactions_path" "$payload" >/dev/null || {
       write_result uncertain "in-flight reaction could not be written"
       exit 0
     }

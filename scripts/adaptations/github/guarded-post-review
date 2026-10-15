@@ -43,14 +43,18 @@ payload="$(printf '%s' "$input" | jq --arg head "$head" '
 
 review_presence() {
   reviews="$(collect "/repos/${owner}/${repo}/pulls/${pr}/reviews" 2>/dev/null)" || return 2
-  ids="$(printf '%s' "$reviews" | jq -r --arg head "$head" --arg state "$forge_state" --arg body "$body" --arg login "$login" '
-    .[] | select(.commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // "") == $login) | .id')" || return 2
+  # The body rides as a JSON string beside the reviews on standard input.
+  ids="$({ printf '%s\n' "$reviews"; printf '%s' "$body" | jq -Rs .; } | jq -rs --arg head "$head" --arg state "$forge_state" --arg login "$login" '
+    . as [$reviews, $body] |
+    $reviews[] | select(.commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // "") == $login) | .id')" || return 2
   [ -n "$ids" ] || return 1
   for id in $ids; do
     comments="$(collect "/repos/${owner}/${repo}/pulls/${pr}/reviews/${id}/comments" 2>/dev/null)" || return 2
     # Path and body are the durable content Minos owns; the forge may
     # restate geometry (an outdated line, a moved side) as the branch moves.
-    if printf '%s' "$comments" | json_match --argjson requested "$input" '
+    if printf '%s\n%s\n' "$comments" "$input" | json_match -s '
+      if length != 2 then error("expected review comments and the requested review") else . end |
+      . as [$comments, $requested] | $comments |
       if type != "array" or any(.[]; type != "object") then error("expected review comments array") else
       (($requested.comments // []) | map({path, body}) | sort_by(.path, .body)) ==
       (. | map({path, body}) | sort_by(.path, .body)) end' >/dev/null; then
@@ -85,7 +89,7 @@ fi
 # this payload, not an uncertainty, and its message is what the lead needs
 # to see. Any other failure — an expired token, a rate limit, a transport
 # error — is settled by the read-back below like every other guarded write.
-if api_with_status POST "/repos/${owner}/${repo}/pulls/${pr}/reviews" -H "Content-Type: application/json" --data "$payload"; then
+if api_json_with_status POST "/repos/${owner}/${repo}/pulls/${pr}/reviews" "$payload"; then
   case "$api_status_code" in
     400|422)
       refusal="$(printf '%s' "$api_status_body" | jq -r '[.message // "", ((.errors // [])[] | if type == "string" then . else (.message // tojson) end)] | map(select(. != "")) | join("; ")' 2>/dev/null)" || refusal=""
