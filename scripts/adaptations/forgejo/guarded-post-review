@@ -32,14 +32,18 @@ payload="$(printf '%s' "$input" | jq --arg head "$head" '
 
 review_presence() {
   reviews="$(pull_request_reviews "$owner" "$repo" "$pr" 2>/dev/null)" || return 2
-  ids="$(printf '%s' "$reviews" | jq -r --arg head "$head" --arg state "$forge_state" --arg body "$body" --arg login "$login" '
-    .[] | select(.commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // .user.username // "") == $login) | .id')" || return 2
+  # The body rides as a JSON string beside the reviews on standard input.
+  ids="$({ printf '%s\n' "$reviews"; printf '%s' "$body" | jq -Rs .; } | jq -rs --arg head "$head" --arg state "$forge_state" --arg login "$login" '
+    . as [$reviews, $body] |
+    $reviews[] | select(.commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // .user.username // "") == $login) | .id')" || return 2
   [ -n "$ids" ] || return 1
   for id in $ids; do
     comments="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews/${id}/comments" 2>/dev/null)" || return 2
     # Forgejo may rewrite an anchored comment's stored blame position. Path
     # and body are the durable content Minos owns; geometry is forge-owned.
-    if printf '%s' "$comments" | json_match --argjson requested "$input" '
+    if printf '%s\n%s\n' "$comments" "$input" | json_match -s '
+      if length != 2 then error("expected review comments and the requested review") else . end |
+      . as [$comments, $requested] | $comments |
       if type != "array" or any(.[]; type != "object") then error("expected review comments array") else
       (($requested.comments // []) | map({path, body}) | sort_by(.path, .body)) ==
       (. | map({path, body}) | sort_by(.path, .body)) end' >/dev/null; then
@@ -67,7 +71,7 @@ else
   fi
 fi
 
-api POST "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+api_json POST "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews" "$payload" >/dev/null 2>&1 || true
 
 if review_presence; then
   write_result applied

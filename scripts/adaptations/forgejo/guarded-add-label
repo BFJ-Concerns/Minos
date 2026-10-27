@@ -42,7 +42,7 @@ else
 fi
 
 payload="$(jq -nc --argjson id "$label_id" '{labels:[$id]}')"
-api POST "/api/v1/repos/${owner}/${repo}/issues/${pr}/labels" -H "Content-Type: application/json" --data "$payload" >/dev/null 2>&1 || true
+api_json POST "/api/v1/repos/${owner}/${repo}/issues/${pr}/labels" "$payload" >/dev/null 2>&1 || true
 
 if issue_label_id "$owner" "$repo" "$pr" "$name" >/dev/null; then
   write_result applied

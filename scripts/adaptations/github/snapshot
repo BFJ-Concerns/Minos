@@ -27,12 +27,8 @@ esac
 # GitHub has no dependency link between pull requests: a stack is a child
 # based on its parent's branch, reviewed as its own increment, so the
 # dependency facts are always available and always empty.
-jq -nc \
+printf '%s\n' "$pr_json" "$base_json" "$statuses" "$reviews" | jq -cs \
   --arg login "$MINOS_GITHUB_LOGIN" \
-  --argjson pr "$pr_json" \
-  --argjson base "$base_json" \
-  --argjson statuses "$statuses" \
-  --argjson reviews "$reviews" \
   --arg head_branch "$head_branch" \
   '
   # GitHub names review states differently from the protocol, whose
@@ -42,6 +38,8 @@ jq -nc \
     if . == "CHANGES_REQUESTED" then "REQUEST_CHANGES"
     elif . == "COMMENTED" then "COMMENT"
     else . end;
+  if length != 4 then error("expected four forge payloads") else . end |
+  . as [$pr, $base, $statuses, $reviews] |
   {
     authenticated_user: $login,
     repository: $pr.base.repo.full_name,

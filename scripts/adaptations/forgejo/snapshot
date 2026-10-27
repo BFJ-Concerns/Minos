@@ -38,7 +38,7 @@ while :; do
   fi
   ! repeats_previous_page "$current" "$previous" || break
   [ "$(printf '%s' "$current" | jq 'length')" -gt 0 ] || break
-  dependencies="$(jq -cn --argjson all "$dependencies" --argjson page "$current" '$all + $page')"
+  dependencies="$(json_concat "$dependencies" "$current")"
   previous="$current"
   page=$((page + 1))
 done
@@ -54,16 +54,11 @@ head_branch="$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
 case "$head_branch" in
   refs/pull/*/head) head_branch="" ;;
 esac
-jq -nc \
-  --argjson user "$user_json" \
-  --argjson repository "$repository_json" \
-  --argjson pr "$pr_json" \
-  --argjson base "$base_json" \
-  --argjson statuses "$statuses" \
-  --argjson reviews "$reviews" \
-  --argjson dependencies "$dependencies" \
+printf '%s\n' "$user_json" "$repository_json" "$pr_json" "$base_json" "$statuses" "$reviews" "$dependencies" | jq -cs \
   --arg dependency_error "$dependency_error" \
   --arg head_branch "$head_branch" '
+  if length != 7 then error("expected seven forge payloads") else . end |
+  . as [$user, $repository, $pr, $base, $statuses, $reviews, $dependencies] |
   {
     authenticated_user: ($user.login // $user.username // ""),
     repository: $repository.full_name,
