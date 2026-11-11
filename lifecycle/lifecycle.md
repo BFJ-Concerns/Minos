@@ -704,7 +704,11 @@ write, matching the target rule above.)
    reviewed before, this run's verdict is not the whole of it: a blocking
    finding from an earlier Minos review still counts until it is settled.
    `"$MINOS_BIN" forge threads` lists them: the threads whose first
-   comment opens `**Blocking`. One is settled when the author resolved its
+   comment opens `**Blocking`. A blocking finding the forge could not
+   anchor inline has no thread: it sits in the body of its review, under
+   "Findings that could not be anchored inline", and
+   `"$MINOS_BIN" forge snapshot` prints each review's body.
+   One is settled when the author resolved its
    thread or answered it with a rejection, or when you read the code it
    cites at this head and the defect it describes is no longer there.
    That the cited lines changed is not enough, and neither is this run's
