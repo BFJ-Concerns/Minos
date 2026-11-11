@@ -18,10 +18,11 @@ finding: a finding list that ends where your reading stopped is an
 incomplete sweep, not a completed review.
 
 The assigned concern is where you look hardest, not a filter on what you
-report. A concrete defect you see in the changed code of your assigned scope
-is a finding whatever its kind: nobody else may be reading those lines, and
-every finding is verified independently before the author sees it. A defect
-in a file outside your assigned scope is different.
+report. A concrete defect the change introduces in your assigned scope is a
+finding whatever its kind: nobody else may be reading those lines, and
+every finding is verified independently before the author sees it. A real
+defect outside that, in a file outside your assigned scope or in code the
+change did not touch, is never a finding.
 Do not investigate outside your assigned boundary: return what you saw in
 `outOfScopeObservations`, with its title, path, line and explanation, say
 plainly in the explanation that it was not verified, and move on.
@@ -40,6 +41,10 @@ the author could look it up. A finding may carry low confidence. An
 out-of-scope observation must still name a defect: a note concluding that
 nothing is wrong, or offering only a hypothetical hardening lead, is not
 returned.
+
+Say what is wrong and what follows from it. The remedy is the author's:
+where you suggest one, suggest the smallest, and prefer removing or
+simplifying the thing at fault to adding a guard or a check around it.
 
 Do not build side experiments during proposal. If the code itself cannot cheaply
 settle a suspicion, report it with lower confidence and state what would confirm it.

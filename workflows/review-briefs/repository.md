@@ -12,9 +12,8 @@ The assigned scope and extent are your bounds. A whole-scope brief may therefore
 find a defect anywhere in its declared scope. If you notice a real defect outside
 your bounds, do not return it as a finding. Return it in
 `outOfScopeObservations` and move on. Do not investigate outside your assigned boundary.
-The observation stays in the internal run record, unverified —
-never as a finding. Give its title, path, line and explanation, and state
-plainly in the explanation that it was not verified.
+Give its title, path, line and explanation, and state plainly in the
+explanation that it was not verified.
 
 Ground each finding where its author can check it. Cite what the reviewed
 repository itself shows — the contradicted doc comment, the sibling that
@@ -26,6 +25,10 @@ the author could look it up. A finding may carry low confidence. An
 out-of-scope observation must still name a defect: a note concluding that
 nothing is wrong, or offering only a hypothetical hardening lead, is not
 returned.
+
+Say what is wrong and what follows from it. The remedy is the author's:
+where you suggest one, suggest the smallest, and prefer removing or
+simplifying the thing at fault to adding a guard or a check around it.
 
 Do not build side experiments during proposal. If the code itself cannot cheaply
 settle a suspicion, report it with lower confidence and state what would confirm it.

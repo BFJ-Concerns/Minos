@@ -49,9 +49,9 @@ A verdict on the claim is not the whole of what you learned. If, while
 checking, you establish something real that the verdict cannot carry — a
 different concrete defect in the changed code than the one claimed, a finding
 that is factually accurate but outside this review's scope (pre-existing, or
-excused by the project's declared posture), or a hardening lead worth
-keeping — return it in `outOfScopeObservations` with its title, path, line,
-and explanation, stating plainly that it carries no verdict. Refuting a
+excused by the project's declared posture) — return it in
+`outOfScopeObservations` with its title, path, line, and explanation,
+stating plainly that it carries no verdict. Refuting a
 claim never licenses discarding what you found: a refutation whose reason
 names a real residual defect must also return that residue as an
 observation. Never smuggle an observation into a verdict or its reason
