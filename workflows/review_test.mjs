@@ -800,12 +800,32 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /`unfiled` means delivery\s+failed or the destination kind is unavailable[\s\S]*Filing failure never generates a pull-request comment,\s+never falls back to another surface, and changes no verdict/);
 });
 
+test("the lifecycle sizes the review to what the author changed since the head Minos last finished on", () => {
+  assert.match(lifecycle, /then decide how much review this head needs, before any workflow runs/);
+  assert.match(lifecycle, /`"\$MINOS_BIN" forge outcome SHA` prints the outcome Minos recorded on a\s+commit as `clean`, `attention` or `none`/);
+  assert.match(lifecycle, /\*\*No review\.\*\*[\s\S]*unavailable\s+when a `\.review\/` brief engages the range[\s\S]*review-scope-inputs\.mjs" BASE "\$MINOS_HEAD_SHA"`[\s\S]*`briefsEngage`/);
+  assert.match(lifecycle, /\*\*Increment\.\*\*[\s\S]*earlier head is an ancestor[\s\S]*`EARLIER\.\.\.HEAD` alone/);
+  assert.match(lifecycle, /\*\*Full\.\*\* Everything else/);
+  assert.match(lifecycle, /Every `minos forge` command keeps the\s+run's real head and target, whatever was reviewed/);
+  assert.match(lifecycle, /review-inputs\.mjs" \\\s+REVIEW_BASE "\$MINOS_HEAD_SHA"/);
+  assert.match(lifecycle, /review-brief-inputs\.mjs" \\\s+REVIEW_BASE "\$MINOS_HEAD_SHA"/);
+  assert.doesNotMatch(lifecycle, /review-scope\.js/);
+  assert.match(lifecycle, /a blocking\s+finding from an earlier Minos review still counts until it is settled/);
+});
+
+test("the lifecycle keeps an answered finding from being raised again", () => {
+  assert.match(lifecycle, /`"\$MINOS_BIN" forge clone-credential` prints `\{username, password\}`[\s\S]*never print it/);
+  assert.match(lifecycle, /\(`already-raised`\)[\s\S]*whose thread the author resolved or answered with a rejection,\s+and the code it cites has not changed[\s\S]*or it restates an entry the filing destination already\s+carries/);
+  assert.match(lifecycle, /An earlier finding the\s+author neither fixed nor answered is not of this class/);
+  assert.match(lifecycle, /"gating": false, "class": "already-raised"/);
+});
+
 test("the lifecycle prescribes the verdict-classification seam", () => {
   assert.match(lifecycle, /verdict-classification\.mjs" \\\s+--digest VERDICT_FILE "\$MINOS_REVIEW_THRESHOLD" \\\s+> "\$MINOS_RUN_DIR\/verdict-digest\.json"/);
   assert.match(lifecycle, /`verdict-digest-brief\.json` for the brief verdict/);
   assert.match(lifecycle, /digest lists every confirmed finding with its severity, confidence\s+values, and threshold position, and a `thresholdIndication` — what the\s+configured threshold alone would say/);
   assert.match(lifecycle, /informed by the threshold rather than mechanically bound to it \(the\s+commission's balance rule\)/);
-  assert.match(lifecycle, /only two classes may be judged out —\s+a gap the pull-request description explicitly declares as known or out\s+of scope, where the project guidance does not contradict the\s+declaration \(`declared-out-of-scope`\), and a verifier-confirmed request\s+for a new safeguard[\s\S]*?no defect\s+in the change's own logic \(`speculative-hardening`\)/);
+  assert.match(lifecycle, /only three classes may be judged out\.\s+Two object to the kind of finding:\s+a gap the pull-request description explicitly declares as known or out\s+of scope, where the project guidance does not contradict the\s+declaration \(`declared-out-of-scope`\), and a verifier-confirmed request\s+for a new safeguard[\s\S]*?no defect\s+in the change's own logic \(`speculative-hardening`\)/);
   assert.match(lifecycle, /The one upward exception\s+is judging a below-threshold finding's severity an undergrade that\s+genuinely belongs at or above the threshold, named as such/);
   assert.match(lifecycle, /`\$MINOS_RUN_DIR\/verdict-decision\.json` \(`verdict-decision-brief\.json`\s+for the brief verdict\)[\s\S]*?"kind": "minos-verdict-decision-v1"[\s\S]*?"basis":[\s\S]*?"gating": false, "class": "declared-out-of-scope"[\s\S]*?"gating": true, "undergrade":/);
   assert.match(lifecycle, /Validate each decision before any forge write[\s\S]*?verdict-classification\.mjs" \\\s+--validate VERDICT_FILE DECISION_FILE "\$MINOS_REVIEW_THRESHOLD"/);

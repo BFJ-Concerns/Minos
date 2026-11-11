@@ -25,15 +25,21 @@ author, and the forge's own CI remains the build evidence.
    reads the project's guidance (the configured sources, or else the first
    non-empty file among `AGENTS.md`, `CLAUDE.md` and `README.md`) along with
    the pull request's title and description.
-3. A quick first check decides whether the change gives the reviewers
-   anything to look at. If it doesn't, the review finishes clean without
-   running the full workflow.
+3. The lead decides how much review this head needs. A pull request's
+   first head is reviewed in full, unless nothing in it gives a reviewer
+   anything to judge. A later head is reviewed only for what the author
+   changed since the head Minos last finished on, or not at all when that
+   is nothing; a rebase or any other change that cannot be isolated as a
+   range gets a full review.
 4. An exploration pass plans the review and hands each part of the diff that
    needs attention to correctness, security, testing or design specialists.
    A verifier checks every finding they propose. The repository's own
    [review briefs](#review-briefs) then run the same way.
 5. The lead classifies the verdict, guided by the repository's severity
-   threshold, and publishes the result.
+   threshold, and publishes the result. A finding the author has already
+   resolved or rejected on the pull request is not raised again while the
+   code it cites is unchanged, and a blocking finding they have neither
+   fixed nor answered still counts on a later head.
 
 If any reviewer fails to finish, or any finding lacks a complete verifier
 verdict, the run is incomplete: Minos publishes no review and sets no clean

@@ -170,7 +170,78 @@ write, matching the target rule above.)
    checks. Preserved files from a predecessor are reusable workspace
    material, not authority; the orientation record describes the state to
    trust in this attempt.
-2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`.
+2. Publish `working` with `"$MINOS_BIN" forge status HEAD TARGET working`,
+   then decide how much review this head needs, before any workflow runs.
+
+   Most runs are a later head of a pull request Minos has already
+   reviewed. A full review of such a head re-reads code nobody touched,
+   takes as long as the first did, and raises settled points again as
+   though they were new, because two full reviews of the same code agree
+   on only about half of what they find. So a full review is for code
+   Minos has not yet judged. Deciding what that is takes your own reading
+   of the change and a minute or two, not a workflow; record the choice
+   and its reason in the run report.
+
+   **The earlier head** is the newest commit before this head at which a
+   Minos run finished clean or requesting changes. Reviews in the snapshot
+   whose `user` is its `authenticated_user` name the heads that drew a
+   review in their `commit_id`. A clean head drew none, so ask the forge:
+   `"$MINOS_BIN" forge outcome SHA` prints the outcome Minos recorded on a
+   commit as `clean`, `attention` or `none`. Walk back from this head's
+   parent through the pull request's own commits, newest first, until one
+   answers `clean` or `attention`; twenty commits without an answer is far
+   enough. With no earlier head this is the first head Minos reviews.
+
+   **What the author changed** is the range the choice is made over. On a
+   first head it is the whole pull request, `$MINOS_TARGET_SHA...HEAD`. On
+   a later head it is what the author did to the pull request's own diff
+   since the earlier head. When the earlier head is an ancestor of this
+   one and nothing was merged in from the target since, that is
+   `EARLIER..HEAD`. Changes that arrived by merging the target in or
+   rebasing onto it are not the author's and need no review; when the
+   branch was rebased or merged, compare the pull request's own diff
+   before and after to see what the author changed, and when you cannot
+   (the earlier commit is not in the clone and cannot be fetched), treat
+   the whole pull request as changed.
+
+   Choose one:
+
+   - **No review.** Nothing the author changed carries a decision of
+     theirs that a reviewer could find wrong: a rebase or target merge
+     that left the pull request's own diff as it was, generated output
+     that follows from input already reviewed, a mechanical rename or
+     formatting pass you have checked is only that, a revert to content
+     already reviewed. Prose is not exempt by being prose: where a
+     repository's product is instruction text or documentation, a wording
+     change is a behaviour change. Both mistakes cost something. A skipped
+     review that should have run lets a defect through under a clean
+     mark; an unneeded one costs the author ten minutes and re-raises old
+     points. Choose this when you have read everything the author changed
+     and can say in a sentence why no reviewer would have anything to
+     judge, and not when you would have to argue for it. It is unavailable
+     when a `.review/` brief engages the range, because the repository's
+     owner asked for that review: build
+     `node "${MINOS_REVIEW_WORKFLOW%/*}/review-scope-inputs.mjs" BASE "$MINOS_HEAD_SHA"`
+     with the range's base and read its `briefsEngage` field.
+   - **Increment.** A later head whose earlier head is an ancestor, with
+     nothing merged in from the target since, and whose new commits can be
+     judged as a change in their own right. The review runs over
+     `EARLIER...HEAD` alone.
+   - **Full.** Everything else: a first head with something to judge, a
+     later head whose changes cannot be isolated as a range, or an
+     increment that reworks so much of the pull request that reading it
+     alone would mislead.
+
+   The choice sets `REVIEW_BASE` for the rest of the run: the earlier head
+   for an increment, `$MINOS_TARGET_SHA` for a full review. Only the input
+   builders in steps 3 and 4 take it. Every `minos forge` command keeps the
+   run's real head and target, whatever was reviewed.
+
+   **No review** skips steps 3 to 6 and ends at step 7 with the outcome
+   this head has earned. On a first head that is clean. On a later head it
+   is the earlier head's outcome carried forward: clean stays clean, and
+   an earlier request for changes stands unless every blocking finding
+   behind it is settled, as step 7 defines.
 3. Run every Ensemble workflow in this lifecycle from this accountable
    lead session. Never delegate its invocation to an agent or subagent;
    responsibility for orchestration remains with the lead.
@@ -188,11 +259,11 @@ write, matching the target rule above.)
    `$MINOS_RUN_DIR` and the run record under
    `$MINOS_RUN_DIR/ensemble-records/NAME`, and diagnostics in
    `$MINOS_RUN_DIR/NAME.log`. Nothing about that launch is yours to vary:
-   a hand-written wrapper stack, environment, or redirect is the
-   repeatable mechanic C6 forbids you to re-derive.
+   a hand-written wrapper stack, environment, or redirect re-derives what
+   the script exists to keep identical from run to run.
 
-   `NAME` is the stage's base name — `review-scope`, `review`,
-   `review-brief` — and a repeated execution of one stage keeps the base
+   `NAME` is the stage's base name — `review` or `review-brief` — and a
+   repeated execution of one stage keeps the base
    name and takes the attempt suffix `@N`: the first execution is bare
    (`review`), the second is `review@2`, counting every execution of that
    stage across the whole run. The suffix is the one sanctioned way to
@@ -325,43 +396,11 @@ write, matching the target rule above.)
    failure it is, rather than absorbing repeated kills into further
    retries.
 
-   Before the first review of a run — and only then; a run consuming a
-   carried result goes straight to the input build below — run the
-   engagement gate. Build its input:
-
-   ```sh
-   node "${MINOS_REVIEW_WORKFLOW%/*}/review-scope-inputs.mjs" \
-     "$MINOS_TARGET_SHA" "$MINOS_HEAD_SHA" \
-     > "$MINOS_RUN_DIR/review-scope-args.json"
-   ```
-
-   Read that file's `briefsEngage` field. When it is true, a repository
-   brief already gives this change work, so the full pipeline runs
-   regardless: skip the gate workflow and continue below. When it is
-   false, dispatch the gate once from `$MINOS_WORKSPACE`, under this
-   step's workflow discipline:
-
-   ```sh
-   "${MINOS_SETUP_WORKSPACE%/*}/dispatch-stage" review-scope review-scope.js
-   ```
-
-   Only a gate verdict whose `status` is `complete` and whose
-   `scopeDecision.status` is `nothing-engages` short-circuits: copy that
-   verdict to `$MINOS_RUN_DIR/review-result.json` and continue at step 4
-   without invoking the review workflow — the gate's verdict is the
-   complete clean review, and its `skipped` array is the brief record the
-   brief stage consumes. Every other outcome — `review-required`, an
-   `incomplete` or `infrastructure-failure` verdict, a missing or
-   unparseable result — continues below exactly as though the gate had not
-   run. The gate is an optimisation, never a blocker: falling through to
-   the full review is a planned continuation, not a failed exit, so it
-   sets no status, removes no marker, and writes no failure-log line.
-
    Build the main review input from disk and write it to a file:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/review-inputs.mjs" \
-     "$MINOS_TARGET_SHA" "$MINOS_HEAD_SHA" \
+     REVIEW_BASE "$MINOS_HEAD_SHA" \
      > "$MINOS_RUN_DIR/review-args.json"
    ```
 
@@ -418,17 +457,11 @@ write, matching the target rule above.)
    the in-flight marker with `"$MINOS_BIN" forge marker HEAD TARGET in-flight remove`,
    write the non-clean terminal marker, and stop.
 4. Once the main review's verdict is complete, run the repository-brief
-   stage. When `review-result.json` is the engagement gate's
-   `nothing-engages` verdict, this stage is already settled: the gate
-   launched only because every `.review/` brief settled deterministically
-   as skipped, so its verdict's `skipped` array is this stage's brief
-   record — the same dispositions this workflow would recompute — and
-   there is nothing to run, judge, or publish. Continue to step 5.
-   Otherwise, build the repository-brief input directly as JSON:
+   stage over the same range. Build its input directly as JSON:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/review-brief-inputs.mjs" \
-     "$MINOS_TARGET_SHA" "$MINOS_HEAD_SHA" \
+     REVIEW_BASE "$MINOS_HEAD_SHA" \
      > "$MINOS_RUN_DIR/review-brief-args.json"
    ```
 
@@ -460,7 +493,21 @@ write, matching the target rule above.)
    set `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the in-flight
    marker with `"$MINOS_BIN" forge marker HEAD TARGET in-flight remove`, write the
    non-clean terminal marker, and stop.
-5. Classify the completed review. For each complete verdict the run
+5. Classify the completed review. First, on a pull request Minos has
+   reviewed before, learn what the author already has from Minos and how
+   they answered it. Read the inline comments of Minos's earlier reviews
+   on this pull request, whether each comment's thread is resolved, and
+   any reply to it. `minos forge` does not carry these, so read them from
+   the forge's API at `$MINOS_API_BASE`:
+   `"$MINOS_BIN" forge clone-credential` prints `{username, password}`,
+   and the password is an API token. Capture it into a shell variable
+   inside the command that uses it, and never print it. On any pull
+   request, also read what the filing destination already carries for
+   this repository; `$MINOS_FILING_DESTINATION` names it. This is a few
+   calls, not an investigation: whatever the forge will not readily give,
+   classify without.
+
+   For each complete verdict the run
    holds — the main review's, and the brief stage's where it ran — read
    its mechanical digest:
 
@@ -478,14 +525,26 @@ write, matching the target rule above.)
    configured threshold alone would say. Classification is your judgement,
    informed by the threshold rather than mechanically bound to it (the
    commission's balance rule): a confirmed finding at or above the
-   threshold gates by default, and only two classes may be judged out —
+   threshold gates by default, and only three classes may be judged out.
+   Two object to the kind of finding:
    a gap the pull-request description explicitly declares as known or out
    of scope, where the project guidance does not contradict the
    declaration (`declared-out-of-scope`), and a verifier-confirmed request
    for a new safeguard against a hypothetical failure mode with no defect
    in the change's own logic (`speculative-hardening`). The severity
    threshold alone does not catch either class, because verifiers confirm
-   the facts while the objection is to the kind. The one upward exception
+   the facts while the objection is to the kind. The third objects to
+   saying it again (`already-raised`), and takes a finding at any
+   severity: it restates a finding Minos already published on this pull
+   request whose thread the author resolved or answered with a rejection,
+   and the code it cites has not changed since the head that review
+   judged; or it restates an entry the filing destination already
+   carries. A finding of this class is published and filed nowhere,
+   because the author has it and has answered. An earlier finding the
+   author neither fixed nor answered is not of this class: it gates and is
+   published as usual. A verifier's reason may say that the delivered
+   behaviour is correct and the finding is a gap; that is advice for your
+   gating call, never grounds for a class. The one upward exception
    is judging a below-threshold finding's severity an undergrade that
    genuinely belongs at or above the threshold, named as such. Any gating
    finding makes the verdict `request-changes`; none makes it `clean`.
@@ -505,6 +564,7 @@ write, matching the target rule above.)
      "findings": [
        { "key": "DIGEST_FINDING_KEY", "gating": true, "defect": "short-label-you-choose" },
        { "key": "ANOTHER_KEY", "gating": false, "class": "declared-out-of-scope" },
+       { "key": "AN_ANSWERED_KEY", "gating": false, "class": "already-raised" },
        { "key": "A_BELOW_THRESHOLD_KEY", "gating": true, "undergrade": "why this severity is an undergrade" },
        { "key": "A_RESTATEMENT_KEY", "gating": true, "defect": "short-label-you-choose", "undergrade": "restates the High finding above" }
      ]
@@ -547,8 +607,8 @@ write, matching the target rule above.)
    The publication composer turns the validated decisions into exactly
    what is posted, in the order it is posted, and sets aside what is
    filed instead; you compose no payload and choose no routing yourself.
-   Run it once. When the brief stage did not run (or was settled by the
-   gate), give it the main verdict and decision alone:
+   Run it once. When the brief stage did not run, give it the main
+   verdict and decision alone:
 
    ```sh
    node "${MINOS_REVIEW_WORKFLOW%/*}/compose-review-publication.mjs" \
@@ -631,7 +691,18 @@ write, matching the target rule above.)
    never falls back to another surface, and changes no verdict.
 
    Check for `$MINOS_RUN_DIR/memory-pressure` after publication.
-7. End at the earned terminal outcome.
+7. End at the earned terminal outcome. On a pull request Minos has
+   reviewed before, this run's verdict is not the whole of it: a blocking
+   finding from an earlier Minos review still counts until it is settled.
+   It is settled when the code it cites has changed since the head that
+   review judged, so this run's review judged the new code in its place,
+   or when the author resolved its thread or answered it with a
+   rejection (step 5 says how to read that, where this run skipped it).
+   The outcome is request-changes when this run's verdict is,
+   or when an earlier blocking finding is not settled; otherwise it is
+   clean. A run that reaches request-changes only through earlier
+   findings posts nothing new for them: the review that raised them is
+   still on the pull request.
 
    **Clean:** post no review of your own (a pull-request-comment filing
    destination may already have posted the advisory entries as one
@@ -642,7 +713,8 @@ write, matching the target rule above.)
    `"$MINOS_BIN" forge marker HEAD TARGET in-flight remove`, write the clean
    terminal marker, and stop.
 
-   **Request-changes:** the blocking review is posted; set
+   **Request-changes:** the blocking review is posted, this run's or an
+   earlier one's; set
    `"$MINOS_BIN" forge status HEAD TARGET attention`, add the attention
    marker with `"$MINOS_BIN" forge marker HEAD TARGET attention add`,
    remove the in-flight marker, write

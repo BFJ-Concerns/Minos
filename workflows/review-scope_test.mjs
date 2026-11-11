@@ -22,7 +22,6 @@ function executableVerdict(t, envelope) {
   return wrapperVerdict(t, envelope, { namespace: "scope", workflow: "review-scope.js" });
 }
 const source = await readFile(scriptPath, "utf8");
-const lifecycle = await readFile(join(workflowsDir, "..", "lifecycle", "lifecycle.md"), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const script = new AsyncFunction(
   "agent", "parallel", "pipeline", "phase", "log", "args",
@@ -344,24 +343,4 @@ test("a malformed scope decision is not attached", async (t) => {
   const { result } = await runScript(workflowArgs(), () => scopeResult());
   const verdict = executableVerdict(t, { ...result, scopeDecision: { status: "clean", reason: "x" } });
   assert.equal("scopeDecision" in verdict, false);
-});
-
-// --- lifecycle prose ---
-
-test("the lifecycle runs the gate first and treats it as an optimisation, never a blocker", () => {
-  assert.match(
-    lifecycle,
-    /Before the first review of a run[\s\S]*review-scope-inputs\.mjs[\s\S]*review-scope-args\.json/,
-  );
-  assert.match(lifecycle, /`briefsEngage`[\s\S]*skip\s+the gate workflow/);
-  assert.match(lifecycle, /dispatch-stage" review-scope review-scope\.js/);
-  assert.match(
-    lifecycle,
-    /`scopeDecision\.status` is `nothing-engages`[\s\S]*copy that\s+verdict to `\$MINOS_RUN_DIR\/review-result\.json`[\s\S]*without invoking the review workflow/,
-  );
-  assert.match(lifecycle, /The gate is an\s+optimisation, never a blocker/);
-  assert.match(
-    lifecycle,
-    /engagement gate's\s+`nothing-engages` verdict[\s\S]*stage is already settled[\s\S]*nothing to run, judge, or publish/,
-  );
 });
