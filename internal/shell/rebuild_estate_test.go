@@ -510,6 +510,17 @@ func TestForgeEarlierRecognisesAReviewedChangeAcrossARebase(t *testing.T) {
 	if got.Head != second || got.Outcome != "attention" || !got.Ancestor || !reflect.DeepEqual(got.ChangedPaths, []string{"added.txt"}) {
 		t.Fatalf("an added file after a finished head reads %#v", got)
 	}
+
+	// A file the author takes back out of the pull request is a change too,
+	// though the new head's diff no longer names it.
+	f.finish(third, "clean")
+	runGit(t, f.workspace, "rm", "--quiet", "added.txt")
+	runGit(t, f.workspace, "commit", "--quiet", "-m", "drop the added file")
+	fourth := f.follow()
+	got = f.earlier(fourth)
+	if got.Head != third || !reflect.DeepEqual(got.ChangedPaths, []string{"added.txt"}) {
+		t.Fatalf("a file dropped from the pull request reads %#v", got)
+	}
 }
 
 func TestForgeEarlierWithoutARecordAsksThePullRequestsOwnCommits(t *testing.T) {
