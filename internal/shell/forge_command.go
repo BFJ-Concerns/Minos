@@ -19,7 +19,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|claim|status|review|marker|file-issue|repository-metadata|clone-credential")
+		return fmt.Errorf("usage: minos forge snapshot|claim|status|outcome|review|marker|file-issue|repository-metadata|clone-credential")
 	}
 	// Repository metadata and the clone credential are not about the pull
 	// request, so they need the run's forge but none of its coordinates.
@@ -122,6 +122,15 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		recordAppliedStatus(args[3])
 		return nil
+	case "outcome":
+		if len(args) != 2 || args[1] == "" {
+			return fmt.Errorf("usage: minos forge outcome SHA")
+		}
+		outcome, err := recordedOutcome(ctx, adapter, guard.Repository, args[1])
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(map[string]string{"sha": args[1], "outcome": outcome})
 	case "review":
 		if len(args) != 5 && len(args) != 6 {
 			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|request-changes|comment BODY_FILE [COMMENTS_FILE]")
@@ -192,6 +201,30 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	default:
 		return fmt.Errorf("unknown forge action %q", args[0])
 	}
+}
+
+// recordedOutcome names the terminal outcome Minos recorded on a commit:
+// "clean" or "attention" when the service's latest status there is a
+// completion marker, "none" otherwise. A run that ended incomplete, or never
+// ran, left nothing to build on, so both read as "none".
+func recordedOutcome(ctx context.Context, adapter *forge.Adapter, repository forge.Repository, sha string) (string, error) {
+	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
+	if err != nil {
+		return "", err
+	}
+	statuses, err := adapter.CommitStatuses(ctx, repository, sha)
+	if err != nil {
+		return "", err
+	}
+	latest, found := latestOwnedStatus(forge.Snapshot{Statuses: statuses}, cfg.BotLogin(os.Getenv("MINOS_FORGE")), cfg.Service.StatusContext)
+	if !found {
+		return "none", nil
+	}
+	state, terminal := product.CompletionMarker(string(latest.State), latest.Description)
+	if !terminal {
+		return "none", nil
+	}
+	return state.Name(), nil
 }
 
 // markersFromEnvironment reads the run's resolved markers from
