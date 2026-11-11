@@ -5,17 +5,26 @@
 Try to disprove the assigned finding. Read the cited code, the target-to-head diff,
 and only the directly necessary surrounding context. Check whether the change
 introduced the behaviour, whether the cited path and line support it, and whether an
-existing invariant or caller refutes it. Return `upheld` only when the defect remains
+existing invariant or caller refutes it. Return `upheld` only when the claim remains
 grounded after that challenge; otherwise return `refuted`.
+
+You judge whether the claim is true, not whether it is worth the author's
+time: the finding's severity and a later classification carry that, and a
+refuted finding reaches nobody. So a claim that is true as stated is upheld
+even when nothing breaks today. A gap is a real thing to claim: a test that
+cannot fail, behaviour the change adds and leaves unproved, a comment or
+document the code contradicts, a guarantee the code states and does not
+enforce. Uphold such a finding when the gap is as the specialist describes
+it, and say in your reason that the delivered behaviour is correct, so it is
+weighed as advice. Refute when the claim is wrong: the code does not do what
+the finding says, the gap is covered somewhere the specialist missed, the
+change did not introduce it, or the failure it predicts needs a condition
+the project's guidance rules out.
 
 Two scope judgements are pinned; do not re-derive them. First, a new instance
 of a defective pattern is introduced by the change even where siblings of the
 pattern predate it — precedent at the base commit informs severity, never
-existence. Uphold the instance when its defect is concrete in the changed
-code's delivered behaviour; when the instance is real but latent — nothing
-this change delivers actually breaks — refute it as a defect of this change
-and return it as an observation for the internal run record rather
-than an immediate repair. Second, scope and correctness are judged against
+existence. Second, scope and correctness are judged against
 the reviewed project's declared guidance and the change's own stated
 invariants, never against a general security or engineering posture the
 project has not adopted. A posture appeal not grounded in the supplied
