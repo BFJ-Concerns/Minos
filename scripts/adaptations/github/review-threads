@@ -1,0 +1,46 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+# Every review thread on the pull request as one JSON array, each with its
+# site, whether it is resolved, and its comments oldest first. GitHub's REST
+# API does not say whether a thread is resolved, so this reads GraphQL. A bot
+# author's login gains the "[bot]" suffix the REST API gives it, so it
+# compares equal to the service login.
+owner="$1"
+repo="$2"
+pr="$3"
+
+# The $names are GraphQL variables, not shell: single quotes are intended.
+# shellcheck disable=SC2016
+query='query($owner:String!,$repo:String!,$pr:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated path line originalLine comments(first:100){nodes{body author{__typename login} originalCommit{oid} pullRequestReview{databaseId}}}}}}}}'
+
+threads='[]'
+after=''
+while :; do
+  request="$(jq -nc --arg query "$query" --arg owner "$owner" --arg repo "$repo" --arg pr "$pr" --arg after "$after" \
+    '{query:$query, variables:{owner:$owner, repo:$repo, pr:($pr | tonumber), after:(if $after == "" then null else $after end)}}')"
+  response="$(api_json POST /graphql "$request")"
+  connection="$(printf '%s' "$response" | jq -ce '
+    if ((.errors // []) | length) > 0 then error("GitHub answered the review-thread query with errors") else . end |
+    .data.repository.pullRequest.reviewThreads |
+    if type == "object" and (.nodes | type) == "array" then . else error("expected a review-thread connection") end')"
+  page="$(printf '%s' "$connection" | jq -c '[.nodes[] | {
+    path: (.path // ""),
+    line: (.line // .originalLine // 0),
+    resolved: (.isResolved == true),
+    outdated: (.isOutdated == true),
+    comments: [(.comments.nodes // [])[] | {
+      user: ((.author.login // "") + (if .author.__typename == "Bot" then "[bot]" else "" end)),
+      body: (.body // ""),
+      commit_id: (.originalCommit.oid // ""),
+      review_id: (.pullRequestReview.databaseId // 0)
+    }]
+  }]')"
+  threads="$(json_concat "$threads" "$page")"
+  [ "$(printf '%s' "$connection" | jq -r '.pageInfo.hasNextPage == true')" = "true" ] || break
+  after="$(printf '%s' "$connection" | jq -r '.pageInfo.endCursor // ""')"
+  [ -n "$after" ] || break
+done
+printf '%s\n' "$threads"

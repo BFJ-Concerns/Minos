@@ -19,7 +19,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|claim|status|outcome|review|marker|file-issue|repository-metadata|clone-credential")
+		return fmt.Errorf("usage: minos forge snapshot|threads|claim|status|outcome|review|marker|file-issue|repository-metadata|clone-credential")
 	}
 	// Repository metadata and the clone credential are not about the pull
 	// request, so they need the run's forge but none of its coordinates.
@@ -95,6 +95,15 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(snapshot)
+	case "threads":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: minos forge threads")
+		}
+		threads, err := adapter.ReviewThreads(ctx, guard.Repository, guard.PullRequest)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(threads)
 	case "claim":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: minos forge claim")

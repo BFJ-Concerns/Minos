@@ -67,6 +67,10 @@ type githubFixtureState struct {
 	statuses       []map[string]any
 	reviews        []map[string]any
 	reviewComments map[int64][]map[string]any
+	// reviewThreadPages are the raw GraphQL answers to successive
+	// review-thread queries; graphQLVariables records what each asked for.
+	reviewThreadPages []string
+	graphQLVariables  []map[string]any
 	// cloneURL is acme/widgets' clone URL as the repository route reports it.
 	cloneURL string
 	// diffLines is the set of lines GitHub would accept an anchor on, per
@@ -252,6 +256,22 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	authorization := r.Header.Get("Authorization")
 	if r.Header.Get("Accept") != "application/vnd.github+json" || r.Header.Get("X-GitHub-Api-Version") == "" {
 		http.Error(w, `{"message":"missing GitHub API headers"}`, http.StatusBadRequest)
+		return
+	}
+	if r.Method == http.MethodPost && path == "/graphql" && s.installationAuthorised(authorization) {
+		var request struct {
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			s.t.Error(err)
+		}
+		s.graphQLVariables = append(s.graphQLVariables, request.Variables)
+		page := len(s.graphQLVariables) - 1
+		if page >= len(s.reviewThreadPages) {
+			http.Error(w, `{"message":"no such page"}`, http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(s.reviewThreadPages[page]))
 		return
 	}
 	if s.installationAuthorised(authorization) && s.handleOperations(w, r, path) {

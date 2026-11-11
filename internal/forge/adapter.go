@@ -113,6 +113,28 @@ func (a *Adapter) CommitStatuses(ctx context.Context, repository Repository, sha
 	return statuses, nil
 }
 
+// ReviewThreads reads the pull request's inline threads the service itself
+// opened: each with its resolution and every comment on it, so a later run
+// can see how the author answered an earlier finding. Threads opened by
+// anyone else are left out.
+func (a *Adapter) ReviewThreads(ctx context.Context, repository Repository, pullRequest int64) ([]ReviewThread, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "review-threads", Arguments: []string{repository.Owner, repository.Name, strconv.FormatInt(pullRequest, 10)}})
+	if err != nil {
+		return nil, err
+	}
+	var threads []ReviewThread
+	if err := json.Unmarshal(out, &threads); err != nil {
+		return nil, fmt.Errorf("decode forge review threads: %w", err)
+	}
+	own := make([]ReviewThread, 0, len(threads))
+	for _, thread := range threads {
+		if len(thread.Comments) > 0 && thread.Comments[0].User == a.serviceLogin {
+			own = append(own, thread)
+		}
+	}
+	return own, nil
+}
+
 func (a *Adapter) Claim(ctx context.Context, repository Repository, pullRequest int64) WriteResult {
 	out, err := a.runner.Run(ctx, RunRequest{
 		Operation: "claim",

@@ -47,6 +47,25 @@ type Review struct {
 	User     string `json:"user"`
 }
 
+// ReviewThread is one inline conversation on a pull request: where it sits,
+// whether the forge records it as resolved, and its comments oldest first.
+type ReviewThread struct {
+	Path     string                `json:"path"`
+	Line     int64                 `json:"line"`
+	Resolved bool                  `json:"resolved"`
+	Outdated bool                  `json:"outdated"`
+	Comments []ReviewThreadComment `json:"comments"`
+}
+
+// ReviewThreadComment is one comment in a thread. CommitID is the head the
+// comment was written against.
+type ReviewThreadComment struct {
+	User     string `json:"user"`
+	Body     string `json:"body"`
+	CommitID string `json:"commit_id"`
+	ReviewID int64  `json:"review_id"`
+}
+
 type Dependency struct {
 	Repository string `json:"repository"`
 	Number     int64  `json:"number"`
