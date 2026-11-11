@@ -138,6 +138,13 @@ test("a defect label is a non-empty string whose members gate alike", () => {
   assert.equal(refusedSplit.ok, false);
   assert.match(refusedSplit.reason, /labelled one defect gate differently: retry-bound/);
 
+  // One labelled defect is published or withheld as one, so a label whose
+  // members carry different classes is refused too.
+  const mixed = decision(digest, { verdict: "clean",
+    findings: [{ key: first.key, gating: false, class: "already-raised", defect: "retry-bound" }, { key: second.key, gating: false, class: "declared-out-of-scope", defect: "retry-bound" }],
+  });
+  assert.match(validateVerdictDecision(mixed, digest).reason, /labelled one defect are classed differently: retry-bound/);
+
   const labelled = decision(digest, {
     findings: [{ key: first.key, gating: true, defect: "retry-bound" }, { key: second.key, gating: true, defect: "retry-bound" }],
   });

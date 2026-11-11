@@ -185,11 +185,11 @@ const misconfiguration = {
 test("the file kind appends to the named repository's default branch, committed under the configured identity", async (t) => {
   const fixture = await destinationFixture(t, { branch: "trunk" });
   const outcome = await fixture.deliver({ entries: [advisory, observation, misconfiguration] });
-  assert.deepEqual(outcome, { kind: "file", outcome: "filed", written: 2, location: "owner/plans:ISSUES.md" });
+  assert.deepEqual(outcome, { kind: "file", outcome: "filed", written: 3, location: "owner/plans:ISSUES.md" });
   const issues = fixture.originFile();
   assert.match(issues, /^# Issues\n\n- An existing entry\.\n/);
   assert.match(issues, /\n- \*\*Advisory · Medium: Lost update on concurrent write\*\* \(`internal\/store\.go:41`\)[^\n]*Filed by Review Bot from owner\/repository#17, 2026-09-12\. <!-- minos:[A-Za-z0-9_-]+ -->\n/);
-  assert.doesNotMatch(issues, /Unrelated nil deref|Unverified observation/);
+  assert.match(issues, /\n- \*\*Unverified observation: Unrelated nil deref\*\* \(`pkg\/server\.go:12`\) — A nil map write outside the reviewed range\. A reviewer noticed this outside the change under review; nobody checked it\. Filed by Review Bot from owner\/repository#17, 2026-09-12\. <!-- minos:[A-Za-z0-9_-]+ -->\n/);
   assert.match(issues, /\n- \*\*Review brief misconfiguration: Security brief\*\* \(`\.review\/security\.md`\)/);
   const log = git(fixture.seed, "--git-dir", fixture.origin, "log", "-1", "--format=%an <%ae> %s", "trunk");
   assert.equal(log.trim(), "Review Bot <review-bot@example.invalid> issues: record review material for triage");
@@ -283,10 +283,9 @@ test("the marker keys on repository, kind, site and title so one defect files on
   assert.match(text, /^# Issues\n\n- \*\*Advisory/);
 });
 
-test("the none kind discards and an observation-only batch files nothing", async (t) => {
+test("the none kind discards and an empty batch files nothing", async (t) => {
   const fixture = await destinationFixture(t);
   assert.deepEqual(await fixture.deliver({ destination: { kind: "none" } }), { kind: "none", outcome: "discarded", written: 0 });
-  assert.deepEqual(await fixture.deliver({ entries: [observation] }), { kind: "file", outcome: "nothing-to-file", written: 0 });
   assert.deepEqual(await fixture.deliver({ entries: [] }), { kind: "file", outcome: "nothing-to-file", written: 0 });
   assert.equal(fixture.lookups.length, 0, "none of these touches the forge");
   assert.match(fixture.originFile(), /^# Issues\n\n- An existing entry\.\n$/);
@@ -374,7 +373,7 @@ test("the file-triage CLI delivers to the destination the environment names and 
 
   const filed = await runCli([entriesPath, orientationPath], env);
   assert.equal(filed.status, 0, filed.stderr);
-  assert.deepEqual(JSON.parse(filed.stdout), { kind: "file", outcome: "filed", written: 2, location: "owner/plans:ISSUES.md" });
+  assert.deepEqual(JSON.parse(filed.stdout), { kind: "file", outcome: "filed", written: 3, location: "owner/plans:ISSUES.md" });
   assert.equal(existsSync(join(fixture.runDir, "publication")), false, "a filed batch writes no pull-request payload");
 
   const discarded = await runCli([entriesPath, orientationPath], { ...env, MINOS_FILING_DESTINATION: JSON.stringify({ kind: "none" }) });
@@ -486,14 +485,14 @@ webhook-secret-file = "${token}"
   await t.test("new entries create separate issues once across heads", async (t) => {
     const f = await fixture(t);
     assert.deepEqual(await f.deliver([advisory, observation, misconfiguration, advisory]),
-      { kind: "issue", outcome: "filed", written: 2, location: "owner/plans" });
-    assert.deepEqual(f.posted.map((issue) => issue.title), [advisory.title, misconfiguration.title]);
-    for (const [index, entry] of [advisory, misconfiguration].entries()) {
+      { kind: "issue", outcome: "filed", written: 3, location: "owner/plans" });
+    assert.deepEqual(f.posted.map((issue) => issue.title), [advisory.title, observation.title, misconfiguration.title]);
+    for (const [index, entry] of [advisory, observation, misconfiguration].entries()) {
       assert.equal(f.posted[index].body, `${issueLogEntry(entry, `Filed by ${identity.name} from owner/repository#17, 2026-09-12`)} ${filingMarker(entry, reviewedRepository)}\n`);
     }
-    assert.deepEqual(await f.deliver([advisory, misconfiguration], "later-head"),
+    assert.deepEqual(await f.deliver([advisory, observation, misconfiguration], "later-head"),
       { kind: "issue", outcome: "filed", written: 0, location: "owner/plans" });
-    assert.equal(f.posted.length, 2);
+    assert.equal(f.posted.length, 3);
     assert.equal(existsSync(join(f.directory, "publication")), false);
   });
   for (const state of ["open", "closed"]) await t.test(`${state} marker on a later capped page suppresses creation`, async (t) => {

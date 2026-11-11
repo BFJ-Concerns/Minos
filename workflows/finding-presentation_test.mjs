@@ -108,18 +108,17 @@ test("a finding about a range carries its end line, a single-line finding does n
 
 const reviewed = { head: "2c518981234abcd", target: "0981206c9876fed", occasion: null };
 
-test("a blocking review body carries its warrant: verdict, what blocks, the advisory count, and the re-review contract", () => {
+test("a blocking review body carries its warrant: verdict, what blocks, and the re-review contract", () => {
   const findings = [
     { id: "a", title: "Lost update", severity: "High", path: "internal/store.go", line: 41 },
     { id: "c", title: "Remainder dropped", severity: "Critical", path: "internal/review.go", line: 60 },
   ];
   assert.equal(
-    reviewBody({ reviewed, findings, advisory: 2 }),
+    reviewBody({ reviewed, findings }),
     "**Minos: changes need attention.**\n" +
       "\n" +
       "Reviewed head `2c51898` against target `0981206`.\n" +
       "2 blocking findings (1 Critical, 1 High) in `internal/review.go`, `internal/store.go`, each anchored inline where the diff allows; they must be resolved before this review approves.\n" +
-      "2 advisory findings included for the same review round.\n" +
       "\n" +
       "This review stands for head `2c51898` only: push a new commit and Minos reviews the new head afresh.",
   );
@@ -150,7 +149,19 @@ test("an issue-log entry is one list item carrying the finding, its site, proven
       "Filed by Minos from owner/repository#17, 2026-09-12.",
   );
   for (const leaked of LEAKS) assert.ok(!entry.includes(leaked), `entry leaked ${leaked}`);
-  assert.throws(() => issueLogEntry({ kind: "out-of-scope-observation" }, attribution), /unknown entry kind/);
+  assert.throws(() => issueLogEntry({ kind: "something-else" }, attribution), /unknown entry kind/);
+  assert.equal(
+    issueLogEntry({
+      kind: "out-of-scope-observation",
+      title: "Unrelated nil deref",
+      path: "pkg/server.go",
+      line: 12,
+      explanation: "A nil map write outside the reviewed range",
+    }, attribution),
+    "- **Unverified observation: Unrelated nil deref** (`pkg/server.go:12`) — A nil map write outside the reviewed range. " +
+      "A reviewer noticed this outside the change under review; nobody checked it. " +
+      "Filed by Minos from owner/repository#17, 2026-09-12.",
+  );
   assert.equal(
     issueLogEntry({
       kind: "review-brief-misconfiguration",

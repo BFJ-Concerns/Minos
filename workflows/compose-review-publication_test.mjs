@@ -49,6 +49,8 @@ function verdict(confirmedFindings, overrides = {}) {
   };
 }
 
+const OBSERVATION = { title: "Unverified leak", path: "internal/legacy.go", line: 9, explanation: "Not verified.", verified: false };
+
 function decision(verdictName, findings) {
   return {
     kind: "minos-verdict-decision-v1",
@@ -78,30 +80,31 @@ function posts(plan) {
   return plan.posts.map(({ review, verdict: argument }) => ({ review, verdict: argument }));
 }
 
-test("a blocking round publishes all confirmed severities and files no findings", (t) => {
+test("a blocking round posts only what blocks and files the rest", (t) => {
   const confirmed = [finding("a"), finding("b", { severity: "Medium", line: 7 }), finding("c", { severity: "Low", line: 9 })];
   const { result, plan, read, readJson } = compose(t, {
-    main: verdict(confirmed, { outOfScopeObservations: [{ title: "Unverified leak", verified: false }] }),
+    main: verdict(confirmed, { outOfScopeObservations: [OBSERVATION] }),
     mainDecision: decision("request-changes", confirmed.map((f) => ({ key: f.id, gating: f.id === "a" }))),
   });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(posts(plan), [{ review: "main", verdict: "request-changes" }]);
   const comments = readJson(plan.posts[0].comments);
-  assert.equal(comments.length, 3);
+  assert.equal(comments.length, 1);
   assert.match(comments[0].body, /Blocking · High/);
-  assert.match(comments[1].body, /Advisory · Medium/);
-  assert.match(comments[2].body, /Advisory · Low/);
   assert.match(read(plan.posts[0].body), /1 blocking finding.*1 High/);
-  assert.match(read(plan.posts[0].body), /2 advisory findings included/);
+  assert.doesNotMatch(read(plan.posts[0].body), /advisory/i);
   assert.doesNotMatch(JSON.stringify(comments), /Unverified leak/);
-  assert.deepEqual(readJson(plan.triage.entries), []);
+  const entries = readJson(plan.triage.entries);
+  assert.deepEqual(entries.map((entry) => [entry.kind, entry.severity]),
+    [["advisory-finding", "Medium"], ["advisory-finding", "Low"], ["out-of-scope-observation", undefined]]);
+  assert.deepEqual(plan.triage, { entries: plan.triage.entries, advisory: 2, observations: 1, misconfigurations: 0, guidanceMisconfigurations: 0 });
 });
 
 for (const severities of [[], ["Medium", "Low"]]) {
   test(`a clean round with ${severities.length} findings writes no review and files all confirmed findings`, (t) => {
     const confirmed = severities.map((severity, i) => finding(String(i), { severity }));
     const { result, plan, readJson, scratch } = compose(t, {
-      main: verdict(confirmed, { outOfScopeObservations: [{ title: "Unverified leak", verified: false }] }),
+      main: verdict(confirmed),
       mainDecision: decision("clean", confirmed.map((f) => ({ key: f.id, gating: false }))),
     });
     assert.equal(result.status, 0, result.stderr);
@@ -111,41 +114,68 @@ for (const severities of [[], ["Medium", "Low"]]) {
     const entries = readJson(plan.triage.entries);
     assert.deepEqual(entries.map((entry) => entry.severity), severities);
     assert.ok(entries.every((entry) => entry.kind === "advisory-finding"));
-    assert.doesNotMatch(JSON.stringify(entries), /Unverified leak/);
   });
 }
 
 for (const gatingGroup of ["main", "brief"]) {
-  test(`a blocker in ${gatingGroup} publishes verified findings from both groups in one request-changes review`, (t) => {
+  test(`a blocker in ${gatingGroup} posts that group's finding and files the other group's advice`, (t) => {
     const { result, plan, readJson, read } = compose(t, {
       main: verdict([finding("a", { severity: gatingGroup === "main" ? "High" : "Low" })]),
       mainDecision: decision(gatingGroup === "main" ? "request-changes" : "clean", [{ key: "a", gating: gatingGroup === "main" }]),
       brief: verdict([finding("b", { severity: gatingGroup === "brief" ? "High" : "Medium", line: 90 })], {
-        ran: [{ brief: ".review/money.md" }], outOfScopeObservations: [{ title: "Brief observation", verified: false }],
+        ran: [{ brief: ".review/money.md" }],
       }),
       briefDecision: decision(gatingGroup === "brief" ? "request-changes" : "clean", [{ key: "b", gating: gatingGroup === "brief" }]),
     });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(posts(plan), [{ review: "main", verdict: "request-changes" }]);
-    assert.equal(readJson(plan.posts[0].comments).length, 2);
+    const comments = readJson(plan.posts[0].comments);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0].body, /Blocking · High/);
     assert.match(read(plan.posts[0].body), /Briefs applied: `.review\/money.md`/);
-    assert.deepEqual(readJson(plan.triage.entries), []);
+    assert.deepEqual(readJson(plan.triage.entries).map((entry) => [entry.kind, entry.id]),
+      [["advisory-finding", gatingGroup === "main" ? "b" : "a"]]);
   });
 }
 
-test("clean main and brief findings go to the filing destination without observations", (t) => {
+test("observations from both groups are filed as unverified, except where a confirmed finding stands at the site", (t) => {
   const { result, plan, readJson } = compose(t, {
-    main: verdict([finding("a", { severity: "Medium" })]),
+    main: verdict([finding("a", { severity: "Medium" })], {
+      outOfScopeObservations: [OBSERVATION, { ...OBSERVATION, title: "Restates the finding", path: "internal/review.go", line: 42 }],
+    }),
     mainDecision: decision("clean", [{ key: "a", gating: false }]),
-    brief: verdict([finding("b", { severity: "Low" })], {
-      outOfScopeObservations: [{ title: "Unverified", verified: false }],
+    brief: verdict([finding("b", { severity: "Low", line: 90 })], {
+      outOfScopeObservations: [{ ...OBSERVATION, title: "Brief observation", line: 12, observingLabel: "specialist-2", id: "x:observation:1" }],
       misconfigurations: [{ kind: "missing-scope", title: "Missing directory", brief: ".review/a.md", reason: "absent" }],
     }),
     briefDecision: decision("clean", [{ key: "b", gating: false }]),
   });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(plan.posts, []);
-  assert.deepEqual(readJson(plan.triage.entries).map((entry) => entry.kind), ["advisory-finding", "advisory-finding", "review-brief-misconfiguration"]);
+  const entries = readJson(plan.triage.entries);
+  assert.deepEqual(entries.map((entry) => entry.kind),
+    ["advisory-finding", "advisory-finding", "out-of-scope-observation", "out-of-scope-observation", "review-brief-misconfiguration"]);
+  assert.deepEqual(entries.filter((entry) => entry.kind === "out-of-scope-observation"), [
+    { kind: "out-of-scope-observation", title: "Unverified leak", path: "internal/legacy.go", line: 9, explanation: "Not verified." },
+    { kind: "out-of-scope-observation", title: "Brief observation", path: "internal/legacy.go", line: 12, explanation: "Not verified." },
+  ]);
+});
+
+test("a finding classed as speculative hardening reaches no review and no filing", (t) => {
+  const confirmed = [finding("a"), finding("b", { severity: "Medium", line: 7 }), finding("c", { line: 9 })];
+  const { result, plan, readJson } = compose(t, {
+    main: verdict(confirmed),
+    mainDecision: decision("request-changes", [
+      { key: "a", gating: true },
+      { key: "b", gating: false, class: "speculative-hardening" },
+      { key: "c", gating: false, class: "speculative-hardening" },
+    ]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readJson(plan.posts[0].comments).length, 1);
+  assert.deepEqual(readJson(plan.triage.entries), []);
+  assert.equal(plan.speculativeHardening, 2);
+  assert.equal(plan.alreadyRaised, 0);
 });
 
 // Shaped as setup-workspace writes it: `repository` is the workspace path,
@@ -388,7 +418,7 @@ test("a finding classed as already raised reaches no review and no filing", (t) 
     main: verdict(confirmed),
     mainDecision: decision("clean", [
       { key: "a", gating: false, class: "already-raised" },
-      { key: "b", gating: false, class: "speculative-hardening" },
+      { key: "b", gating: false, class: "declared-out-of-scope" },
       { key: "c", gating: false, class: "already-raised" },
     ]),
   });

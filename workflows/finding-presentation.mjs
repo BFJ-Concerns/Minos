@@ -103,9 +103,9 @@ function short(sha) {
   return typeof sha === "string" && sha.length >= 7 ? sha.slice(0, 7) : String(sha);
 }
 
-// The review names the blocking findings and counts the advisory findings
-// carried alongside them. Brief names preserve the repository criteria.
-export function reviewBody({ reviewed, findings, briefsRan = [], advisory = 0 }) {
+// The review names the blocking findings; advice is filed, not posted.
+// Brief names preserve the repository criteria.
+export function reviewBody({ reviewed, findings, briefsRan = [] }) {
   const lines = ["**Minos: changes need attention.**"];
   lines.push("");
   lines.push(`Reviewed head \`${short(reviewed.head)}\` against target \`${short(reviewed.target)}\`.`);
@@ -121,7 +121,6 @@ export function reviewBody({ reviewed, findings, briefsRan = [], advisory = 0 })
         `${findings.length === 1 ? "it" : "they"} must be resolved before this review approves.`,
     );
   }
-  if (advisory > 0) lines.push(`${plural(advisory, "advisory finding")} included for the same review round.`);
   lines.push("");
   lines.push(`This review stands for head \`${short(reviewed.head)}\` only: push a new commit and Minos reviews the new head afresh.`);
   return lines.join("\n");
@@ -136,7 +135,9 @@ function sentence(text) {
 
 // One issue-log entry: a Markdown list item the project's triage reads cold,
 // carrying the entry's kind, severity where it has one, title, site,
-// explanation, provenance where the run recorded it, and its source.
+// explanation, provenance where the run recorded it, and its source. An
+// observation says that it was never verified, so triage does not read it
+// as a confirmed defect.
 export function issueLogEntry(entry, attribution) {
   if (entry.kind === "advisory-finding") {
     const attributionLine = provenance(entry);
@@ -149,6 +150,12 @@ export function issueLogEntry(entry, attribution) {
     return (
       `- **Advisory · ${entry.severity}: ${normaliseProse(entry.title, entry)}** (\`${entry.path}:${entry.line}\`${alsoAt}${alsoRaised}) — ${sentence(normaliseProse(entry.explanation, entry))}` +
       `${attributionLine === "" ? "" : ` ${attributionLine}`} ${attribution}.`
+    );
+  }
+  if (entry.kind === "out-of-scope-observation") {
+    return (
+      `- **Unverified observation: ${normaliseProse(entry.title, entry)}** (\`${entry.path}:${entry.line}\`) — ${sentence(normaliseProse(entry.explanation, entry))}` +
+      ` A reviewer noticed this outside the change under review; nobody checked it. ${attribution}.`
     );
   }
   if (entry.kind === "review-brief-misconfiguration") {

@@ -7,16 +7,17 @@
 // and the triage material the issue-log filing delivers, so no lead ever
 // hand-assembles a payload or re-derives the routing.
 //
-// A request-changes review carries all confirmed findings, including advisory
-// ones, so the author can address them in the same round. A clean result
-// writes no reviews and routes confirmed findings to the configured filing
-// destination instead. One defect leaves the run once: the same site and
-// title raised by both groups merge mechanically, and findings the lead's
-// decisions label as one defect merge on that judgement, whatever their
-// sites and titles.
-// A finding the lead classed as already raised leaves the run on neither
-// surface: the plan counts it and nothing more.
-// Unverified observations stay in the run record.
+// The pull request carries what blocks it and nothing else: a
+// request-changes review holds the gating findings, and a clean result
+// writes no review. Every other confirmed finding is advice, and goes to
+// the configured filing destination on either outcome, where the project
+// weighs it in its own time. So do the unverified observations reviewers
+// made outside the change, marked as unverified. One defect leaves the run
+// once: the same site and title raised by both groups merge mechanically,
+// and findings the lead's decisions label as one defect merge on that
+// judgement, whatever their sites and titles.
+// A finding the lead classed as already raised or as speculative hardening
+// leaves the run on neither surface: the plan counts it and nothing more.
 //
 // Usage:
 //   compose-review-publication.mjs OUTPUT_DIR ORIENTATION THRESHOLD MAIN_VERDICT MAIN_DECISION [BRIEF_VERDICT BRIEF_DECISION]
@@ -34,7 +35,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { findingComment, reviewBody } from "./finding-presentation.mjs";
-import { SEVERITY, alreadyRaised, findingKey, normalisedTitle, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
+import { SEVERITY, alreadyRaised, findingKey, normalisedTitle, speculativeHardening, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
 
 const argv = process.argv.slice(2);
 if (argv.length !== 5 && argv.length !== 7) {
@@ -185,11 +186,14 @@ for (const [label, members] of byDefect) {
 }
 
 const dispositionOf = (finding) => groups.find((group) => group.findings.includes(finding)).dispositionOf(finding);
-// What the author already has is not said again: these findings were
+// What the author already has is not said again, and a safeguard nothing
+// in the change calls for is not handed on as work: these findings were
 // confirmed, so they are counted, and they reach no review and no filing.
 const confirmed = groups.flatMap((group) => group.findings);
-const findings = confirmed.filter((finding) => !alreadyRaised(dispositionOf(finding)));
+const findings = confirmed.filter((finding) =>
+  !alreadyRaised(dispositionOf(finding)) && !speculativeHardening(dispositionOf(finding)));
 const blocking = findings.filter((finding) => dispositionOf(finding)?.gating === true);
+const advisory = findings.filter((finding) => dispositionOf(finding)?.gating !== true);
 const verdict = blocking.length > 0 ? "request-changes" : "clean";
 
 // Distinct findings at one site name their neighbours; duplicates were
@@ -215,16 +219,23 @@ if (verdict === "request-changes") {
   const body = join(outputDir, "main-review.md");
   const comments = join(outputDir, "main-review-comments.json");
   writeFileSync(body, `${reviewBody({
-    reviewed, findings: blocking, advisory: findings.length - blocking.length,
+    reviewed, findings: blocking,
     briefsRan: (brief?.verdict.ran || []).map((entry) => entry.brief),
   })}\n`);
-  writeFileSync(comments, `${JSON.stringify(findings.map((finding) => findingComment(finding, dispositionOf(finding))))}\n`);
+  writeFileSync(comments, `${JSON.stringify(blocking.map((finding) => findingComment(finding, dispositionOf(finding))))}\n`);
   posts.push({ review: "main", verdict, body, comments });
 }
 
-const triageEntries = verdict === "clean"
-  ? findings.map((finding) => ({ ...finding, kind: "advisory-finding" }))
-  : [];
+// An observation is filed unless a confirmed finding of this run already
+// stands at its site: there the verified account is the one to keep.
+const confirmedSites = new Set(confirmed.map(site));
+const observations = groups
+  .flatMap((group) => group.verdict.outOfScopeObservations || [])
+  .filter((observation) => !confirmedSites.has(site(observation)));
+const triageEntries = [
+  ...advisory.map((finding) => ({ ...finding, kind: "advisory-finding" })),
+  ...observations.map(({ title, path, line, explanation }) => ({ kind: "out-of-scope-observation", title, path, line, explanation })),
+];
 for (const group of groups)
   for (const misconfiguration of group.verdict.misconfigurations || [])
     triageEntries.push({ ...misconfiguration, kind: "review-brief-misconfiguration" });
@@ -245,10 +256,12 @@ const planDocument = {
   head: reviewed.head,
   target: reviewed.target,
   posts,
-  alreadyRaised: confirmed.length - findings.length,
+  alreadyRaised: confirmed.filter((finding) => alreadyRaised(dispositionOf(finding))).length,
+  speculativeHardening: confirmed.filter((finding) => speculativeHardening(dispositionOf(finding))).length,
   triage: {
     entries: triagePath,
     advisory: triageEntries.filter((entry) => entry.kind === "advisory-finding").length,
+    observations: triageEntries.filter((entry) => entry.kind === "out-of-scope-observation").length,
     misconfigurations: triageEntries.filter((entry) => entry.kind === "review-brief-misconfiguration").length,
     guidanceMisconfigurations: triageEntries.filter((entry) => entry.kind === "guidance-source-misconfiguration").length,
   },

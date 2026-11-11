@@ -15,19 +15,30 @@ export const SEVERITY = { Low: 1, Medium: 2, High: 3, Critical: 4 };
 export const DEFAULT_THRESHOLD = "High";
 
 // The classes that judge an at-or-above-threshold confirmed finding out of
-// gating. The first two object to the kind of finding. The third objects to
-// saying it again: the author already has this finding from Minos and has
-// answered it, or the filing destination already carries it, so it leaves
-// the run on no surface at all. Any other basis for declassification is the
-// mechanical binding the lead's judgement exists to prevent.
+// gating; a below-threshold finding may carry one too. The first two object
+// to the kind of finding. The third objects to saying it again: the author
+// already has this finding from Minos and has answered it, or the filing
+// destination already carries it. Speculative hardening and already-raised
+// findings leave the run on no surface at all. Any other basis for
+// declassification is the mechanical binding the lead's judgement exists to
+// prevent.
 export const ALREADY_RAISED_CLASS = "already-raised";
-export const NEVER_GATING_CLASSES = ["declared-out-of-scope", "speculative-hardening", ALREADY_RAISED_CLASS];
+export const SPECULATIVE_HARDENING_CLASS = "speculative-hardening";
+export const NEVER_GATING_CLASSES = ["declared-out-of-scope", SPECULATIVE_HARDENING_CLASS, ALREADY_RAISED_CLASS];
 
 // A finding the lead classed as already raised is published and filed
 // nowhere: the review comment or the filed entry it restates is the copy
 // the author has.
 export function alreadyRaised(disposition) {
   return Boolean(disposition) && disposition.gating === false && disposition.class === ALREADY_RAISED_CLASS;
+}
+
+// A request for a safeguard against a failure nothing in the change causes
+// is likewise published and filed nowhere. A filed entry is read later as
+// work to do, and work done from these adds guards, checks and tests the
+// project never needed; the run record keeps the finding.
+export function speculativeHardening(disposition) {
+  return Boolean(disposition) && disposition.gating === false && disposition.class === SPECULATIVE_HARDENING_CLASS;
 }
 
 export function atOrAboveThreshold(finding, threshold) {
@@ -111,7 +122,7 @@ export function verdictDigest(input) {
 // at-or-above-threshold finding only under one of the never-gating
 // classes (named per finding), gates a below-threshold finding only with an
 // undergrade basis naming it, labels restatements of one defect with one
-// non-empty `defect` label whose members gate alike, and earns
+// non-empty `defect` label whose members gate and are classed alike, and earns
 // request-changes exactly when a gating finding exists.
 export function validateVerdictDecision(decision, digest) {
   if (!digest || digest.kind !== DIGEST_KIND || digest.status !== "complete")
@@ -165,15 +176,19 @@ export function validateVerdictDecision(decision, digest) {
     if (!disposed.has(key))
       return { ok: false, reason: `confirmed finding has no disposition: ${key}` };
   }
-  // Restatements of one defect are one gating call: a label whose members
-  // disagree is a decision that has not decided.
-  const gatingByDefect = new Map();
+  // Restatements of one defect are one call: a label whose members gate
+  // or are classed differently is a decision that has not decided, and the
+  // composer would publish or withhold the defect by whichever member it
+  // happened to keep.
+  const callByDefect = new Map();
   for (const disposition of decision.findings) {
     if (typeof disposition.defect !== "string") continue;
-    const seen = gatingByDefect.get(disposition.defect);
-    if (seen !== undefined && seen !== disposition.gating)
+    const seen = callByDefect.get(disposition.defect);
+    if (seen !== undefined && seen.gating !== disposition.gating)
       return { ok: false, reason: `findings labelled one defect gate differently: ${disposition.defect}` };
-    gatingByDefect.set(disposition.defect, disposition.gating);
+    if (seen !== undefined && seen.class !== disposition.class)
+      return { ok: false, reason: `findings labelled one defect are classed differently: ${disposition.defect}` };
+    callByDefect.set(disposition.defect, disposition);
   }
   const anyGating = decision.findings.some((disposition) => disposition.gating === true);
   if (anyGating && decision.verdict !== "request-changes")
