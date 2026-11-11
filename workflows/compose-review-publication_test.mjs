@@ -276,6 +276,16 @@ test("distinct findings on one line cross-reference each other", (t) => {
   assert.match(comments[1].body, /See also on this line: "Lost update"/);
 });
 
+test("a blocking comment does not point at a finding that is filed and not posted", (t) => {
+  const { plan, readJson } = compose(t, {
+    main: verdict([finding("a", { title: "Lost update" }), finding("b", { severity: "Low", title: "Unchecked error" })]),
+    mainDecision: decision("request-changes", [{ key: "a", gating: true }, { key: "b", gating: false }]),
+  });
+  const comments = readJson(plan.posts[0].comments);
+  assert.equal(comments.length, 1);
+  assert.doesNotMatch(comments[0].body, /See also on this line/);
+});
+
 test("findings the decisions label as one defect merge across groups and sites into the highest-severity member", (t) => {
   const { result, plan, readJson } = compose(t, {
     main: verdict([finding("a", { severity: "Medium", title: "MinInt64 overflows Split", line: 83 })]),

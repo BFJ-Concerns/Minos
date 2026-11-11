@@ -196,18 +196,19 @@ const blocking = findings.filter((finding) => dispositionOf(finding)?.gating ===
 const advisory = findings.filter((finding) => dispositionOf(finding)?.gating !== true);
 const verdict = blocking.length > 0 ? "request-changes" : "clean";
 
-// Distinct findings at one site name their neighbours; duplicates were
-// merged above before either publication surface is composed. A merged
-// defect is present at every site it was raised at, so a finding anchored
-// where one of its restatements was names it too.
+// Distinct blocking findings at one site name their neighbours, so a
+// comment only ever points at another comment on the pull request;
+// duplicates were merged above. A merged defect is present at every site
+// it was raised at, so a finding anchored where one of its restatements
+// was names it too.
 const sitesOf = (finding) => [site(finding), ...(finding.alsoAt || []).map((at) => {
   const separator = at.lastIndexOf(":");
   return JSON.stringify([at.slice(0, separator), Number(at.slice(separator + 1))]);
 })];
 const bySite = new Map();
-for (const finding of findings)
+for (const finding of blocking)
   for (const key of sitesOf(finding)) bySite.set(key, [...(bySite.get(key) || []), finding]);
-for (const finding of findings) {
+for (const finding of blocking) {
   const neighbours = bySite.get(site(finding)).filter((other) => other !== finding);
   if (neighbours.length > 0) finding.crossReferences = neighbours.map((other) => other.title);
 }
