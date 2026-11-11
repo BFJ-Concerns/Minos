@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -392,6 +393,152 @@ func TestRebuildEstateIncompleteStatusBindsTheHeadNotTheTarget(t *testing.T) {
 	state.mu.Unlock()
 	if writesAfterMove != 1 {
 		t.Fatalf("status write count after the target moved = %d, want the one write", writesAfterMove)
+	}
+}
+
+// earlierHeadFixture is a pull request with real commits behind it: a clone
+// with a target branch and a topic branch, and a forge whose pull-request
+// head follows the topic.
+type earlierHeadFixture struct {
+	t         *testing.T
+	state     *forgejoFixtureState
+	workspace string
+	runsDir   string
+}
+
+func newEarlierHeadFixture(t *testing.T) *earlierHeadFixture {
+	t.Helper()
+	state := newForgejoFixtureState(t)
+	cfg, _, facts := state.service(t)
+	writeServiceConfig(t, cfg)
+	workspace := t.TempDir()
+	runGit(t, workspace, "init", "--quiet", "--initial-branch=main")
+	runGit(t, workspace, "config", "user.name", "Author")
+	runGit(t, workspace, "config", "user.email", "author@example.invalid")
+	runGit(t, workspace, "config", "commit.gpgsign", "false")
+	f := &earlierHeadFixture{t: t, state: state, workspace: workspace, runsDir: cfg.Runs.Dir}
+	f.commit("base.txt", "base\n", "base")
+	runGit(t, workspace, "checkout", "--quiet", "-b", "topic")
+	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_FORGE", facts.Forge)
+	t.Setenv("MINOS_PR", facts.PR)
+	t.Setenv("MINOS_OWNER", facts.Owner)
+	t.Setenv("MINOS_REPO_NAME", facts.Repo)
+	t.Setenv("MINOS_WORKSPACE", workspace)
+	t.Setenv("MINOS_RUN_DIR", t.TempDir())
+	return f
+}
+
+// commit writes one file on the checked-out branch, commits it, and makes
+// the result the pull request's head.
+func (f *earlierHeadFixture) commit(name, content, message string) string {
+	f.t.Helper()
+	if err := os.WriteFile(filepath.Join(f.workspace, name), []byte(content), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	runGit(f.t, f.workspace, "add", name)
+	runGit(f.t, f.workspace, "commit", "--quiet", "-m", message)
+	return f.follow()
+}
+
+func (f *earlierHeadFixture) follow() string {
+	f.t.Helper()
+	head := gitOutput(f.t, f.workspace, "rev-parse", "HEAD")
+	f.state.changePullRequest(func(pullRequest map[string]any) { pullRequest["head"].(map[string]any)["sha"] = head })
+	return head
+}
+
+func (f *earlierHeadFixture) target() string {
+	f.t.Helper()
+	return gitOutput(f.t, f.workspace, "rev-parse", "main")
+}
+
+func (f *earlierHeadFixture) finish(head, outcome string) {
+	f.t.Helper()
+	if err := ForgeCommand(f.t.Context(), []string{"status", head, f.target(), outcome}, &strings.Builder{}); err != nil {
+		f.t.Fatalf("status %s: %v", outcome, err)
+	}
+}
+
+func (f *earlierHeadFixture) earlier(head string) earlierHead {
+	f.t.Helper()
+	var stdout strings.Builder
+	if err := ForgeCommand(f.t.Context(), []string{"earlier", head, f.target()}, &stdout); err != nil {
+		f.t.Fatalf("earlier: %v\n%s", err, stdout.String())
+	}
+	var answer earlierHead
+	if err := json.Unmarshal([]byte(stdout.String()), &answer); err != nil {
+		f.t.Fatalf("earlier answer %q: %v", stdout.String(), err)
+	}
+	return answer
+}
+
+func TestForgeEarlierRecognisesAReviewedChangeAcrossARebase(t *testing.T) {
+	f := newEarlierHeadFixture(t)
+	first := f.commit("feature.txt", "one\n", "feature")
+	if got := f.earlier(first); got.Head != "" || got.Outcome != "none" {
+		t.Fatalf("a first head has an earlier head: %#v", got)
+	}
+	f.finish(first, "clean")
+
+	// The target moves in a file the pull request does not touch, and the
+	// author rebases onto it with a reworded commit: new commits, same files.
+	runGit(t, f.workspace, "checkout", "--quiet", "main")
+	f.commit("elsewhere.txt", "target work\n", "target moves")
+	runGit(t, f.workspace, "checkout", "--quiet", "topic")
+	runGit(t, f.workspace, "rebase", "--quiet", "main")
+	runGit(t, f.workspace, "commit", "--quiet", "--amend", "-m", "feature, reworded")
+	rebased := f.follow()
+	if rebased == first {
+		t.Fatal("the rebase left the head where it was")
+	}
+	got := f.earlier(rebased)
+	if got.Head != first || got.Outcome != "clean" || got.Ancestor || got.ChangedPaths == nil || len(got.ChangedPaths) != 0 {
+		t.Fatalf("a rebase that left the files alone reads %#v", got)
+	}
+
+	// A real change on top is named by path, and the earlier head is still
+	// the one a run finished on, not the rebased head nobody finished.
+	second := f.commit("feature.txt", "one\ntwo\n", "extend the feature")
+	got = f.earlier(second)
+	if got.Head != first || !reflect.DeepEqual(got.ChangedPaths, []string{"feature.txt"}) {
+		t.Fatalf("a changed file reads %#v", got)
+	}
+	f.finish(second, "attention")
+	third := f.commit("added.txt", "new\n", "add a file")
+	got = f.earlier(third)
+	if got.Head != second || got.Outcome != "attention" || !got.Ancestor || !reflect.DeepEqual(got.ChangedPaths, []string{"added.txt"}) {
+		t.Fatalf("an added file after a finished head reads %#v", got)
+	}
+}
+
+func TestForgeEarlierWithoutARecordAsksThePullRequestsOwnCommits(t *testing.T) {
+	f := newEarlierHeadFixture(t)
+	first := f.commit("feature.txt", "one\n", "feature")
+	f.finish(first, "attention")
+	if err := os.RemoveAll(filepath.Join(f.runsDir, ".reviewed")); err != nil {
+		t.Fatal(err)
+	}
+	second := f.commit("feature.txt", "one\ntwo\n", "extend the feature")
+	// The service sets attention on a head whose review never completed, so
+	// that status alone names no finished review.
+	if got := f.earlier(second); got.Head != "" || got.Outcome != "none" {
+		t.Fatalf("an attention status with no review reads %#v", got)
+	}
+	f.state.setReviews([]map[string]any{{"id": float64(4), "state": "REQUEST_CHANGES", "commit_id": first, "body": "", "user": map[string]any{"login": "Minos"}}})
+	got := f.earlier(second)
+	if got.Head != first || got.Outcome != "attention" || !got.Ancestor || !reflect.DeepEqual(got.ChangedPaths, []string{"feature.txt"}) {
+		t.Fatalf("a head Minos requested changes on reads %#v", got)
+	}
+
+	f.finish(second, "clean")
+	if err := os.RemoveAll(filepath.Join(f.runsDir, ".reviewed")); err != nil {
+		t.Fatal(err)
+	}
+	third := f.commit("added.txt", "new\n", "add a file")
+	got = f.earlier(third)
+	if got.Head != second || got.Outcome != "clean" || !reflect.DeepEqual(got.ChangedPaths, []string{"added.txt"}) {
+		t.Fatalf("a head with a clean status reads %#v", got)
 	}
 }
 

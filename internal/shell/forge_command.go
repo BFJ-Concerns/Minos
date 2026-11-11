@@ -19,7 +19,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|threads|claim|status|outcome|review|marker|file-issue|repository-metadata|clone-credential")
+		return fmt.Errorf("usage: minos forge snapshot|threads|claim|status|outcome|earlier|review|marker|file-issue|repository-metadata|clone-credential")
 	}
 	// Repository metadata and the clone credential are not about the pull
 	// request, so they need the run's forge but none of its coordinates.
@@ -130,6 +130,9 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		recordAppliedStatus(args[3])
+		if args[3] == "clean" || args[3] == "attention" {
+			recordReviewedChange(ctx, guard, args[3])
+		}
 		return nil
 	case "outcome":
 		if len(args) != 2 || args[1] == "" {
@@ -140,6 +143,16 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(map[string]string{"sha": args[1], "outcome": outcome})
+	case "earlier":
+		if len(args) != 3 || args[1] == "" || args[2] == "" {
+			return fmt.Errorf("usage: minos forge earlier HEAD TARGET")
+		}
+		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
+		earlier, err := findEarlierHead(ctx, adapter, guard)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(earlier)
 	case "review":
 		if len(args) != 5 && len(args) != 6 {
 			return fmt.Errorf("usage: minos forge review HEAD TARGET approve|request-changes|comment BODY_FILE [COMMENTS_FILE]")
