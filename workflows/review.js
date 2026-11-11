@@ -150,8 +150,7 @@ function reviewedChangeSection(target, head, pullRequest) {
 function rolePrompt(roleBriefs, guidance, pullRequest, path, assignment) {
   const brief = roleBriefs.get(path);
   return (
-    `Read and follow the Markdown role brief at ${brief.readPath}. ` +
-    `The deterministic input enumerator supplied the same content below so this workflow can bind the dispatched prompt to the shipped brief without reading files itself.\n\n` +
+    `Your role brief follows; it is complete here, so there is no file to read for it.\n\n` +
     `<role-brief path="${path}">\n${brief.content}\n</role-brief>\n\n` +
     `Judge the change against the reviewed project's declared intent below — every guidance document its owner configured, ` +
     `or its own checked-in guidance where none is configured. This project intent governs whether behaviour is correct.\n\n` +
@@ -407,7 +406,7 @@ function specialistPrompt(unit) {
     unit.roleBrief,
     `Orientation packet: ${orientation}\n` +
       `${reviewedChangeSection(target, head, pullRequestDescription)}\n` +
-      `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview only that concern and scope against ${target}...${head}.`
+      `Assigned concern: ${unit.concern}\nAssigned specialist type: ${unit.specialistType}\nAssigned scope: ${unit.scope.join(", ")}\nReview that scope against ${target}...${head}, with that concern as your focus.`
   );
 }
 

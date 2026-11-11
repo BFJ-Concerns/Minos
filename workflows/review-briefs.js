@@ -130,7 +130,7 @@ function projectGuidanceSection(guidance) {
 }
 
 function groundedPrompt(instruction, guidance, assignment) {
-  return `Read and follow the Markdown role brief at ${instruction.readPath}.\n\n` +
+  return `Your role brief follows; it is complete here, so there is no file to read for it.\n\n` +
     `<role-brief path="${instruction.path}">\n${instruction.content}\n</role-brief>\n\n` +
     projectGuidanceSection(guidance) +
     assignment;

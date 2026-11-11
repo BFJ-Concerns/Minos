@@ -130,8 +130,7 @@ const legs = [{ label: "review-scope", role: "scope", pinnedModel: routing["enga
 
 phase("Scope");
 const result = await agent(
-  `Read and follow the Markdown role brief at ${scopeBrief.readPath}. ` +
-    `The deterministic input enumerator supplied the same content below so this workflow can bind the dispatched prompt to the shipped brief without reading files itself.\n\n` +
+  `Your role brief follows; it is complete here, so there is no file to read for it.\n\n` +
     `<role-brief path="${SCOPE_BRIEF_PATH}">\n${scopeBrief.content}\n</role-brief>\n\n` +
     `Judge the change against the reviewed project's declared intent below — every guidance document its owner configured, ` +
     `or its own checked-in guidance where none is configured. This project intent governs whether behaviour is correct.\n\n` +
