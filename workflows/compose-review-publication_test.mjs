@@ -368,6 +368,36 @@ test("a clean run files a labelled defect as one entry naming its other sites", 
   assert.match(issueLogEntry(entries[0], "Filed"), /\(`internal\/review\.go:83`, also at `internal\/review\.go:75`; also raised by Conservation\)/);
 });
 
+test("a finding classed as already raised reaches no review and no filing", (t) => {
+  const confirmed = [finding("a"), finding("b", { line: 7 }), finding("c", { severity: "Low", line: 9 })];
+  const blocking = compose(t, {
+    main: verdict(confirmed),
+    mainDecision: decision("request-changes", [
+      { key: "a", gating: true },
+      { key: "b", gating: false, class: "already-raised" },
+      { key: "c", gating: false, class: "already-raised" },
+    ]),
+  });
+  assert.equal(blocking.result.status, 0, blocking.result.stderr);
+  assert.equal(blocking.plan.alreadyRaised, 2);
+  const comments = blocking.readJson(blocking.plan.posts[0].comments);
+  assert.deepEqual(comments.map((comment) => comment.line), [42]);
+  assert.doesNotMatch(blocking.read(blocking.plan.posts[0].body), /advisory/);
+
+  const clean = compose(t, {
+    main: verdict(confirmed),
+    mainDecision: decision("clean", [
+      { key: "a", gating: false, class: "already-raised" },
+      { key: "b", gating: false, class: "speculative-hardening" },
+      { key: "c", gating: false, class: "already-raised" },
+    ]),
+  });
+  assert.equal(clean.result.status, 0, clean.result.stderr);
+  assert.deepEqual(clean.plan.posts, []);
+  assert.equal(clean.plan.alreadyRaised, 2);
+  assert.deepEqual(clean.readJson(clean.plan.triage.entries).map((entry) => entry.id), ["b"]);
+});
+
 test("an id-less verdict uses its content key", (t) => {
   const { id, ...idless } = finding("a");
   const { result, plan } = compose(t, {

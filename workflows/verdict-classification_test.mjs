@@ -156,7 +156,7 @@ test("validation refuses a missing basis", () => {
   assert.match(result.reason, /non-empty basis/);
 });
 
-test("declassifying an at-or-above-threshold finding requires one of the two never-gating classes", () => {
+test("declassifying an at-or-above-threshold finding requires one of the never-gating classes", () => {
   const digest = completeDigest([finding()]);
   const unnamed = decision(digest, {
     verdict: "clean",
@@ -164,13 +164,15 @@ test("declassifying an at-or-above-threshold finding requires one of the two nev
   });
   const refused = validateVerdictDecision(unnamed, digest);
   assert.equal(refused.ok, false);
-  assert.match(refused.reason, /declared-out-of-scope or speculative-hardening/);
+  assert.match(refused.reason, /declared-out-of-scope, speculative-hardening, already-raised/);
 
-  const named = decision(digest, {
-    verdict: "clean",
-    findings: [{ key: digest.findings[0].key, gating: false, class: "speculative-hardening" }],
-  });
-  assert.deepEqual(validateVerdictDecision(named, digest), { ok: true });
+  for (const className of ["declared-out-of-scope", "speculative-hardening", "already-raised"]) {
+    const named = decision(digest, {
+      verdict: "clean",
+      findings: [{ key: digest.findings[0].key, gating: false, class: className }],
+    });
+    assert.deepEqual(validateVerdictDecision(named, digest), { ok: true });
+  }
 });
 
 test("gating a below-threshold finding requires an undergrade basis naming it", () => {

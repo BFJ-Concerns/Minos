@@ -14,11 +14,21 @@ export const DECISION_KIND = "minos-verdict-decision-v1";
 export const SEVERITY = { Low: 1, Medium: 2, High: 3, Critical: 4 };
 export const DEFAULT_THRESHOLD = "High";
 
-// The two classes the commission lets judge an at-or-above-threshold
-// confirmed finding out of gating. There is no third: any other basis for
-// declassification is the mechanical binding the lead's judgement exists to
-// prevent.
-export const NEVER_GATING_CLASSES = ["declared-out-of-scope", "speculative-hardening"];
+// The classes that judge an at-or-above-threshold confirmed finding out of
+// gating. The first two object to the kind of finding. The third objects to
+// saying it again: the author already has this finding from Minos and has
+// answered it, or the filing destination already carries it, so it leaves
+// the run on no surface at all. Any other basis for declassification is the
+// mechanical binding the lead's judgement exists to prevent.
+export const ALREADY_RAISED_CLASS = "already-raised";
+export const NEVER_GATING_CLASSES = ["declared-out-of-scope", "speculative-hardening", ALREADY_RAISED_CLASS];
+
+// A finding the lead classed as already raised is published and filed
+// nowhere: the review comment or the filed entry it restates is the copy
+// the author has.
+export function alreadyRaised(disposition) {
+  return Boolean(disposition) && disposition.gating === false && disposition.class === ALREADY_RAISED_CLASS;
+}
 
 export function atOrAboveThreshold(finding, threshold) {
   return SEVERITY[finding.severity] >= SEVERITY[threshold];
@@ -98,7 +108,7 @@ export function verdictDigest(input) {
 // judgement is the lead's; what is validated here is only coherence that is
 // black and white: the decision names this contract, states its basis,
 // disposes of every confirmed finding exactly once, declassifies an
-// at-or-above-threshold finding only under one of the two never-gating
+// at-or-above-threshold finding only under one of the never-gating
 // classes (named per finding), gates a below-threshold finding only with an
 // undergrade basis naming it, labels restatements of one defect with one
 // non-empty `defect` label whose members gate alike, and earns
@@ -140,7 +150,7 @@ export function validateVerdictDecision(decision, digest) {
       if (!NEVER_GATING_CLASSES.includes(disposition.class))
         return {
           ok: false,
-          reason: `an at-or-above-threshold finding may be judged non-gating only as ${NEVER_GATING_CLASSES.join(" or ")}: ${disposition.key}`,
+          reason: `an at-or-above-threshold finding may be judged non-gating only as ${NEVER_GATING_CLASSES.join(", ")}: ${disposition.key}`,
         };
     }
     if (!finding.atOrAboveThreshold && disposition.gating === true) {

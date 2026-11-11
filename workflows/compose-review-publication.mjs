@@ -14,6 +14,8 @@
 // title raised by both groups merge mechanically, and findings the lead's
 // decisions label as one defect merge on that judgement, whatever their
 // sites and titles.
+// A finding the lead classed as already raised leaves the run on neither
+// surface: the plan counts it and nothing more.
 // Unverified observations stay in the run record.
 //
 // Usage:
@@ -32,7 +34,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { findingComment, reviewBody } from "./finding-presentation.mjs";
-import { SEVERITY, findingKey, normalisedTitle, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
+import { SEVERITY, alreadyRaised, findingKey, normalisedTitle, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
 
 const argv = process.argv.slice(2);
 if (argv.length !== 5 && argv.length !== 7) {
@@ -182,8 +184,11 @@ for (const [label, members] of byDefect) {
   }
 }
 
-const findings = groups.flatMap((group) => group.findings);
 const dispositionOf = (finding) => groups.find((group) => group.findings.includes(finding)).dispositionOf(finding);
+// What the author already has is not said again: these findings were
+// confirmed, so they are counted, and they reach no review and no filing.
+const confirmed = groups.flatMap((group) => group.findings);
+const findings = confirmed.filter((finding) => !alreadyRaised(dispositionOf(finding)));
 const blocking = findings.filter((finding) => dispositionOf(finding)?.gating === true);
 const verdict = blocking.length > 0 ? "request-changes" : "clean";
 
@@ -240,6 +245,7 @@ const planDocument = {
   head: reviewed.head,
   target: reviewed.target,
   posts,
+  alreadyRaised: confirmed.length - findings.length,
   triage: {
     entries: triagePath,
     advisory: triageEntries.filter((entry) => entry.kind === "advisory-finding").length,
