@@ -791,13 +791,35 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Whenever you stop after a clean, converged pass[\s\S]*`printf 'clean\\n' > "\$MINOS_RUN_DIR\/lead-complete"`/);
   assert.match(lifecycle, /Minos authors no commits on the pull-request branch, so every head movement is the\s+author's[\s\S]*stop without publishing a review or\s+setting a status/);
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
-  assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a\s+review, the filing destination, a classification digest, or a run\s+outcome/);
+  assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a review, a classification digest, or a run\s+outcome; the composer in step 6 sets them aside for the filing\s+destination, marked as unverified/);
   assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post the reviews in that order, one scripted review per entry/);
   assert.match(lifecycle, /compose-review-publication\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication" "\$MINOS_ORIENTATION" "\$MINOS_REVIEW_THRESHOLD"/);
-  assert.match(lifecycle, /A request-changes plan contains one review with all confirmed findings[\s\S]*A clean plan has no posts/);
-  assert.match(lifecycle, /A finding judged non-gating is advisory[\s\S]*deliver it to the\s+repository's configured filing destination when the run is clean/);
+  assert.match(lifecycle, /A request-changes plan contains one review with the blocking findings\s+from both review stages and nothing else[\s\S]*A clean plan has no posts/);
+  assert.match(lifecycle, /A finding judged non-gating is advisory\. It goes to the repository's\s+configured filing destination on either outcome and is never posted on\s+the pull request/);
   assert.match(lifecycle, /file-triage\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication\/triage-entries\.json" \\\s+"\$MINOS_ORIENTATION" \\\s+>/);
   assert.match(lifecycle, /`unfiled` means delivery\s+failed or the destination kind is unavailable[\s\S]*Filing failure never generates a pull-request comment,\s+never falls back to another surface, and changes no verdict/);
+});
+
+test("the lifecycle sizes the review to what the author changed since the head Minos last finished on", () => {
+  assert.match(lifecycle, /then decide how much review this head needs, before any workflow runs/);
+  assert.match(lifecycle, /"\$MINOS_BIN" forge earlier "\$MINOS_HEAD_SHA" "\$MINOS_TARGET_SHA"[\s\S]*`changed_paths`[\s\S]*The comparison is of file content, not of\s+commits/);
+  assert.match(lifecycle, /\*\*No review\.\*\*[\s\S]*an empty `changed_paths`/);
+  assert.match(lifecycle, /\*\*No review\.\*\*[\s\S]*unavailable\s+when a `\.review\/` brief engages the range[\s\S]*review-scope-inputs\.mjs" BASE "\$MINOS_HEAD_SHA"`[\s\S]*`briefsEngage`/);
+  assert.match(lifecycle, /\*\*Increment\.\*\*[\s\S]*earlier head is an ancestor[\s\S]*`EARLIER\.\.\.HEAD` alone/);
+  assert.match(lifecycle, /\*\*Full\.\*\* Everything else/);
+  assert.match(lifecycle, /Every `minos forge` command keeps the\s+run's real head and target, whatever was reviewed/);
+  assert.match(lifecycle, /review-inputs\.mjs" \\\s+REVIEW_BASE "\$MINOS_HEAD_SHA"/);
+  assert.match(lifecycle, /review-brief-inputs\.mjs" \\\s+REVIEW_BASE "\$MINOS_HEAD_SHA"/);
+  assert.doesNotMatch(lifecycle, /review-scope\.js/);
+  assert.match(lifecycle, /a blocking\s+finding from an earlier Minos review still counts until it is settled/);
+});
+
+test("the lifecycle keeps an answered finding from being raised again", () => {
+  assert.match(lifecycle, /`"\$MINOS_BIN" forge threads` prints every inline\s+thread Minos opened on this pull request/);
+  assert.match(lifecycle, /\(`already-raised`\)[\s\S]*restates a finding in a thread `forge threads` printed,\s+and the code it cites has not changed[\s\S]*a finding at or above the\s+threshold never takes it on that ground/);
+  assert.match(lifecycle, /\(`speculative-hardening`\)[\s\S]*such a finding is published and filed nowhere/);
+  assert.match(lifecycle, /One is settled when the author resolved its\s+thread or answered it with a rejection, or when you read the code it\s+cites at this head and the defect it describes is no longer there/);
+  assert.match(lifecycle, /"gating": false, "class": "already-raised"/);
 });
 
 test("the lifecycle prescribes the verdict-classification seam", () => {
@@ -805,11 +827,11 @@ test("the lifecycle prescribes the verdict-classification seam", () => {
   assert.match(lifecycle, /`verdict-digest-brief\.json` for the brief verdict/);
   assert.match(lifecycle, /digest lists every confirmed finding with its severity, confidence\s+values, and threshold position, and a `thresholdIndication` — what the\s+configured threshold alone would say/);
   assert.match(lifecycle, /informed by the threshold rather than mechanically bound to it \(the\s+commission's balance rule\)/);
-  assert.match(lifecycle, /only two classes may be judged out —\s+a gap the pull-request description explicitly declares as known or out\s+of scope, where the project guidance does not contradict the\s+declaration \(`declared-out-of-scope`\), and a verifier-confirmed request\s+for a new safeguard[\s\S]*?no defect\s+in the change's own logic \(`speculative-hardening`\)/);
+  assert.match(lifecycle, /only three classes may be judged out\.\s+Two object to the kind of finding:\s+a gap the pull-request description explicitly declares as known or out\s+of scope, where the project guidance does not contradict the\s+declaration \(`declared-out-of-scope`\), and a request for a new\s+safeguard[\s\S]*?where the change's own logic does\s+nothing wrong \(`speculative-hardening`\)/);
   assert.match(lifecycle, /The one upward exception\s+is judging a below-threshold finding's severity an undergrade that\s+genuinely belongs at or above the threshold, named as such/);
   assert.match(lifecycle, /`\$MINOS_RUN_DIR\/verdict-decision\.json` \(`verdict-decision-brief\.json`\s+for the brief verdict\)[\s\S]*?"kind": "minos-verdict-decision-v1"[\s\S]*?"basis":[\s\S]*?"gating": false, "class": "declared-out-of-scope"[\s\S]*?"gating": true, "undergrade":/);
   assert.match(lifecycle, /Validate each decision before any forge write[\s\S]*?verdict-classification\.mjs" \\\s+--validate VERDICT_FILE DECISION_FILE "\$MINOS_REVIEW_THRESHOLD"/);
-  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition, a blank `defect` label or one whose findings gate\s+differently — is corrected and re-validated rather than worked around;\s+nothing has touched the forge yet/);
+  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition, a blank `defect` label or one whose findings gate or are\s+classed differently — is corrected and re-validated rather than worked\s+around; nothing has touched the forge yet/);
   assert.match(lifecycle, /The run's overall verdict is\s+`request-changes` when either validated decision is; `clean` only when\s+every validated decision is clean/);
   assert.match(lifecycle, /take the same `defect`\s+label on their dispositions[\s\S]*?they gate\s+alike — so a below-threshold restatement of a gating defect gates too,\s+and carries an `undergrade`[\s\S]*?publishes a labelled defect once, at its highest-severity\s+site[\s\S]*?Distinct\s+defects at one\s+line take no label/);
 });

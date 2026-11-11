@@ -26,7 +26,7 @@ forge, and nothing else.
   `.review/` briefs stage, verdict classification and publication.
 - Keep the review workflow as an Ensemble workflow the Opus lead invokes
   through the installed launcher and adjudication wrapper. Independent
-  reviewers propose findings over the whole pull-request diff and the
+  reviewers propose findings over the whole range the lead chose and the
   opposite model family verifies them; the workflow honours the reviewed
   repository's `.review/` briefs, reporting a skipped concern as skipped,
   never as passed.
@@ -34,6 +34,18 @@ forge, and nothing else.
   pairing. A leg that does not complete or a finding without a complete
   verifier verdict makes the run incomplete: no review is published and no
   clean status is set.
+- The lead sizes each review by reading the change: nothing, the
+  increment since the head Minos last finished on, or the whole pull
+  request (`lifecycle/lifecycle.md`, step 2). That earlier head is known
+  by the content of the pull request's files, not by its commits
+  (`minos forge earlier`), from a record kept under the runs directory.
+  The record is a cache: losing it costs one full review. The lifecycle
+  dispatches no scope workflow; `workflows/review-scope.js` ships unused.
+- The pull request carries only what blocks it. Confirmed findings that do
+  not block, and unverified observations from outside the change, go to
+  the configured filing destination; a finding already on the pull request
+  or classed as speculative hardening goes nowhere
+  (`workflows/compose-review-publication.mjs`).
 - The verdict is the lead's classification judgement, informed by the
   configured severity threshold and never mechanically bound to it
   (`workflows/verdict-classification.mjs` owns the digest and the

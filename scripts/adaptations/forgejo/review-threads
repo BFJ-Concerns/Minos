@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+# Every review thread on the pull request as one JSON array, each with its
+# site, whether it is resolved, and its comments oldest first. Forgejo's API
+# lists inline comments per review and has no thread object, so comments at
+# one path and line are read as one thread, resolved when any of them names
+# a resolver. Two rounds of comments on one line therefore read as one
+# thread; the comments' own commit ids tell the rounds apart.
+owner="$1"
+repo="$2"
+pr="$3"
+
+reviews="$(pull_request_reviews "$owner" "$repo" "$pr")"
+comments='[]'
+for review_id in $(printf '%s' "$reviews" | jq -r '.[] | select((.comments_count // 1) > 0) | .id'); do
+  review_comments="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews/${review_id}/comments")"
+  # A review with no inline comments may answer null.
+  review_comments="$(printf '%s' "$review_comments" | jq -ce 'if . == null then [] elif type == "array" then . else error("expected a review-comment array") end')"
+  comments="$(json_concat "$comments" "$review_comments")"
+done
+printf '%s' "$comments" | jq -c '
+  def site: if (.position // 0) > 0 then .position else (.original_position // 0) end;
+  group_by([(.path // ""), site]) | map(sort_by((.created_at // ""), (.id // 0)) | {
+    path: (.[0].path // ""),
+    line: (.[0] | site),
+    resolved: any(.[]; .resolver != null),
+    outdated: false,
+    comments: map({
+      user: (.user.login // .user.username // ""),
+      body: (.body // ""),
+      commit_id: (.original_commit_id // .commit_id // ""),
+      review_id: (.pull_request_review_id // 0)
+    })
+  })'

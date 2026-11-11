@@ -1597,33 +1597,32 @@ func TestForgeReviewFilesCleanRoundToDefaultCommentDestination(t *testing.T) {
 }
 
 func TestForgeReviewPublishesBlockingFindingsAndFilesTheRest(t *testing.T) {
-	t.Run("a blocking round posts verified High and Low findings together", func(t *testing.T) {
+	t.Run("a blocking round posts the High finding and files the Low one with the observation", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		head, target := installAnchoredWorkspace(t, state, "internal/review.go", 7, 42)
 		configureForgeCommandFixture(t, state)
-		installFilingRepository(t, state)
+		plans := installFilingRepository(t, state)
 		verdict := adjudicatedReviewPayload(t, []map[string]any{
 			adjudicatedFinding("specialist-1:1", "High", "Gating state transition", 42, "The transition accepts an invalid state."),
 			adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
 		})
-		verdict["outOfScopeObservations"] = []map[string]any{{"title": "Unverified observation", "verified": false}}
+		verdict["outOfScopeObservations"] = []map[string]any{{"title": "Legacy nil map write", "path": "internal/legacy.go", "line": 9, "explanation": "Not verified.", "verified": false}}
 		plan := postComposedReview(t, head, target, verdict, "specialist-1:1")
 		writes, payload := state.reviewWriteFacts()
 		if writes != 1 || payload["event"] != "REQUEST_CHANGES" || payload["commit_id"] != head {
 			t.Fatalf("review writes = %d, payload = %#v", writes, payload)
 		}
 		posted := payload["comments"].([]any)
-		if len(posted) != 2 {
-			t.Fatalf("posted comments = %#v, want both verified findings", posted)
-		}
-		for i, want := range []string{"Blocking · High: Gating state transition", "Advisory · Low: Advisory recovery wording"} {
-			if !strings.Contains(posted[i].(map[string]any)["body"].(string), want) {
-				t.Fatalf("comment = %#v, want %q", posted[i], want)
-			}
+		if len(posted) != 1 || !strings.Contains(posted[0].(map[string]any)["body"].(string), "Blocking · High: Gating state transition") {
+			t.Fatalf("posted comments = %#v, want the blocking finding alone", posted)
 		}
 		filingDestination := FilingDestination{Kind: FilingKindFile, Repository: "minos-e2e-owner/subject-plans", Path: "ISSUES.md"}
-		if outcome := fileComposedTriage(t, state, plan, filingDestination); outcome["outcome"] != "nothing-to-file" {
-			t.Fatalf("blocking round files findings: %#v", outcome)
+		if outcome := fileComposedTriage(t, state, plan, filingDestination); outcome["outcome"] != "filed" || outcome["written"] != float64(2) {
+			t.Fatalf("blocking round filing = %#v, want the advisory finding and the observation filed", outcome)
+		}
+		issues := plans.issues(t)
+		if !strings.Contains(issues, "Advisory · Low: Advisory recovery wording") || !strings.Contains(issues, "Unverified observation: Legacy nil map write") || strings.Contains(issues, "Gating state transition") {
+			t.Fatalf("filed content = %q", issues)
 		}
 	})
 
@@ -1641,15 +1640,15 @@ func TestForgeReviewPublishesBlockingFindingsAndFilesTheRest(t *testing.T) {
 				adjudicatedFinding("specialist-1:1", "Medium", "Advisory state transition", 42, "The transition is difficult to identify."),
 				adjudicatedFinding("specialist-2:1", "Low", "Advisory recovery wording", 7, "The recovery path is difficult to identify."),
 			})
-			verdict["outOfScopeObservations"] = []map[string]any{{"title": "Unverified observation", "verified": false}}
+			verdict["outOfScopeObservations"] = []map[string]any{{"title": "Legacy nil map write", "path": "internal/legacy.go", "line": 9, "explanation": "Not verified.", "verified": false}}
 			plan := postComposedReview(t, head, target, verdict)
 			outcome := fileComposedTriage(t, state, plan, destination)
 			if withDestination {
-				if outcome["outcome"] != "filed" || outcome["written"] != float64(2) || outcome["location"] != "minos-e2e-owner/subject-plans:ISSUES.md" {
+				if outcome["outcome"] != "filed" || outcome["written"] != float64(3) || outcome["location"] != "minos-e2e-owner/subject-plans:ISSUES.md" {
 					t.Fatalf("triage outcome = %#v", outcome)
 				}
 				issues := plans.issues(t)
-				if !strings.Contains(issues, "Advisory state transition") || !strings.Contains(issues, "Advisory recovery wording") || strings.Contains(issues, "Unverified observation") {
+				if !strings.Contains(issues, "Advisory state transition") || !strings.Contains(issues, "Advisory recovery wording") || !strings.Contains(issues, "Unverified observation: Legacy nil map write") {
 					t.Fatalf("filed content = %q", issues)
 				}
 			} else if outcome["outcome"] != "discarded" || outcome["review"] != nil {

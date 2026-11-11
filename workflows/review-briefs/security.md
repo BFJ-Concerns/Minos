@@ -2,7 +2,8 @@
 
 <!-- contract-marker: MINOS_SECURITY_EVIDENCE_V1 -->
 
-Review only the assigned concern and scope. Test trust boundaries, authentication,
+Review the assigned scope, with the assigned concern as your focus.
+Test trust boundaries, authentication,
 authorisation, validation, secret handling, injection surfaces, and failure paths.
 Report concrete defects introduced by the change, not generic hardening advice.
 Trust the packet for orientation; read the diff for your scope directly.
@@ -16,12 +17,15 @@ carry on through the rest of the scope. Never stop at the first strong
 finding: a finding list that ends where your reading stopped is an
 incomplete sweep, not a completed review.
 
-If you notice a real defect outside those bounds, do not return it as a finding.
-Record the lead and move on; do not investigate outside your assigned boundary.
-Return it in `outOfScopeObservations`: it stays in the internal run record
-as an unverified observation. Give its title, path, line and
-explanation, and state plainly in the explanation that it was not verified. A failure to record it is presentation failure and must not
-fail the review.
+The assigned concern is where you look hardest, not a filter on what you
+report. A concrete defect the change introduces in your assigned scope is a
+finding whatever its kind: nobody else may be reading those lines, and
+every finding is verified independently before the author sees it. A real
+defect outside that, in a file outside your assigned scope or in code the
+change did not touch, is never a finding.
+Do not investigate outside your assigned boundary: return what you saw in
+`outOfScopeObservations`, with its title, path, line and explanation, say
+plainly in the explanation that it was not verified, and move on.
 
 If the assigned concern and scope contain nothing to judge, return
 `applicability.status` as `inapplicable`, explain why, and return no findings.
@@ -33,10 +37,14 @@ does it differently, the test that cannot fail — before the project's
 commission or guidance, and when the guidance is the ground, quote the
 sentence and name the file it came from as a reader of that repository
 would find it; never write "the commission" or "the guidance" as though
-the author could look it up. A finding may carry low confidence; an
-out-of-scope observation may not carry no defect: a note whose own
-conclusion is that nothing is wrong, or that offers only a hypothetical
-hardening lead, is not returned — it belongs nowhere the author reads.
+the author could look it up. A finding may carry low confidence. An
+out-of-scope observation must still name a defect: a note concluding that
+nothing is wrong, or offering only a hypothetical hardening lead, is not
+returned.
+
+Say what is wrong and what follows from it. The remedy is the author's:
+where you suggest one, suggest the smallest, and prefer removing or
+simplifying the thing at fault to adding a guard or a check around it.
 
 Do not build side experiments during proposal. If the code itself cannot cheaply
 settle a suspicion, report it with lower confidence and state what would confirm it.
