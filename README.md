@@ -29,17 +29,21 @@ author, and the forge's own CI remains the build evidence.
    first head is reviewed in full, unless nothing in it gives a reviewer
    anything to judge. A later head is reviewed only for what the author
    changed since the head Minos last finished on, or not at all when that
-   is nothing; a rebase or any other change that cannot be isolated as a
-   range gets a full review.
+   is nothing. The comparison is of the pull request's files, not its
+   commits, so a rebase, squash or reworded history that leaves the files
+   as they were is not reviewed again; rewritten history that also changes
+   files gets a full review.
 4. An exploration pass plans the review and hands each part of the diff that
    needs attention to correctness, security, testing or design specialists.
    A verifier checks every finding they propose. The repository's own
    [review briefs](#review-briefs) then run the same way.
 5. The lead classifies the verdict, guided by the repository's severity
-   threshold, and publishes the result. A finding the author has already
-   resolved or rejected on the pull request is not raised again while the
-   code it cites is unchanged, and a blocking finding they have neither
-   fixed nor answered still counts on a later head.
+   threshold, and publishes the result. A finding Minos has already posted
+   on the pull request is not posted again while the code it cites is
+   unchanged. An earlier blocking finding still counts on a later head
+   until the author resolves or rejects its thread, or the defect is gone
+   from the code. A request for a safeguard against a failure the project
+   gives no sign of having is recorded with the run and reported nowhere.
 
 If any reviewer fails to finish, or any finding lacks a complete verifier
 verdict, the run is incomplete: Minos publishes no review and sets no clean
@@ -60,14 +64,19 @@ label on the pull request, and, where there are findings, a review.
 |---------|--------|---------------------|
 | Under review | `pending` — Reviewing changes | The in-flight marker (an `eyes` reaction by default) |
 | Continuing | `pending` — Review continuing in a fresh run | The in-flight marker stays while a fresh run carries on the review |
-| Changes needed | `failure` — Changes need attention | A request-changes review carrying every confirmed finding, inline where it can be anchored to the diff and in the review body otherwise, plus the attention marker if one is configured |
-| Clean | `success` — Changes approved | The clean marker (a `+1` reaction by default). Confirmed advisory findings go to the [filing destination](#configuration), by default a comment review |
+| Changes needed | `failure` — Changes need attention | A request-changes review carrying the blocking findings, inline where they can be anchored to the diff and in the review body otherwise, plus the attention marker if one is configured |
+| Clean | `success` — Changes approved | The clean marker (a `+1` reaction by default) |
 | Incomplete | `error` — Review incomplete | No review; the head is retried on a later sweep pass. A run that fails before the lead starts writes no status |
 
-Each finding comment opens with **Blocking** or **Advisory** and its
-severity, and closes with the models that proposed and verified it (for
-example, *Proposed by `gpt-6.1-sol`; verified by `claude-opus-5-5`.*). The
-review body names the briefs it applied and the lead model that signed it.
+Each finding comment opens with **Blocking** and its severity, and closes
+with the models that proposed and verified it (for example, *Proposed by
+`gpt-6.1-sol`; verified by `claude-opus-5-5`.*). The review body names the
+briefs it applied and the lead model that signed it.
+
+On either outcome, confirmed findings that do not block go to the
+[filing destination](#configuration) instead of the review, by default a
+separate comment review. So do defects reviewers noticed outside the
+change, marked as unverified; those never go onto the pull request.
 
 Reviewers treat the pull request's description as the author's account of
 the change. Where it explicitly puts something out of scope and the project
@@ -170,7 +179,7 @@ Per-repository settings take their defaults from `[repositories]` in
 | Setting | Default | Effect |
 |---------|---------|--------|
 | `review.threshold` | `High` | Severity threshold the lead weighs when classifying: `Critical`, `High`, `Medium` or `Low` |
-| `filing-destination.kind` | `pull-request-comment` | Where a clean run's advisory findings go: committed to a `file` in a repository, filed as an `issue`, posted as a `pull-request-comment`, or `none` |
+| `filing-destination.kind` | `pull-request-comment` | Where findings that do not block go: committed to a `file` in a repository, filed as an `issue`, posted as a `pull-request-comment`, or `none` |
 | `markers` | `eyes` in flight, `+1` clean | The reactions or labels Minos puts on a pull request |
 | `work-in-progress-branch-prefixes` | none | Branch prefixes Minos leaves unreviewed |
 | `guidance-sources` | first non-empty of `AGENTS.md`, `CLAUDE.md`, `README.md` | The documents a review is grounded on |

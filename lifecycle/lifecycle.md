@@ -182,33 +182,37 @@ write, matching the target rule above.)
    of the change and a minute or two, not a workflow; record the choice
    and its reason in the run report.
 
-   **The earlier head** is the newest commit before this head at which a
-   Minos run finished clean or requesting changes. Reviews in the snapshot
-   whose `user` is its `authenticated_user` name the heads that drew a
-   review in their `commit_id`. A clean head drew none, so ask the forge:
-   `"$MINOS_BIN" forge outcome SHA` prints the outcome Minos recorded on a
-   commit as `clean`, `attention` or `none`. Walk back from this head's
-   parent through the pull request's own commits, newest first, until one
-   answers `clean` or `attention`; twenty commits without an answer is far
-   enough. With no earlier head this is the first head Minos reviews.
+   **The earlier head** is the last head of this pull request at which a
+   Minos run finished clean or requesting changes. Ask for it:
 
-   **What the author changed** is the range the choice is made over. On a
-   first head it is the whole pull request, `$MINOS_TARGET_SHA...HEAD`. On
-   a later head it is what the author did to the pull request's own diff
-   since the earlier head. When the earlier head is an ancestor of this
-   one and nothing was merged in from the target since, that is
-   `EARLIER..HEAD`. Changes that arrived by merging the target in or
-   rebasing onto it are not the author's and need no review; when the
-   branch was rebased or merged, compare the pull request's own diff
-   before and after to see what the author changed, and when you cannot
-   (the earlier commit is not in the clone and cannot be fetched), treat
-   the whole pull request as changed.
+   ```sh
+   "$MINOS_BIN" forge earlier "$MINOS_HEAD_SHA" "$MINOS_TARGET_SHA"
+   ```
+
+   It prints that head's `head` and `outcome` (`clean` or `attention`),
+   whether the commit is an `ancestor` of this head, and `changed_paths`:
+   the files whose part of the pull request's own diff differs between
+   that head and this one. The comparison is of file content, not of
+   commits, so a rebase, a squash, a reworded history or a merge of the
+   target reads as no change wherever it left the pull request's files as
+   they were. An `outcome` of `none` means this is the first head Minos
+   reviews. A null `changed_paths` means the two could not be compared;
+   treat the whole pull request as changed.
+
+   **What the author changed** is what the choice is made over. On a first
+   head it is the whole pull request, `$MINOS_TARGET_SHA...HEAD`. On a
+   later head it is the `changed_paths`, and nothing else needs reading:
+   whatever arrived by merging the target in or rebasing onto it is not
+   the author's. When the earlier head is an ancestor and nothing was
+   merged in from the target since, read those files as `EARLIER..HEAD`.
+   Otherwise read them at this head, against the earlier commit where the
+   clone has it or `git fetch origin EARLIER` brings it.
 
    Choose one:
 
    - **No review.** Nothing the author changed carries a decision of
-     theirs that a reviewer could find wrong: a rebase or target merge
-     that left the pull request's own diff as it was, generated output
+     theirs that a reviewer could find wrong: an empty `changed_paths`,
+     which is the change already judged on other commits, generated output
      that follows from input already reviewed, a mechanical rename or
      formatting pass you have checked is only that, a revert to content
      already reviewed. Prose is not exempt by being prose: where a
@@ -218,7 +222,8 @@ write, matching the target rule above.)
      mark; an unneeded one costs the author ten minutes and re-raises old
      points. Choose this when you have read everything the author changed
      and can say in a sentence why no reviewer would have anything to
-     judge, and not when you would have to argue for it. It is unavailable
+     judge, and not when you would have to argue for it. Unless
+     `changed_paths` is empty, it is unavailable
      when a `.review/` brief engages the range, because the repository's
      owner asked for that review: build
      `node "${MINOS_REVIEW_WORKFLOW%/*}/review-scope-inputs.mjs" BASE "$MINOS_HEAD_SHA"`
@@ -446,9 +451,9 @@ write, matching the target rule above.)
 
    Any adjudicated verdict may also contain `outOfScopeObservations`.
    These are unverified observations, not findings, and carry no verifier
-   verdict. Keep them only in the saved run record. They never enter a
-   review, the filing destination, a classification digest, or a run
-   outcome.
+   verdict. They never enter a review, a classification digest, or a run
+   outcome; the composer in step 6 sets them aside for the filing
+   destination, marked as unverified.
 
    Only a verdict whose `status` is `complete` may proceed. A missing
    result, incomplete leg, or missing or invalid verifier result yields
@@ -495,17 +500,15 @@ write, matching the target rule above.)
    non-clean terminal marker, and stop.
 5. Classify the completed review. First, on a pull request Minos has
    reviewed before, learn what the author already has from Minos and how
-   they answered it. Read the inline comments of Minos's earlier reviews
-   on this pull request, whether each comment's thread is resolved, and
-   any reply to it. `minos forge` does not carry these, so read them from
-   the forge's API at `$MINOS_API_BASE`:
-   `"$MINOS_BIN" forge clone-credential` prints `{username, password}`,
-   and the password is an API token. Capture it into a shell variable
-   inside the command that uses it, and never print it. On any pull
-   request, also read what the filing destination already carries for
-   this repository; `$MINOS_FILING_DESTINATION` names it. This is a few
-   calls, not an investigation: whatever the forge will not readily give,
-   classify without.
+   they answered it. `"$MINOS_BIN" forge threads` prints every inline
+   thread Minos opened on this pull request: its `path` and `line`,
+   whether it is `resolved`, and its `comments` oldest first. The first
+   comment is Minos's finding, and its `commit_id` is the head it was
+   raised on; any later comment is a reply. On any pull request, also
+   read what the filing destination already carries for this repository,
+   where a clone this run already has holds it;
+   `$MINOS_FILING_DESTINATION` names the destination. Classify without
+   whatever these do not readily give.
 
    For each complete verdict the run
    holds — the main review's, and the brief stage's where it ran — read
@@ -529,28 +532,34 @@ write, matching the target rule above.)
    Two object to the kind of finding:
    a gap the pull-request description explicitly declares as known or out
    of scope, where the project guidance does not contradict the
-   declaration (`declared-out-of-scope`), and a verifier-confirmed request
-   for a new safeguard against a hypothetical failure mode with no defect
-   in the change's own logic (`speculative-hardening`). The severity
-   threshold alone does not catch either class, because verifiers confirm
-   the facts while the objection is to the kind. The third objects to
-   saying it again (`already-raised`), and takes a finding at any
-   severity: it restates a finding Minos already published on this pull
-   request whose thread the author resolved or answered with a rejection,
-   and the code it cites has not changed since the head that review
-   judged; or it restates an entry the filing destination already
-   carries. A finding of this class is published and filed nowhere,
-   because the author has it and has answered. An earlier finding the
-   author neither fixed nor answered is not of this class: it gates and is
-   published as usual. A verifier's reason may say that the delivered
-   behaviour is correct and the finding is a gap; that is advice for your
-   gating call, never grounds for a class. The one upward exception
+   declaration (`declared-out-of-scope`), and a request for a new
+   safeguard (a guard, a check, a test or a script) against an input, an
+   environment or a later edit that nothing in the repository or its
+   guidance shows the project to have, where the change's own logic does
+   nothing wrong (`speculative-hardening`). The severity threshold alone
+   does not catch either class, because verifiers confirm the facts while
+   the objection is to the kind. Speculative hardening takes a finding at
+   any severity, and such a finding is published and filed nowhere: a
+   filed entry is read later as work to do, and work done from these is
+   how a project fills with guards it never needed. A test that cannot
+   fail, behaviour the change adds and leaves unproved, and a document
+   the code contradicts are real gaps, not hardening. The third objects
+   to saying it again (`already-raised`), and takes a finding at any
+   severity: it restates a finding in a thread `forge threads` printed,
+   and the code it cites has not changed since the head that thread was
+   raised on. Such a finding is published and filed nowhere, because the
+   author has it; whether it still blocks is step 7's question. A
+   below-threshold finding that restates an entry the filing destination
+   already carries takes the class too; a finding at or above the
+   threshold never takes it on that ground. A verifier's reason may say
+   that the delivered behaviour is correct and the finding is a gap; that
+   is advice for your gating call, never grounds for a class. The one upward exception
    is judging a below-threshold finding's severity an undergrade that
    genuinely belongs at or above the threshold, named as such. Any gating
    finding makes the verdict `request-changes`; none makes it `clean`.
-   A finding judged non-gating is advisory. Include it alongside the
-   blocking findings when the run requests changes; deliver it to the
-   repository's configured filing destination when the run is clean.
+   A finding judged non-gating is advisory. It goes to the repository's
+   configured filing destination on either outcome and is never posted on
+   the pull request, which carries only what blocks it.
 
    Write your decision per verdict to
    `$MINOS_RUN_DIR/verdict-decision.json` (`verdict-decision-brief.json`
@@ -581,7 +590,7 @@ write, matching the target rule above.)
    composer publishes a labelled defect once, at its highest-severity
    site, naming the other sites and the groups that also raised it, and
    refuses a label whose findings gate differently across the two
-   decisions; a clean run files it as one entry. Distinct defects at one
+   decisions; an advisory one is filed as one entry. Distinct defects at one
    line take no label — the composer cross-references them. The label is
    this run's vocabulary only; a later run over a new head names its own.
 
@@ -594,9 +603,9 @@ write, matching the target rule above.)
 
    A decision that fails validation — a missing basis, an unnamed
    declassification, an unnamed undergrade, a finding with no
-   disposition, a blank `defect` label or one whose findings gate
-   differently — is corrected and re-validated rather than worked around;
-   nothing has touched the forge yet. The run's overall verdict is
+   disposition, a blank `defect` label or one whose findings gate or are
+   classed differently — is corrected and re-validated rather than worked
+   around; nothing has touched the forge yet. The run's overall verdict is
    `request-changes` when either validated decision is; `clean` only when
    every validated decision is clean.
 6. Publish. Reviews talk about the code, never about Minos or its
@@ -640,9 +649,8 @@ write, matching the target rule above.)
    "$MINOS_BIN" forge review HEAD TARGET VERDICT BODY_FILE COMMENTS_FILE
    ```
 
-   A request-changes plan contains one review with all confirmed findings
-   from both review stages, including verified Medium and Low findings.
-   Blocking and advisory comments are labelled separately. The same defect
+   A request-changes plan contains one review with the blocking findings
+   from both review stages and nothing else. The same defect
    raised by both stages at one site is merged once, naming the brief that
    also raised it. A clean plan has no posts: publish no approval review,
    summary comment, or finding comment; step 7 supplies the clean marker and status.
@@ -664,10 +672,11 @@ write, matching the target rule above.)
    non-clean terminal marker, and stop.
 
    Deliver the plan's `triage.entries` to the repository's configured
-   filing destination. On a clean run it contains the confirmed advisory
-   findings; brief configuration diagnostics and the guidance sources
-   setup could not read may be filed on either outcome. Unverified observations are excluded. The destination — a file
-   in a repository's default branch, an issue on a named repository, a
+   filing destination. On either outcome it contains the confirmed
+   advisory findings, the unverified observations (each entry says it was
+   never verified, and none goes to a pull-request-comment destination),
+   brief configuration diagnostics and the guidance sources setup could
+   not read. The destination — a file in a repository's default branch, an issue on a named repository, a
    comment on the pull request, or nowhere — is the service's exported
    configuration, never a choice you make; the script files each entry
    once, skipping entries the destination already carries, and commits as
@@ -694,10 +703,13 @@ write, matching the target rule above.)
 7. End at the earned terminal outcome. On a pull request Minos has
    reviewed before, this run's verdict is not the whole of it: a blocking
    finding from an earlier Minos review still counts until it is settled.
-   It is settled when the code it cites has changed since the head that
-   review judged, so this run's review judged the new code in its place,
-   or when the author resolved its thread or answered it with a
-   rejection (step 5 says how to read that, where this run skipped it).
+   `"$MINOS_BIN" forge threads` lists them: the threads whose first
+   comment opens `**Blocking`. One is settled when the author resolved its
+   thread or answered it with a rejection, or when you read the code it
+   cites at this head and the defect it describes is no longer there.
+   That the cited lines changed is not enough, and neither is this run's
+   review not raising it again: read the finding, read the code, and
+   decide. It is a minute's reading for each, not a review.
    The outcome is request-changes when this run's verdict is,
    or when an earlier blocking finding is not settled; otherwise it is
    clean. A run that reaches request-changes only through earlier

@@ -542,51 +542,6 @@ func TestForgeEarlierWithoutARecordAsksThePullRequestsOwnCommits(t *testing.T) {
 	}
 }
 
-func TestForgeOutcomeNamesOnlyATerminalStatus(t *testing.T) {
-	state := newForgejoFixtureState(t)
-	cfg, _, facts := state.service(t)
-	writeServiceConfig(t, cfg)
-	t.Setenv("MINOS_CONFIG", cfg.Root)
-	t.Setenv("MINOS_FORGE", facts.Forge)
-	t.Setenv("MINOS_PR", facts.PR)
-	t.Setenv("MINOS_OWNER", facts.Owner)
-	t.Setenv("MINOS_REPO_NAME", facts.Repo)
-
-	head := state.headSHA()
-	target := state.targetSHA()
-	outcome := func() string {
-		t.Helper()
-		var stdout strings.Builder
-		if err := ForgeCommand(t.Context(), []string{"outcome", head}, &stdout); err != nil {
-			t.Fatalf("outcome: %v\n%s", err, stdout.String())
-		}
-		var answer struct{ SHA, Outcome string }
-		if err := json.Unmarshal([]byte(stdout.String()), &answer); err != nil {
-			t.Fatalf("outcome answer %q: %v", stdout.String(), err)
-		}
-		if answer.SHA != head {
-			t.Fatalf("outcome answered for %q, want %q", answer.SHA, head)
-		}
-		return answer.Outcome
-	}
-	state.setStatuses(nil)
-	if got := outcome(); got != "none" {
-		t.Fatalf("a commit with no status reads %q, want none", got)
-	}
-	// A run still working, or one that ended incomplete, finished nothing a
-	// later head could build on; only clean and attention are outcomes.
-	for _, step := range []struct{ status, want string }{
-		{"working", "none"}, {"incomplete", "none"}, {"attention", "attention"}, {"clean", "clean"},
-	} {
-		if err := ForgeCommand(t.Context(), []string{"status", head, target, step.status}, &strings.Builder{}); err != nil {
-			t.Fatalf("status %q: %v", step.status, err)
-		}
-		if got := outcome(); got != step.want {
-			t.Fatalf("after status %q the outcome reads %q, want %q", step.status, got, step.want)
-		}
-	}
-}
-
 func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, facts := state.service(t)

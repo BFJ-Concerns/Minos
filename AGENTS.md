@@ -36,8 +36,16 @@ forge, and nothing else.
   clean status is set.
 - The lead sizes each review by reading the change: nothing, the
   increment since the head Minos last finished on, or the whole pull
-  request (`lifecycle/lifecycle.md`, step 2). The lifecycle dispatches no
-  scope workflow; `workflows/review-scope.js` ships unused.
+  request (`lifecycle/lifecycle.md`, step 2). That earlier head is known
+  by the content of the pull request's files, not by its commits
+  (`minos forge earlier`), from a record kept under the runs directory.
+  The record is a cache: losing it costs one full review. The lifecycle
+  dispatches no scope workflow; `workflows/review-scope.js` ships unused.
+- The pull request carries only what blocks it. Confirmed findings that do
+  not block, and unverified observations from outside the change, go to
+  the configured filing destination; a finding already on the pull request
+  or classed as speculative hardening goes nowhere
+  (`workflows/compose-review-publication.mjs`).
 - The verdict is the lead's classification judgement, informed by the
   configured severity threshold and never mechanically bound to it
   (`workflows/verdict-classification.mjs` owns the digest and the

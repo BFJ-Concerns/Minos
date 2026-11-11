@@ -106,7 +106,7 @@ needs; it is not required.
 
    Per-repository knobs — the review threshold, work-in-progress branch
    prefixes, the guidance sources a review is grounded on, the filing
-   destination for a clean run's advisory material and configuration diagnostics,
+   destination for advisory material and configuration diagnostics,
    and the markers Minos writes on a pull request — are set once under
    `[repositories]` in `service.toml` and overridden whole by any
    repository's own file; the shipped `service.toml` documents each knob
@@ -114,7 +114,8 @@ needs; it is not required.
    guidance source in a secondary repository is cloned read-only beside
    the workspace at setup.
 
-   The filing destination controls where confirmed advisory findings and
+   The filing destination controls where confirmed advisory findings,
+   unverified observations from outside the change, and
    configuration diagnostics — brief misconfigurations and unreadable guidance
    sources — are delivered: `kind` is one of `file`
    (path required; repository optional, defaulting to the reviewed
@@ -124,7 +125,8 @@ needs; it is not required.
    The `pull-request-comment` kind deduplicates against the service
    account's existing review bodies on the pull request, then posts one
    comment-review with the remaining advisory entries; when none remain,
-   nothing is posted — there is no all-clear comment. A
+   nothing is posted — there is no all-clear comment. Observations are
+   about code outside the change, so this kind never posts them. A
    file-kind destination is a separate write path committed as
    `service.commit-author-name` (default: the bot login) and
    `service.commit-author-email` (default: the bot login at
