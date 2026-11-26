@@ -39,27 +39,33 @@ clone_url() {
   "$MINOS_BIN" forge repository-metadata "${1%%/*}" "${1#*/}" | jq -er '.clone_url'
 }
 
-# The adaptation turns its credential into an HTTPS git username and secret.
-# The secret reaches git only as a preemptive Basic authorisation header in
-# the GIT_CONFIG_* environment: never an argument, never a file, never output.
-if ! clone_credential="$("$MINOS_BIN" forge clone-credential)"; then
-  echo "setup-workspace: the forge supplied no clone credential" >&2
-  exit 1
-fi
-if ! git_authorisation="$(printf '%s' "$clone_credential" | jq -er '
-  if (.username | type) == "string" and .username != "" and (.password | type) == "string" and .password != ""
-  then "Authorization: Basic " + ((.username + ":" + .password) | @base64) else error("malformed") end' 2>/dev/null)"; then
-  echo "setup-workspace: the forge's clone credential is malformed" >&2
-  exit 1
-fi
-clone_credential=""
-export GIT_TERMINAL_PROMPT=0
-# Appended after any configuration the environment already carries.
-git_config_index="${GIT_CONFIG_COUNT:-0}"
-export "GIT_CONFIG_KEY_${git_config_index}=http.extraHeader"
-export "GIT_CONFIG_VALUE_${git_config_index}=${git_authorisation}"
-export GIT_CONFIG_COUNT="$((git_config_index + 1))"
-git_authorisation=""
+# Each network operation uses the credential for its own repository. An
+# owner-only temporary config gives Git the header without putting it in argv.
+authenticated_git() (
+  git_repository="$1"
+  shift
+  if ! clone_credential="$("$MINOS_BIN" forge clone-credential "${git_repository%%/*}" "${git_repository#*/}")"; then
+    echo "setup-workspace: the forge supplied no clone credential for $git_repository" >&2
+    exit 1
+  fi
+  if ! git_authorisation="$(printf '%s' "$clone_credential" | jq -er '
+    if .anonymous == true then ""
+    elif (.username | type) == "string" and .username != "" and (.password | type) == "string" and .password != ""
+    then "Authorization: Basic " + ((.username + ":" + .password) | @base64)
+    else error("malformed") end' 2>/dev/null)"; then
+    echo "setup-workspace: the forge's clone credential for $git_repository is malformed" >&2
+    exit 1
+  fi
+  export GIT_TERMINAL_PROMPT=0
+  if [ -z "$git_authorisation" ]; then
+    git "$@"
+  else
+    git_config="$(mktemp "$MINOS_RUN_DIR/.git-auth.XXXXXX")" || exit 1
+    trap 'rm -f "$git_config"' 0
+    printf '[http]\n\textraHeader = %s\n' "$git_authorisation" >"$git_config" || exit 1
+    git -c "include.path=$git_config" "$@"
+  fi
+)
 
 if ! "$MINOS_BIN" forge snapshot >"$snapshot_file"; then
   echo "setup-workspace: pull request snapshot failed" >&2
@@ -102,7 +108,7 @@ if [ "$reuse_workspace" = true ]; then
   fi
 fi
 if [ "$reuse_workspace" = false ]; then
-  git clone --no-checkout "$repository_url" "$MINOS_WORKSPACE"
+  authenticated_git "$head_repository" clone --no-checkout "$repository_url" "$MINOS_WORKSPACE"
   git -C "$MINOS_WORKSPACE" checkout --detach "$MINOS_HEAD_SHA"
 fi
 checked_out_head="$(git -C "$MINOS_WORKSPACE" rev-parse HEAD)"
@@ -115,7 +121,7 @@ fi
 # remote, refspec, FETCH_HEAD, or workspace state transition.
 target_fetch_status=0
 # Match Git's refusal text in a stable locale; other failures stay unchanged.
-target_fetch_output="$(LC_ALL=C git -C "$MINOS_WORKSPACE" \
+target_fetch_output="$(LC_ALL=C authenticated_git "$target_repository" -C "$MINOS_WORKSPACE" \
   fetch --no-write-fetch-head --no-tags "$target_repository_url" "$MINOS_TARGET_SHA" 2>&1)" || target_fetch_status=$?
 if [ -n "$target_fetch_output" ]; then
   printf '%s\n' "$target_fetch_output" >&2
@@ -221,7 +227,7 @@ for guidance_repository in $(printf '%s' "$MINOS_GUIDANCE_SOURCES" | jq -r '[.[]
     continue
   fi
   mkdir -p "$(dirname "$clone_path")"
-  if ! git clone --quiet "$guidance_url" "$clone_path"; then
+  if ! authenticated_git "$guidance_repository" clone --quiet "$guidance_url" "$clone_path"; then
     rm -rf -- "$clone_path"
     clone_failures="$(printf '%s' "$clone_failures" | jq -c --arg name "$guidance_repository" --arg reason "repository could not be cloned" '.[$name] = $reason')"
     continue

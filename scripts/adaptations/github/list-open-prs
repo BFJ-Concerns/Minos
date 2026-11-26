@@ -2,6 +2,7 @@
 set -eu
 # shellcheck source-path=SCRIPTDIR
 . "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
 owner="$1"; repo="$2"
 prs="$(collect "/repos/${owner}/${repo}/pulls" "state=open")"
 printf '%s' "$prs" | jq -r --arg owner "$owner" --arg repo "$repo" '.[] | [

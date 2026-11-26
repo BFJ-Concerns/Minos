@@ -2,6 +2,7 @@
 set -eu
 # shellcheck source-path=SCRIPTDIR
 . "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
 
 # Files an operator alert as a repository issue: one open issue per title,
 # with repeat alerts arriving as comments on it. Reads {"title","body"} JSON

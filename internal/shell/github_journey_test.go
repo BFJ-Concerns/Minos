@@ -41,7 +41,8 @@ import (
 
 const (
 	githubFixtureAppID          = "4242"
-	githubFixtureInstallationID = "9001"
+	githubFixtureInstallationID = 9001
+	githubOtherInstallationID   = 9002
 	githubFixtureAppSlug        = "minos-review"
 	githubFixtureBotLogin       = githubFixtureAppSlug + "[bot]"
 )
@@ -61,12 +62,14 @@ type githubFixtureState struct {
 	credentialPath string
 	credential     string
 
-	mintedTokens   []string
-	pullRequest    map[string]any
-	baseTip        string
-	statuses       []map[string]any
-	reviews        []map[string]any
-	reviewComments map[int64][]map[string]any
+	mintedTokens       []string
+	tokenInstallations map[string]int
+	otherCloneURL      string
+	pullRequest        map[string]any
+	baseTip            string
+	statuses           []map[string]any
+	reviews            []map[string]any
+	reviewComments     map[int64][]map[string]any
 	// reviewThreadPages are the raw GraphQL answers to successive
 	// review-thread queries; graphQLVariables records what each asked for.
 	graphQLPath       string
@@ -110,7 +113,7 @@ func newGitHubFixtureState(t *testing.T) *githubFixtureState {
 	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	credential := fmt.Sprintf(`{"app-id": %q, "installation-id": %q, "private-key-file": %q}`, githubFixtureAppID, githubFixtureInstallationID, keyPath)
+	credential := fmt.Sprintf(`{"app-id": %q, "private-key-file": %q}`, githubFixtureAppID, keyPath)
 	credentialPath := filepath.Join(root, "github-app.json")
 	if err := os.WriteFile(credentialPath, []byte(credential+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -287,15 +290,47 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeFixtureJSON(s.t, w, map[string]any{"id": 4242, "slug": githubFixtureAppSlug})
-	case r.Method == http.MethodPost && path == "/app/installations/"+githubFixtureInstallationID+"/access_tokens":
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/") && strings.HasSuffix(path, "/installation"):
 		if !s.verifyAppJWT(authorization) {
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 			return
 		}
+		switch path {
+		case "/repos/acme/widgets/installation":
+			writeFixtureJSON(s.t, w, map[string]any{"id": githubFixtureInstallationID})
+		case "/repos/other/guidance/installation":
+			writeFixtureJSON(s.t, w, map[string]any{"id": githubOtherInstallationID})
+		default:
+			http.NotFound(w, r)
+		}
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/app/installations/") && strings.HasSuffix(path, "/access_tokens"):
+		if !s.verifyAppJWT(authorization) {
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+			return
+		}
+		id, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/app/installations/"), "/access_tokens"))
+		if id != githubFixtureInstallationID && id != githubOtherInstallationID {
+			http.NotFound(w, r)
+			return
+		}
 		token := fmt.Sprintf("ghs_fixture_%d", len(s.mintedTokens)+1)
 		s.mintedTokens = append(s.mintedTokens, token)
+		if s.tokenInstallations == nil {
+			s.tokenInstallations = make(map[string]int)
+		}
+		s.tokenInstallations[token] = id
 		w.WriteHeader(http.StatusCreated)
 		writeFixtureJSON(s.t, w, map[string]any{"token": token, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+	case r.Method == http.MethodGet && path == "/repos/forker/widgets" && authorization == "":
+		writeFixtureJSON(s.t, w, map[string]any{"private": false, "clone_url": "https://github.example/forker/widgets.git", "default_branch": "trunk"})
+	case r.Method == http.MethodGet && path == "/repos/acme/absent":
+		w.WriteHeader(http.StatusNotFound)
+	case r.Method == http.MethodGet && path == "/repos/other/guidance":
+		if s.tokenInstallations[strings.TrimPrefix(authorization, "Bearer ")] != githubOtherInstallationID {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.otherCloneURL, "default_branch": "trunk"})
 	case !s.installationAuthorised(authorization):
 		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets":
@@ -566,7 +601,7 @@ func TestGitHubRepositoryMetadataAndCloneCredentialServeTheRunsClones(t *testing
 		t.Fatalf("repository metadata for an absent repository = %v, want the forge's 404 as the lookup's outcome", err)
 	}
 
-	credential, err := adapter.CloneCredential(t.Context())
+	credential, err := adapter.CloneCredential(t.Context(), forge.Repository{Owner: "acme", Name: "widgets"})
 	if err != nil {
 		t.Fatalf("clone credential: %v", err)
 	}
@@ -579,25 +614,51 @@ func TestGitHubRepositoryMetadataAndCloneCredentialServeTheRunsClones(t *testing
 	}
 }
 
+func TestGitHubCloneCredentialAllowsOnlyAConfirmedPublicRepositoryWithoutInstallation(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	adapter := state.adapter(t)
+	public := forge.Repository{Owner: "forker", Name: "widgets"}
+	if _, err := adapter.RepositoryMetadata(t.Context(), public); err != nil {
+		t.Fatalf("public fork metadata: %v", err)
+	}
+	credential, err := adapter.CloneCredential(t.Context(), public)
+	if err != nil || !credential.Anonymous {
+		t.Fatalf("public fork did not receive anonymous clone access: %v", err)
+	}
+	if _, err := adapter.CloneCredential(t.Context(), forge.Repository{Owner: "acme", Name: "absent"}); err == nil {
+		t.Fatal("missing repository was treated as a public clone")
+	}
+	if mints := state.mints(); mints != 0 {
+		t.Fatalf("installation tokens minted = %d for repositories without an installation", mints)
+	}
+}
+
 // A run configured against the GitHub adaptation clones the reviewed
 // repository as the App installation: setup-workspace asks the real minos
 // binary, which runs the GitHub adaptation against the fixture GitHub, and
 // the git server accepts only x-access-token with a token the fixture minted.
 // The service still exports the forge's API base and credential file, as it
 // does for every run.
-func TestGitHubConfiguredSetupWorkspaceClonesAsTheAppInstallation(t *testing.T) {
+func TestGitHubConfiguredSetupWorkspaceClonesWithEachRepositoryInstallation(t *testing.T) {
 	state := newGitHubFixtureState(t)
 	repository, head := createGitRepository(t, "AGENTS.md", "widget guidance\n")
-	git := newAuthenticatedGitServer(t, func(username, password string) bool {
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		return username == "x-access-token" && slices.Contains(state.mintedTokens, password)
-	})
-	git.serve(t, repository)
+	gitForInstallation := func(installation int, repo string) *authenticatedGitServer {
+		server := newAuthenticatedGitServer(t, func(username, password string) bool {
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			return username == "x-access-token" && state.tokenInstallations[password] == installation
+		})
+		server.serve(t, repo)
+		return server
+	}
+	reviewGit := gitForInstallation(githubFixtureInstallationID, repository)
+	guidance := createGitRepositoryAtHead(t, "README.md", "# Commission from a second installation\n")
+	guidanceGit := gitForInstallation(githubOtherInstallationID, guidance)
 	state.mu.Lock()
 	state.pullRequest["head"].(map[string]any)["sha"] = head
 	state.baseTip = head
-	state.cloneURL = git.URL + "/" + filepath.Base(filepath.Dir(repository)) + "/source"
+	state.cloneURL = reviewGit.URL + "/" + filepath.Base(filepath.Dir(repository)) + "/source"
+	state.otherCloneURL = guidanceGit.URL + "/" + filepath.Base(filepath.Dir(guidance)) + "/source"
 	state.mu.Unlock()
 
 	configRoot := t.TempDir()
@@ -617,10 +678,19 @@ dir = %q
 	}
 	runDir := t.TempDir()
 	workspace := filepath.Join(runDir, "workspace")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stand := t.TempDir()
+	argvLog := filepath.Join(stand, "git-argv")
+	writeScript(t, filepath.Join(stand, "git"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'"+argvLog+"'\nexec '"+realGit+"' \"$@\"\n")
 	cmd := setupWorkspaceCommand(t, buildMinos(t), runDir, workspace, filepath.Join(runDir, "orientation.json"), head)
 	cmd.Env = append(cmd.Env,
 		"MINOS_CONFIG="+configRoot, "MINOS_FORGE=github",
 		"MINOS_OWNER=acme", "MINOS_REPO_NAME=widgets", "MINOS_PR=7", "MINOS_HEAD_BRANCH=topic",
+		"PATH="+stand+string(os.PathListSeparator)+os.Getenv("PATH"),
+		`MINOS_GUIDANCE_SOURCES=[{"repository":"other/guidance","path":"README.md"}]`,
 		"MINOS_API_BASE="+state.server.URL, "MINOS_CREDENTIAL_FILE="+state.credentialPath,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -629,15 +699,28 @@ dir = %q
 	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
 		t.Fatalf("workspace head = %q, want %q", got, head)
 	}
-	if git.authorised() == 0 {
-		t.Fatalf("the git server authorised no request")
+	if reviewGit.authorised() == 0 || guidanceGit.authorised() == 0 {
+		t.Fatal("each Git server must receive the credential for its own installation")
+	}
+	if state.mints() != 2 {
+		t.Fatalf("installation tokens minted = %d, want one cached token per installation", state.mints())
+	}
+	assertContainsFile(t, filepath.Join(runDir, "guidance", "other", "guidance", "README.md"), "# Commission from a second installation")
+	argv, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(argv) == 0 || strings.Contains(string(argv), "Authorization:") || strings.Contains(string(argv), "ghs_fixture_") {
+		t.Fatal("expected Git invocations with no credentials in argv")
+	}
+	if files, err := filepath.Glob(filepath.Join(runDir, ".git-auth.*")); err != nil || len(files) != 0 {
+		t.Fatalf("Git credential config cleanup left %d files (glob error %v)", len(files), err)
 	}
 	assertContainsFile(t, filepath.Join(runDir, "pull-request.json"), `"title": "Widget change"`)
 }
 
-// clone-credential hands its secret to jq through the environment: a jq
-// stand-in on PATH records every argument vector either adaptation gives
-// it, and neither forge's secret may appear in one.
+// Observe the arguments passed to real jq and curl while the fixture
+// verifies GitHub's signed App JWT and the installation token it issues.
 func TestCloneCredentialKeepsTheSecretOutOfEveryArgv(t *testing.T) {
 	realJQ, err := exec.LookPath("jq")
 	if err != nil {
@@ -646,6 +729,11 @@ func TestCloneCredentialKeepsTheSecretOutOfEveryArgv(t *testing.T) {
 	stand := t.TempDir()
 	argvLog := filepath.Join(stand, "argv.log")
 	writeScript(t, filepath.Join(stand, "jq"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'"+argvLog+"'\nexec '"+realJQ+"' \"$@\"\n")
+	realCurl, err := exec.LookPath("curl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(stand, "curl"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'"+argvLog+"'\nexec '"+realCurl+"' \"$@\"\n")
 	path := stand + string(os.PathListSeparator) + os.Getenv("PATH")
 
 	forgejoAdaptation, err := filepath.Abs(filepath.Join("..", "..", "scripts", "adaptations", "forgejo"))
@@ -653,12 +741,20 @@ func TestCloneCredentialKeepsTheSecretOutOfEveryArgv(t *testing.T) {
 		t.Fatal(err)
 	}
 	github := newGitHubFixtureState(t)
+	forgejo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "token forgejo-secret-719" {
+			http.Error(w, "missing fixture credential", http.StatusUnauthorized)
+			return
+		}
+		writeFixtureJSON(t, w, map[string]any{"clone_url": "https://forgejo.example/acme/widgets.git", "default_branch": "main"})
+	}))
+	defer forgejo.Close()
 	for _, test := range []struct {
 		name   string
 		runner forge.ScriptRunner
 		secret func() string
 	}{
-		{name: "forgejo", runner: forge.ScriptRunner{Directory: forgejoAdaptation, APIBase: "http://forge.invalid", Credential: "forgejo-secret-719"}, secret: func() string { return "forgejo-secret-719" }},
+		{name: "forgejo", runner: forge.ScriptRunner{Directory: forgejoAdaptation, APIBase: forgejo.URL, Credential: "forgejo-secret-719"}, secret: func() string { return "forgejo-secret-719" }}, // gitleaks:allow (local HTTP fixture)
 		{name: "github", runner: github.runner(), secret: func() string {
 			github.mu.Lock()
 			defer github.mu.Unlock()
@@ -669,7 +765,12 @@ func TestCloneCredentialKeepsTheSecretOutOfEveryArgv(t *testing.T) {
 			if err := os.WriteFile(argvLog, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			out, err := test.runner.Run(t.Context(), forge.RunRequest{Operation: "clone-credential", Env: map[string]string{"PATH": path}})
+			request := forge.RunRequest{Operation: "repository-metadata", Arguments: []string{"acme", "widgets"}, Env: map[string]string{"PATH": path}}
+			if _, err := test.runner.Run(t.Context(), request); err != nil {
+				t.Fatalf("repository-metadata: %v", err)
+			}
+			request.Operation = "clone-credential"
+			out, err := test.runner.Run(t.Context(), request)
 			if err != nil {
 				t.Fatalf("clone-credential: %v", err)
 			}
@@ -681,11 +782,11 @@ func TestCloneCredentialKeepsTheSecretOutOfEveryArgv(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(recorded) == 0 {
-				t.Fatalf("the jq stand-in recorded no invocation")
+			if !strings.Contains(string(recorded), "@/dev/fd/3") {
+				t.Fatal("the curl stand-in saw no header file argument")
 			}
-			if strings.Contains(string(recorded), secret) {
-				t.Fatalf("a recorded jq argv carries the secret")
+			if strings.Contains(string(recorded), secret) || strings.Contains(string(recorded), "Authorization:") {
+				t.Fatal("credential material appeared in a recorded jq or curl argument")
 			}
 		})
 	}
@@ -810,7 +911,7 @@ func TestGitHubAdaptationRefusesAMalformedCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = adapter.Snapshot(t.Context(), forge.Repository{Owner: "acme", Name: "widgets"}, 7)
-	if err == nil || !strings.Contains(err.Error(), `"app-id", "installation-id" and "private-key-file"`) {
+	if err == nil || !strings.Contains(err.Error(), `"app-id" and "private-key-file"`) {
 		t.Fatalf("snapshot error = %v, want the credential contract named", err)
 	}
 	if mints := state.mints(); mints != 0 {

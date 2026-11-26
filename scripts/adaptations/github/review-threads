@@ -2,6 +2,7 @@
 set -eu
 # shellcheck source-path=SCRIPTDIR
 . "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
 
 # Every review thread on the pull request as one JSON array, each with its
 # site, whether it is resolved, and its comments oldest first. GitHub's REST

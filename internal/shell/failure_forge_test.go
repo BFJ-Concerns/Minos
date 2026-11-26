@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -16,15 +15,18 @@ func TestFailureLedgerPushUsesSelectedForgeCredential(t *testing.T) {
 	gitServer := newAuthenticatedGitServer(t, func(username, password string) bool {
 		state.mu.Lock()
 		defer state.mu.Unlock()
-		return username == "x-access-token" && slices.Contains(state.mintedTokens, password)
+		return username == "x-access-token" && state.tokenInstallations[password] == githubOtherInstallationID
 	})
-	gitServer.serve(t, repository)
-	remote := filepath.Join(gitServer.root, filepath.Base(filepath.Dir(repository)), "source")
+	remote := filepath.Join(gitServer.root, "other", "guidance.git")
+	if err := os.MkdirAll(filepath.Dir(remote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, ".", "clone", "--quiet", "--bare", repository, remote)
 	runGit(t, ".", "--git-dir", remote, "config", "http.receivepack", "true")
 	checkout := filepath.Join(t.TempDir(), "ledger")
 	runGit(t, ".", "clone", remote, checkout)
 	configureTestGit(t, checkout)
-	runGit(t, checkout, "remote", "set-url", "origin", gitServer.URL+"/"+filepath.Base(filepath.Dir(repository))+"/source")
+	runGit(t, checkout, "remote", "set-url", "origin", gitServer.URL+"/other/guidance.git")
 	writeTestFile(t, filepath.Join(checkout, "FAILURES.md"), "# Failures\n\n## salvaged installation run\n")
 	root := t.TempDir()
 	contents := fmt.Sprintf(`[service]

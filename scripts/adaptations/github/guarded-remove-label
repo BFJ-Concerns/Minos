@@ -2,6 +2,7 @@
 set -eu
 # shellcheck source-path=SCRIPTDIR
 . "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
 
 owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"; name="$7"
 
