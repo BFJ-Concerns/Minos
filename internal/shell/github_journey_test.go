@@ -258,7 +258,7 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message":"missing GitHub API headers"}`, http.StatusBadRequest)
 		return
 	}
-	if r.Method == http.MethodPost && path == "/graphql" && s.installationAuthorised(authorization) {
+	if r.Method == http.MethodPost && r.URL.Path == "/graphql" && s.installationAuthorised(authorization) {
 		var request struct {
 			Variables map[string]any `json:"variables"`
 		}
