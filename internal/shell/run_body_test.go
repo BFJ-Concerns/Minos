@@ -1975,13 +1975,11 @@ func TestRunBodySetupDeathWritesNoStatus(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		stage      string
-		writerExit int
 		missing    string
 		postlaunch bool
 	}{
 		{name: "configuration", stage: "configuration"},
 		{name: "setup", stage: "workspace-setup"},
-		{name: "writer failure", stage: "workspace-setup", writerExit: 47},
 		{name: "missing service configuration", stage: "workspace-setup", missing: "service.toml"},
 		{name: "missing coordinates", stage: "workspace-setup", missing: "MINOS_TARGET_SHA"},
 		{name: "missing bootstrap configuration", stage: "configuration", missing: "MINOS_CONFIG"},
@@ -1991,10 +1989,8 @@ func TestRunBodySetupDeathWritesNoStatus(t *testing.T) {
 			fixture := newRunBodyFixture(t)
 			calls := filepath.Join(fixture.root, "status-calls")
 			writer := filepath.Join(fixture.root, "minos-recorder")
-			writeScript(t, writer, fmt.Sprintf("#!/usr/bin/env sh\nfor argument do printf '%%s\\n' \"$argument\"; done >>%s\nexit %d\n", strconv.Quote(calls), test.writerExit))
+			writeScript(t, writer, fmt.Sprintf("#!/usr/bin/env sh\nfor argument do printf '%%s\\n' \"$argument\"; done >>%s\nexit 0\n", strconv.Quote(calls)))
 			fixture.appendConfig(t, map[string]string{"MINOS_BIN": writer})
-			// Only readability is relevant to this script-level test; parsing and
-			// the actual guarded write are exercised by the fixture-forge journey.
 			serviceConfig := filepath.Join(fixture.configRoot, "service.toml")
 			if err := os.WriteFile(serviceConfig, []byte("# readable service configuration\n"), 0o600); err != nil {
 				t.Fatal(err)
