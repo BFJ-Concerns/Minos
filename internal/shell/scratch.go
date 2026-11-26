@@ -29,10 +29,11 @@ const (
 	salvageReportBytes     = 32 * 1024
 	salvageTranscriptBytes = salvageDigestBytes - salvageMetadataBytes - salvageFailureLogBytes - salvageEnsembleBytes - salvageReportBytes
 	archiveRunTimeout      = 30 * time.Minute
+	failurePublishTimeout  = 5 * time.Minute
 )
 
 var walkEvidenceRoot = filepath.WalkDir
-var failurePublishTimeout = 5 * time.Minute
+var failureLedgerCommand = processGroupCommandContext
 
 func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[string]Facts) error {
 	if cfg.Runs.ArchiveCommand == "" {
@@ -497,11 +498,11 @@ func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 		{"push", "origin", "HEAD:main"},
 	}
 	for _, arguments := range commands {
-		cmd := processGroupCommandContext(publishCtx, "git", append([]string{"-C", cfg.Runs.FailuresRepo}, arguments...)...)
+		cmd := failureLedgerCommand(publishCtx, "git", append([]string{"-C", cfg.Runs.FailuresRepo}, arguments...)...)
 		cmd.Env = env
 		if out, err := cmd.CombinedOutput(); err != nil {
 			if arguments[0] == "rebase" {
-				abort := processGroupCommandContext(publishCtx, "git", "-C", cfg.Runs.FailuresRepo, "rebase", "--abort")
+				abort := failureLedgerCommand(publishCtx, "git", "-C", cfg.Runs.FailuresRepo, "rebase", "--abort")
 				abort.Env = env
 				if abortOut, abortErr := abort.CombinedOutput(); abortErr != nil {
 					return fmt.Errorf("git rebase: %w: %s; preserve local commit but rebase abort failed: %v: %s",

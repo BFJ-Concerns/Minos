@@ -11,11 +11,30 @@ import (
 // run variables before any test runs; retain only the explicit transcript-test
 // opt-in, which identifies an isolated configuration seed rather than live state.
 func TestMain(m *testing.M) {
+	if err := isolateTestGitConfig(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if err := stripRunTestEnvironment(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	os.Exit(m.Run())
+}
+
+// Fixtures and their child scripts inherit this configuration boundary.
+func isolateTestGitConfig() error {
+	for _, name := range []string{"GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"} {
+		if err := os.Unsetenv(name); err != nil {
+			return fmt.Errorf("clear test Git environment %s: %w", name, err)
+		}
+	}
+	for _, name := range []string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"} {
+		if err := os.Setenv(name, os.DevNull); err != nil {
+			return fmt.Errorf("isolate test Git configuration %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func stripRunTestEnvironment() error {
