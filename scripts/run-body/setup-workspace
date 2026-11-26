@@ -197,8 +197,8 @@ guidance_clone_path() {
 # A configured source that cannot be read is recorded in the orientation,
 # never passed over silently; the lead carries the record into the run report.
 record_guidance_misconfiguration() {
-  misconfigurations="$(printf '%s' "$misconfigurations" | jq -c --argjson source "$1" --arg reason "$2" \
-    '. + [{kind: "guidance-source", source: $source, reason: $reason}]')"
+  misconfigurations="$(printf '%s\n%s\n' "$misconfigurations" "$1" | jq -cs --arg reason "$2" \
+    '.[0] + [{kind: "guidance-source", source: .[1], reason: $reason}]')"
   echo "setup-workspace: guidance source $(printf '%s' "$1" | jq -r '(.repository // "the reviewed repository") + ":" + .path') $2" >&2
 }
 
@@ -250,8 +250,8 @@ while [ "$source_index" -lt "$source_count" ]; do
     record_guidance_misconfiguration "$guidance_source" "is missing or empty"
     continue
   fi
-  guidance_entries="$(printf '%s' "$guidance_entries" | jq -c --argjson source "$guidance_source" --arg location "$guidance_location" \
-    '. + [{source: $source, location: $location, origin: "configured"}]')"
+  guidance_entries="$(printf '%s\n%s\n' "$guidance_entries" "$guidance_source" | jq -cs --arg location "$guidance_location" \
+    '.[0] + [{source: .[1], location: $location, origin: "configured"}]')"
 done
 
 if [ "$source_count" -eq 0 ]; then
@@ -271,15 +271,13 @@ elif [ "$guidance_entries" = '[]' ]; then
   exit 1
 fi
 
-jq -n \
+printf '%s\n%s\n' "$guidance_entries" "$misconfigurations" | jq -s \
   --arg repository "$MINOS_WORKSPACE" \
   --arg head "$checked_out_head" \
-  --argjson guidance "$guidance_entries" \
-  --argjson misconfigurations "$misconfigurations" \
   --arg pull_request "$pull_request_record" \
   --arg owner "$MINOS_OWNER" \
   --arg repo "$MINOS_REPO_NAME" \
   --arg pr "$MINOS_PR" \
   --arg date "$run_date" \
-  '{repository: $repository, head: $head, guidance: $guidance, misconfigurations: $misconfigurations, pullRequest: $pull_request, source: {owner: $owner, repo: $repo, pr: $pr, date: $date}}' \
+  '{repository: $repository, head: $head, guidance: .[0], misconfigurations: .[1], pullRequest: $pull_request, source: {owner: $owner, repo: $repo, pr: $pr, date: $date}}' \
   >"$MINOS_ORIENTATION"
