@@ -67,6 +67,8 @@ type githubFixtureState struct {
 	statuses       []map[string]any
 	reviews        []map[string]any
 	reviewComments map[int64][]map[string]any
+	// issueComments are the pull request's conversation comments.
+	issueComments []map[string]any
 	// reviewThreadPages are the raw GraphQL answers to successive
 	// review-thread queries; graphQLVariables records what each asked for.
 	reviewThreadPages []string
@@ -314,6 +316,8 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		var id int64
 		fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(path, "/repos/acme/widgets/pulls/7/reviews/"), "/comments"), "%d", &id)
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.reviewComments[id]))
+	case r.Method == http.MethodGet && path == "/repos/acme/widgets/issues/7/comments":
+		writeFixtureArray(s.t, w, s.pagedCollection(r, s.issueComments))
 	case r.Method == http.MethodPost && path == "/repos/acme/widgets/pulls/7/reviews":
 		if s.refuseReviewPosts != 0 {
 			http.Error(w, `{"message":"API rate limit exceeded"}`, s.refuseReviewPosts)

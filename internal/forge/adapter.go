@@ -135,6 +135,21 @@ func (a *Adapter) ReviewThreads(ctx context.Context, repository Repository, pull
 	return own, nil
 }
 
+// PullRequestComments reads the pull request's conversation comments,
+// oldest first, whoever wrote them: an author answers a finding that has no
+// thread of its own here.
+func (a *Adapter) PullRequestComments(ctx context.Context, repository Repository, pullRequest int64) ([]PullRequestComment, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "pull-request-comments", Arguments: []string{repository.Owner, repository.Name, strconv.FormatInt(pullRequest, 10)}})
+	if err != nil {
+		return nil, err
+	}
+	var comments []PullRequestComment
+	if err := json.Unmarshal(out, &comments); err != nil {
+		return nil, fmt.Errorf("decode forge pull-request comments: %w", err)
+	}
+	return comments, nil
+}
+
 func (a *Adapter) Claim(ctx context.Context, repository Repository, pullRequest int64) WriteResult {
 	out, err := a.runner.Run(ctx, RunRequest{
 		Operation: "claim",

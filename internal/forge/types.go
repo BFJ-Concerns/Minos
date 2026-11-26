@@ -66,6 +66,13 @@ type ReviewThreadComment struct {
 	ReviewID int64  `json:"review_id"`
 }
 
+// PullRequestComment is one comment in a pull request's conversation, apart
+// from any review or thread.
+type PullRequestComment struct {
+	User string `json:"user"`
+	Body string `json:"body"`
+}
+
 type Dependency struct {
 	Repository string `json:"repository"`
 	Number     int64  `json:"number"`
