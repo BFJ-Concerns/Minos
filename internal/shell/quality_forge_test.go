@@ -18,7 +18,7 @@ import (
 // These journeys execute the shipped adaptations. The server supplies faulty
 // reads, and records only requests the adaptation actually makes.
 func TestQualityForgeMalformedReadsWithholdWrites(t *testing.T) {
-	for _, bad := range []string{"", "{", "{}", "null", "[null]"} {
+	for _, bad := range []string{"", " ", "{", "{}", "null", "[null]"} {
 		for _, verb := range []string{"guarded-add-reaction", "guarded-remove-reaction", "claim", "guarded-set-status", "guarded-post-review"} {
 			// Null is confirmed emptiness only on the reaction endpoint.
 			// The positive reaction journeys below cover that contract.
