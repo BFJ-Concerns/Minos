@@ -139,9 +139,7 @@ func runQualityAdaptation(t *testing.T, verb string, read func(*http.Request) (s
 		args = append(args, "Minos", "success", "clean")
 	case "guarded-post-review":
 		input = `{"state":"COMMENT","body":"review","comments":[{"path":"a.go","body":"finding","new_position":1,"old_position":0}]}`
-	case "alert":
-		args = []string{"owner", "repo"}
-		input = `{"title":"operator alert","body":"diagnostic"}`
+
 	}
 	cmd := exec.CommandContext(t.Context(), script, args...)
 	cmd.Env = append(os.Environ(), "HOME="+t.TempDir(), "MINOS_API_BASE="+server.URL, "MINOS_FORGE_CREDENTIAL=fixture-token", "MINOS_STATUS_CONTEXT=Minos", `MINOS_MARKERS={"in-flight":{"reaction":"eyes"}}`)
