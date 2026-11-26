@@ -371,7 +371,9 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if result.Decision != "started" {
 			t.Fatalf("result = %q, want started", result)
 		}
-		assertArgument(t, systemdArgs, "MINOS_HEAD_BRANCH=")
+		if branch, present := systemdEnvironment(t, systemdArgs)["MINOS_HEAD_BRANCH"]; !present || branch != "" {
+			t.Fatalf("MINOS_HEAD_BRANCH = %q, present=%t, want a present, empty value", branch, present)
+		}
 		if state.virtualBranchReads() != 0 {
 			t.Fatalf("virtual pull ref caused %d branch reads", state.virtualBranchReads())
 		}
