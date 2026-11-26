@@ -217,33 +217,6 @@ func TestSpawnRunSharesTheMemoryEnvelopeBetweenConcurrentRuns(t *testing.T) {
 	}
 }
 
-func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
-	original := commandCombinedOutput
-	t.Cleanup(func() { commandCombinedOutput = original })
-	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
-		if name == "systemctl" {
-			return nil, nil
-		}
-		return []byte("Unit minos-run-forgejo-owner-repo-pr1.service already exists."), errors.New("exit status 1")
-	}
-
-	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
-	setTestRunCeilings(&cfg)
-	cfg.Runs.Dir = t.TempDir()
-	repo := RepoConfig{}
-	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
-	result, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Outcome != SpawnSuppressed {
-		t.Fatalf("outcome = %q, want %q", result.Outcome, SpawnSuppressed)
-	}
-	if result.BlockingUnit != "minos-run-forgejo-owner-repo-pr1.service" {
-		t.Fatalf("blocking unit = %q", result.BlockingUnit)
-	}
-}
-
 func TestSpawnRunRefusesContinuationDirectorySymlinkEscapingRunsDirectory(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })

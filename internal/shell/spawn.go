@@ -301,9 +301,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	out, err := commandCombinedOutput(ctx, "systemd-run", args...)
 	if err != nil {
 		cleanupSpawnFailure()
-		if strings.Contains(string(out), "already exists") {
-			return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: unit + ".service"}, nil
-		}
 		return SpawnResult{}, fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if progressDecision == continuationProgressAdvanced {
