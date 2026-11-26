@@ -52,6 +52,7 @@ func TestGitHubReviewThreadsCarryResolutionAndRepliesForTheServicesOwnThreads(t 
 
 func TestGitHubReviewThreadsUseTheEnterpriseGraphQLEndpoint(t *testing.T) {
 	state := newGitHubFixtureState(t)
+	state.graphQLPath = "/api/graphql"
 	state.reviewThreadPages = []string{`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}`}
 	runner := state.runner()
 	runner.APIBase += "/api/v3/"

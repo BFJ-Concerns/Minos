@@ -69,6 +69,7 @@ type githubFixtureState struct {
 	reviewComments map[int64][]map[string]any
 	// reviewThreadPages are the raw GraphQL answers to successive
 	// review-thread queries; graphQLVariables records what each asked for.
+	graphQLPath       string
 	reviewThreadPages []string
 	graphQLVariables  []map[string]any
 	// cloneURL is acme/widgets' clone URL as the repository route reports it.
@@ -130,7 +131,8 @@ func newGitHubFixtureState(t *testing.T) *githubFixtureState {
 			"base":   map[string]any{"ref": "main", "sha": "0ld0ld0ld0ld0ld0ld0ld0ld0ld0ld0ld0ld0ld0", "repo": map[string]any{"full_name": "acme/widgets"}},
 			"labels": []map[string]any{{"name": "needs-review"}},
 		},
-		statuses: manyStatuses(101),
+		statuses:    manyStatuses(101),
+		graphQLPath: "/graphql",
 		reviews: []map[string]any{
 			{"id": 501, "state": "CHANGES_REQUESTED", "commit_id": "feedfacefeedfacefeedfacefeedfacefeedface", "body": "Earlier review", "user": map[string]any{"login": "colleague"}},
 		},
@@ -258,7 +260,7 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message":"missing GitHub API headers"}`, http.StatusBadRequest)
 		return
 	}
-	if r.Method == http.MethodPost && r.URL.Path == "/graphql" && s.installationAuthorised(authorization) {
+	if r.Method == http.MethodPost && r.URL.Path == s.graphQLPath && s.installationAuthorised(authorization) {
 		var request struct {
 			Variables map[string]any `json:"variables"`
 		}

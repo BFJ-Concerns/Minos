@@ -16,10 +16,12 @@ pr="$3"
 # shellcheck disable=SC2016
 query='query($owner:String!,$repo:String!,$pr:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated path line originalLine comments(first:100){nodes{body author{__typename login} originalCommit{oid} pullRequestReview{databaseId}}}}}}}}'
 
-# Public GitHub serves GraphQL on the REST API host. GitHub Enterprise
-# Server serves it alongside /api/v3, under the same deployment prefix.
+# Public GitHub serves /graphql. GitHub Enterprise Server serves
+# /api/graphql alongside its /api/v3 REST API.
 graphql_base="${MINOS_API_BASE%/}"
-graphql_base="${graphql_base%/api/v3}"
+case "$graphql_base" in
+  */api/v3) graphql_base="${graphql_base%/v3}" ;;
+esac
 
 threads='[]'
 after=''
