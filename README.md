@@ -42,7 +42,10 @@ author, and the forge's own CI remains the build evidence.
    on the pull request is not posted again while the code it cites is
    unchanged. An earlier blocking finding still counts on a later head
    until the author resolves or rejects its thread, or the defect is gone
-   from the code. A request for a safeguard against a failure the project
+   from the code. A finding that could not be anchored to a line sits in
+   the review body with no thread; the author rejects it in a comment on
+   the pull request that names it by its title or its path and line. A
+   request for a safeguard against a failure the project
    gives no sign of having is recorded with the run and reported nowhere.
 
 If any reviewer fails to finish, or any finding lacks a complete verifier
