@@ -1359,18 +1359,30 @@ func TestGitHubWritesPreserveUncertainty(t *testing.T) {
 }
 
 func TestGitHubStatusDetailsUseEnterpriseWebBase(t *testing.T) {
-	state := newGitHubFixtureState(t)
-	runner := state.runner()
-	runner.APIBase += "/api/v3"
-	adapter, err := forge.NewAdapter(runner, githubFixtureBotLogin, "Minos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	guard := state.guard()
-	githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Clean()))
-	writes := state.operationWrites()
-	if len(writes) != 1 || writes[0].payload["target_url"] != state.server.URL+"/acme/widgets/pull/7" {
-		t.Fatalf("enterprise details URL = %#v", writes)
+	for _, test := range []struct{ name, webBase string }{
+		{name: "derived"},
+		{name: "configured", webBase: "https://web.example/forge/"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newGitHubFixtureState(t)
+			runner := state.runner()
+			runner.APIBase += "/api/v3"
+			runner.WebBase = test.webBase
+			adapter, err := forge.NewAdapter(runner, githubFixtureBotLogin, "Minos")
+			if err != nil {
+				t.Fatal(err)
+			}
+			guard := state.guard()
+			githubApplied(t, adapter.SetProductStatus(t.Context(), guard, product.Clean()))
+			writes := state.operationWrites()
+			webBase := state.server.URL
+			if test.webBase != "" {
+				webBase = strings.TrimSuffix(test.webBase, "/")
+			}
+			if len(writes) != 1 || writes[0].payload["target_url"] != webBase+"/acme/widgets/pull/7" {
+				t.Fatalf("enterprise details URL = %#v", writes)
+			}
+		})
 	}
 }
 
