@@ -24,6 +24,3 @@ repo = "REPLACE_WITH_FORGEJO_REPOSITORY"
 
 [adaptation]
 run-body = "/opt/minos/run-body/run-body"
-
-[review]
-threshold = "High"
