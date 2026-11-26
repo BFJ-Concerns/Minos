@@ -7,6 +7,10 @@ exactly as the output schema requests, together with a partitioned review plan
 for Minos's planned specialists. Ground everything you return in the
 repository itself.
 
+{{reviewed-change}}
+
+## The plan
+
 The plan is a proportionality judgement, not an enumeration. The review has
 these specialist concerns, each a different kind of problem to read the
 change for:

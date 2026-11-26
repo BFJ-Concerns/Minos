@@ -33,9 +33,12 @@ author, and the forge's own CI remains the build evidence.
    commits, so a rebase, squash or reworded history that leaves the files
    as they were is not reviewed again; rewritten history that also changes
    files gets a full review.
-4. An exploration pass plans the review and hands each part of the diff that
-   needs attention to correctness, security, testing or design specialists.
-   A verifier checks every finding they propose. The repository's own
+4. An exploration pass plans the review and dispatches the specialists the
+   change gives work to: logic, failure handling, security, tests, and fit
+   with the project. Findings that one fix would resolve are merged, and a
+   verifier checks each of the rest against the code and finds it confirmed,
+   refuted or unsettled. Only a confirmed finding is treated as a defect; an
+   unsettled one is filed as an open question. The repository's own
    [review briefs](#review-briefs) then run the same way.
 5. The lead classifies the verdict, guided by the repository's severity
    threshold, and publishes the result. A finding Minos has already posted

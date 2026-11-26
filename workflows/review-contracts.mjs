@@ -1,11 +1,17 @@
-// What each stage of the review workflows returns: the specialist, merge
-// and verifier schemas both workflows share, what the merge and verifier
+// What each stage of the review workflows returns: the exploration plan,
+// the specialist, merge and verifier schemas both workflows share, what the merge and verifier
 // legs are shown of a finding, and the verifier batch size. A workflow
 // script imports nothing, so the input builders attach these as
 // `args.contracts` and each workflow validates them before dispatching
 // anything; neither keeps a copy.
 
 export const VERIFIER_BATCH_SIZE = 6;
+
+// How many rounds of verification a workflow runs. The first checks the
+// proposed findings; each later one checks the findings verifiers raised in
+// the round before. A finding raised in the last round is never checked:
+// it is returned unchecked, and filed as an unsettled finding is.
+export const VERIFICATION_ROUNDS = 3;
 
 export const SEVERITIES = ["Critical", "High", "Medium", "Low"];
 
@@ -48,6 +54,52 @@ export const applicabilityShape = {
     reason: { type: "string" },
   },
 };
+
+// What the exploration leg returns, on exploration.md: the changed-file
+// inventory and the plan, one unit per specialist dispatch, each naming one
+// of the shipped concerns.
+export function explorationSchema(concernNames) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["files", "plan", "applicability"],
+    properties: {
+      applicability: {
+        type: "object",
+        additionalProperties: false,
+        required: ["reason"],
+        properties: { reason: { type: "string" } },
+      },
+      files: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["path", "added", "deleted"],
+          properties: {
+            path: { type: "string" },
+            added: { type: "integer", minimum: 0 },
+            deleted: { type: "integer", minimum: 0 },
+          },
+        },
+      },
+      plan: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "concern", "scope", "specialistType"],
+          properties: {
+            id: { type: "string" },
+            concern: { type: "string" },
+            scope: { type: "array", minItems: 1, items: { type: "string" } },
+            specialistType: { type: "string", enum: [...concernNames] },
+          },
+        },
+      },
+    },
+  };
+}
 
 // What a proposing leg returns, on specialist.md or repository.md.
 // `applicability` speaks for the leg's own concern alone. A problem of
@@ -146,10 +198,15 @@ export const verifierSchema = {
   },
 };
 
-// The `args.contracts` value, as the builders emit it: plain JSON.
-export function reviewContracts() {
+// The `args.contracts` value, as the builders emit it: plain JSON. The
+// exploration schema's concerns are the shipped concern names.
+export function reviewContracts(concernNames) {
+  if (!Array.isArray(concernNames) || concernNames.length === 0)
+    throw new Error("the review contracts need the shipped concern names");
   return JSON.parse(JSON.stringify({
     verifierBatchSize: VERIFIER_BATCH_SIZE,
+    verificationRounds: VERIFICATION_ROUNDS,
+    explorationSchema: explorationSchema(concernNames),
     findingShape,
     outOfScopeObservationShape,
     applicabilityShape,

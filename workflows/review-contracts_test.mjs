@@ -7,8 +7,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { reviewContracts } from "./review-contracts.mjs";
-import { findingsFromVerifierPrompt } from "./verifier-prompt-fixture.mjs";
+import { shippedContracts } from "./shipped-prompts-fixture.mjs";
+import { findingsFromVerifierPrompt, verdictFor } from "./verifier-prompt-fixture.mjs";
 import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
@@ -78,9 +78,10 @@ const INPUTS = builtInputs();
 const twoFindings = {
   applicability: { status: "applicable", reason: "the concern applies" },
   findings: [
-    { title: "first defect", severity: "High", confidence: 80, path: "code.go", line: 1, explanation: "first" },
-    { title: "second defect", severity: "High", confidence: 80, path: "code.go", line: 1, explanation: "second" },
+    { title: "first defect", severity: "High", confidence: 80, path: "code.go", line: 1, explanation: "first", dependsOn: "" },
+    { title: "second defect", severity: "High", confidence: 80, path: "code.go", line: 1, explanation: "second", dependsOn: "" },
   ],
+  outsideConcernFindings: [],
   outOfScopeObservations: [],
 };
 
@@ -88,7 +89,7 @@ function respond(label, prompt) {
   if (label === "exploration") {
     return {
       files: [{ path: "code.go", added: 1, deleted: 1 }],
-      plan: [{ id: "logic", concern: "logic", scope: ["code.go"], specialistType: "correctness" }],
+      plan: [{ id: "logic", concern: "logic", scope: ["code.go"], specialistType: "logic" }],
       applicability: { reason: "the change engages the plan" },
     };
   }
@@ -100,11 +101,16 @@ function respond(label, prompt) {
     const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
     return { units: [{ id: "complete-scope", concern: "complete assigned scope", files }] };
   }
+  if (label === "merge" || label === "brief-merge") {
+    return {
+      groups: findingsFromVerifierPrompt(prompt).map((entry) => ({ findingIds: [entry.id], primary: entry.id, sharedCause: "" })),
+    };
+  }
   if (label.startsWith("verify-")) {
     return {
-      verdicts: findingsFromVerifierPrompt(prompt).map((entry) => ({
-        findingId: entry.id, verdict: "upheld", confidence: 90, reason: "confirmed",
-      })),
+      verdicts: findingsFromVerifierPrompt(prompt).map((entry) => verdictFor(entry.id)),
+      newFindings: [],
+      outOfScopeObservations: [],
     };
   }
   return twoFindings;
@@ -113,6 +119,7 @@ function respond(label, prompt) {
 function specialistCalls(calls) {
   return calls.filter(({ opts }) =>
     opts.label !== "exploration" && opts.label !== "brief-relevance" &&
+    opts.label !== "merge" && opts.label !== "brief-merge" &&
     !opts.label.startsWith("brief-partition-") && !opts.label.startsWith("verify-"));
 }
 
@@ -121,8 +128,8 @@ function verifierCalls(calls) {
 }
 
 test("both builders hand the workflows the one contracts module's exports", () => {
-  assert.deepEqual(INPUTS.review.contracts, reviewContracts());
-  assert.deepEqual(INPUTS.briefs.contracts, reviewContracts());
+  assert.deepEqual(INPUTS.review.contracts, shippedContracts());
+  assert.deepEqual(INPUTS.briefs.contracts, shippedContracts());
 });
 
 for (const [name, run] of Object.entries(workflows)) {
@@ -145,7 +152,7 @@ for (const [name, run] of Object.entries(workflows)) {
     ["a zero verifier batch size", (contracts) => { contracts.verifierBatchSize = 0; }],
   ]) {
     test(`${name} workflow throws before any dispatch on ${breakage}`, async () => {
-      const contracts = reviewContracts();
+      const contracts = shippedContracts();
       mutate(contracts);
       const calls = [];
       await assert.rejects(
@@ -161,7 +168,7 @@ for (const [name, run] of Object.entries(workflows)) {
 }
 
 test("both workflows dispatch with the contracts they are handed, keeping no copy", async () => {
-  const contracts = reviewContracts();
+  const contracts = shippedContracts();
   contracts.specialistSchema.properties.findings.items.properties.title = { type: "string", minLength: 7 };
   contracts.verifierSchema.properties.verdicts.items.properties.reason = { type: "string", minLength: 3 };
   contracts.verifierBatchSize = 1;
@@ -176,5 +183,19 @@ test("both workflows dispatch with the contracts they are handed, keeping no cop
     assert.equal(verifiers.length, twoFindings.findings.length * specialists.length, `${name} batches one finding per verifier`);
     for (const { opts } of verifiers)
       assert.deepEqual(opts.schema, contracts.verifierSchema, `${name} verifier schema`);
+    const merges = calls.filter(({ opts }) => opts.label === "merge" || opts.label === "brief-merge");
+    assert.equal(merges.length, 1, `${name} merges once`);
+    assert.deepEqual(merges[0].opts.schema, contracts.mergeSchema, `${name} merge schema`);
   }
+});
+
+test("both workflows carry the same input checks, prompt filling, merge and verification", () => {
+  const shared = (filename) => {
+    const source = readFileSync(join(workflowsDir, filename), "utf8");
+    const start = source.indexOf("// The input checks, prompt filling, merge and verification below");
+    const end = source.indexOf("function uncheckedFindingOf");
+    assert.ok(start !== -1 && end > start, `${filename} carries the shared stage code`);
+    return source.slice(start, end);
+  };
+  assert.equal(shared("review.js"), shared("review-briefs.js"));
 });

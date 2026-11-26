@@ -1,0 +1,20 @@
+// The shipped prompts and contracts as the input builders attach them, for
+// tests that hand a workflow its input directly.
+import { fileURLToPath } from "node:url";
+
+import { reviewContracts } from "./review-contracts.mjs";
+import { reviewPrompts } from "./review-prompts.mjs";
+
+const shipped = reviewPrompts(fileURLToPath(new URL("..", import.meta.url)));
+
+export const shippedConcerns = shipped.concerns;
+export const shippedPrompts = shipped.prompts;
+export const shippedBriefPrompts = {
+  repository: shipped.prompts.repository,
+  merge: shipped.prompts.merge,
+  verifier: shipped.prompts.verifier,
+};
+
+export function shippedContracts() {
+  return reviewContracts(shipped.concerns.map(({ name }) => name));
+}

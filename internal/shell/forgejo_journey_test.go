@@ -1997,7 +1997,10 @@ func adjudicatedFinding(id, severity, title string, line int, explanation string
 		"id": id, "source": "Correctness", "title": title, "severity": severity,
 		"confidence": 86, "path": "internal/review.go", "line": line, "explanation": explanation,
 		"proposingLabel": "specialist", "verifyLabel": "verifier",
-		"rawVerifier": map[string]any{"verdict": "upheld", "confidence": 94, "reason": "The condition is reachable."},
+		"rawVerifier": map[string]any{
+			"verdict": "confirmed", "confidence": 94, "severity": severity, "reason": "The condition is reachable.",
+			"outsideFact": "", "wouldSettle": "",
+		},
 	}
 }
 

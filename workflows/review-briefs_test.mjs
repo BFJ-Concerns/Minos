@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { findingsFromVerifierPrompt } from "./verifier-prompt-fixture.mjs";
+import { findingsFromVerifierPrompt, verdictFor } from "./verifier-prompt-fixture.mjs";
 import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
 import { adjudicateEnvelope } from "./archive-fixture.mjs";
 import { resolveRouting } from "./role-routing.mjs";
@@ -16,7 +16,7 @@ import { resolveRouting } from "./role-routing.mjs";
 const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 
 import { briefRecords } from "./brief-dispositions.mjs";
-import { reviewContracts } from "./review-contracts.mjs";
+import { shippedBriefPrompts, shippedContracts } from "./shipped-prompts-fixture.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review-briefs.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-brief-inputs.mjs", import.meta.url));
@@ -39,6 +39,7 @@ function finding(overrides = {}) {
     path: "pkg/x.go",
     line: 7,
     explanation: "the repository concern is violated",
+    dependsOn: "",
     ...overrides,
   };
 }
@@ -57,8 +58,9 @@ function specialistResult(
   findings = [finding()],
   applicability = { status: "applicable", reason: "the concern applies" },
   outOfScopeObservations = [],
+  outsideConcernFindings = [],
 ) {
-  return { applicability, findings, outOfScopeObservations };
+  return { applicability, findings, outsideConcernFindings, outOfScopeObservations };
 }
 
 // The builder attaches each brief's frontmatter, title and deterministic
@@ -76,17 +78,21 @@ function args(overrides = {}) {
     briefs: [brief(".review/pkg/errors.md", "---\nrelevance: Error-path changes.\n---\nJudge errors.")],
     guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PROJECT_GUIDANCE_TEAL" }],
     routing: pairedRouting,
-    instructionBriefs: [
-      { path: "workflows/review-briefs/repository.md", readPath: "/minos/workflows/review-briefs/repository.md", content: "MINOS_REPOSITORY_BRIEF_V1" },
-      { path: "workflows/review-briefs/verifier.md", readPath: "/minos/workflows/review-briefs/verifier.md", content: "MINOS_ADVERSARIAL_VERIFIER_V1" },
-    ],
-    contracts: reviewContracts(),
+    prompts: shippedBriefPrompts,
+    contracts: shippedContracts(),
     ...overrides,
   };
   return { ...merged, briefs: briefRecords(merged.briefs, merged.occasion || null, merged.changedPaths) };
 }
 
-function responder({ relevance, partition, specialist, verify } = {}) {
+// Groups of one, so that no finding is merged unless a test says so.
+function separateGroups(prompt) {
+  return {
+    groups: findingsFromVerifierPrompt(prompt).map((entry) => ({ findingIds: [entry.id], primary: entry.id, sharedCause: "" })),
+  };
+}
+
+function responder({ relevance, partition, specialist, merge, verify } = {}) {
   return (label, prompt, opts) => {
     if (label === "brief-relevance") {
       if (relevance) return relevance(label, prompt, opts);
@@ -98,16 +104,13 @@ function responder({ relevance, partition, specialist, verify } = {}) {
       const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
       return { units: [{ id: "complete-scope", concern: "complete assigned scope", files }] };
     }
+    if (label === "brief-merge") return merge ? merge(label, prompt, opts) : separateGroups(prompt);
     if (label.startsWith("verify-")) {
       if (verify) return verify(label, prompt, opts);
-      const findings = findingsFromVerifierPrompt(prompt);
       return {
-        verdicts: findings.map((entry) => ({
-          findingId: entry.id,
-          verdict: "upheld",
-          confidence: 92,
-          reason: "confirmed",
-        })),
+        verdicts: findingsFromVerifierPrompt(prompt).map((entry) => verdictFor(entry.id, { confidence: 92, reason: "confirmed" })),
+        newFindings: [],
+        outOfScopeObservations: [],
       };
     }
     if (specialist) return specialist(label, prompt, opts);
@@ -232,8 +235,8 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
 
   assert.equal(calls.length, 1);
   assert.match(calls[0].opts.label, /^repository-/);
-  assert.match(calls[0].prompt, /Assigned scope: missing\/\./);
-  assert.doesNotMatch(calls[0].prompt, /Assigned scope: the whole repository/);
+  assert.match(calls[0].prompt, /All of `missing\/` as it stands at the head commit/);
+  assert.doesNotMatch(calls[0].prompt, /the whole repository/);
   assert.deepEqual(result.dispatches, [{
     brief: candidate.path,
     title: "Scoped",
@@ -498,7 +501,8 @@ test("all applicable findings are proposed on Sol and verified cross-family on C
     call.opts.engine === "claude" && call.opts.model === "claude-opus-5-5"));
   assert.ok(specialists.every((specialist) =>
     verifiers.every((verifier) => specialist.opts.engine !== verifier.opts.engine)));
-  assert.deepEqual(result.proposedFindings[0].rawVerifier, { verdict: "upheld", confidence: 92, reason: "confirmed" });
+  const { findingId, ...rawVerifier } = verdictFor(result.proposedFindings[0].id, { confidence: 92, reason: "confirmed" });
+  assert.deepEqual(result.proposedFindings[0].rawVerifier, rawVerifier);
   // The fixture brief sits under pkg/ and pkg/x.go changed, so its path-scope
   // trigger fires and relevance is moot: a specialist and its verifier only.
   assert.equal(result.requiredModelEvidence.length, 2);
@@ -522,7 +526,6 @@ test("a repository observation is returned separately and never reaches verifica
     verified: false,
   }]);
   const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
-  assert.ok(!specialist.opts.schema.required.includes("outOfScopeObservations"));
   assert.ok(specialist.opts.schema.properties.outOfScopeObservations);
   assert.deepEqual(
     specialist.opts.schema.properties.outOfScopeObservations.items.required,
@@ -541,8 +544,6 @@ test("a repository specialist may omit an empty observation array", async () => 
   assert.deepEqual(result.outOfScopeObservations, []);
   assert.deepEqual(result.proposedFindings, []);
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
-  const specialist = calls.find((call) => call.opts.label?.startsWith("repository-"));
-  assert.ok(!specialist.opts.schema.required.includes("outOfScopeObservations"));
 });
 
 test("a matched occasion runs a scoped brief even when its scope is untouched", async () => {
@@ -586,14 +587,14 @@ test("repository-brief verifier batches retain every finding beyond six", async 
   assert.deepEqual(result.proposedFindings.map((entry) => entry.title), [
     "one", "two", "three survives", "four survives", "five survives", "six survives", "seven survives",
   ]);
-  assert.ok(result.proposedFindings.every((entry) => entry.rawVerifier?.verdict === "upheld"));
+  assert.ok(result.proposedFindings.every((entry) => entry.rawVerifier?.verdict === "confirmed"));
   const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
   assert.deepEqual(verifierCalls.map((call) => call.opts.label), [
     "verify-brief-1-claude", "verify-brief-2-claude",
   ]);
-  assert.match(verifierCalls[0].prompt, /"title":"six survives"/);
-  assert.doesNotMatch(verifierCalls[0].prompt, /"title":"seven survives"/);
-  assert.match(verifierCalls[1].prompt, /"title":"seven survives"/);
+  assert.match(verifierCalls[0].prompt, /"title": "six survives"/);
+  assert.doesNotMatch(verifierCalls[0].prompt, /"title": "seven survives"/);
+  assert.match(verifierCalls[1].prompt, /"title": "seven survives"/);
 });
 
 test("repository-brief verifier pools findings from separate units with their own context", async () => {
@@ -623,26 +624,19 @@ test("repository-brief verifier pools findings from separate units with their ow
   assert.equal(verifierCalls.length, 1);
   assert.equal(verifierCalls[0].opts.label, "verify-brief-1-claude");
   const findings = findingsFromVerifierPrompt(verifierCalls[0].prompt);
-  assert.deepEqual(findings.map(({ title, concern, proposingSpecialist }) => ({
-    title, concern, proposingSpecialist,
-  })), [
-    {
-      title: "error finding",
-      concern: "error-path behaviour",
-      proposingSpecialist: "repository-review-pkg-errors-md-1-codex",
-    },
-    {
-      title: "design finding",
-      concern: "command design",
-      proposingSpecialist: "repository-review-cmd-design-md-1-codex",
-    },
+  assert.deepEqual(findings.map(({ title, wholeScope }) => ({ title, wholeScope })), [
+    { title: "error finding", wholeScope: "pkg/" },
+    { title: "design finding", wholeScope: "cmd/" },
   ]);
-  assert.deepEqual(result.proposedFindings.map((entry) => entry.verifyLabel), [
-    "verify-brief-1-claude", "verify-brief-1-claude",
+  assert.ok(findings.every((entry) => !("severity" in entry) && !("confidence" in entry)),
+    "the verifier grades without the proposer's severity or confidence");
+  assert.deepEqual(result.proposedFindings.map(({ verifyLabel, wholeScope }) => ({ verifyLabel, wholeScope })), [
+    { verifyLabel: "verify-brief-1-claude", wholeScope: "pkg/" },
+    { verifyLabel: "verify-brief-1-claude", wholeScope: "cmd/" },
   ]);
 });
 
-test("repository-brief verifier identifies unpartitioned brief units in a pooled payload", async () => {
+test("a finding about the change carries no whole scope to its verifier", async () => {
   const first = brief(".review/pkg/check-one.md", "---\nrelevance: Package changes.\n---\nJudge the first package concern.");
   const second = brief(".review/cmd/check-two.md", "---\nrelevance: Command changes.\n---\nJudge the second command concern.");
   const { calls } = await run(args({
@@ -657,21 +651,9 @@ test("repository-brief verifier identifies unpartitioned brief units in a pooled
   const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
   assert.equal(verifierCalls.length, 1);
   const findings = findingsFromVerifierPrompt(verifierCalls[0].prompt);
-  assert.deepEqual(findings.map(({ title, concern, unit, proposingSpecialist }) => ({
-    title, concern, unit, proposingSpecialist,
-  })), [
-    {
-      title: "package finding",
-      concern: null,
-      unit: "Check One",
-      proposingSpecialist: "repository-review-pkg-check-one-md-codex",
-    },
-    {
-      title: "command finding",
-      concern: null,
-      unit: "Check Two",
-      proposingSpecialist: "repository-review-cmd-check-two-md-codex",
-    },
+  assert.deepEqual(findings.map(({ title, wholeScope }) => ({ title, wholeScope })), [
+    { title: "package finding", wholeScope: undefined },
+    { title: "command finding", wholeScope: undefined },
   ]);
 });
 
@@ -685,12 +667,11 @@ test("slug-colliding brief labels retain verdicts for their own findings", async
     verify: (_label, prompt) => {
       const entries = findingsFromVerifierPrompt(prompt);
       return {
-        verdicts: entries.map((entry) => ({
-          findingId: entry.id,
-          verdict: entry.title === "first finding" ? "upheld" : "refuted",
-          confidence: 92,
-          reason: `verdict for ${entry.title}`,
-        })),
+        verdicts: entries.map((entry) => verdictFor(entry.id, entry.title === "first finding"
+          ? { confidence: 92, reason: `verdict for ${entry.title}` }
+          : { verdict: "refuted", severity: "None", confidence: 92, reason: `verdict for ${entry.title}` })),
+        newFindings: [],
+        outOfScopeObservations: [],
       };
     },
   }));
@@ -702,17 +683,9 @@ test("slug-colliding brief labels retain verdicts for their own findings", async
     "repository-review-pkg-check-one-md-codex",
     "repository-review-pkg-check-one-md-codex",
   ]);
-  assert.deepEqual(result.proposedFindings.map(({ id, title, rawVerifier }) => ({ id, title, rawVerifier })), [
-    {
-      id: "repository-brief-unit-1:finding:1",
-      title: "first finding",
-      rawVerifier: { verdict: "upheld", confidence: 92, reason: "verdict for first finding" },
-    },
-    {
-      id: "repository-brief-unit-2:finding:1",
-      title: "second finding",
-      rawVerifier: { verdict: "refuted", confidence: 92, reason: "verdict for second finding" },
-    },
+  assert.deepEqual(result.proposedFindings.map(({ id, title, rawVerifier }) => ({ id, title, verdict: rawVerifier.verdict, reason: rawVerifier.reason })), [
+    { id: "repository-brief-unit-1:finding:1", title: "first finding", verdict: "confirmed", reason: "verdict for first finding" },
+    { id: "repository-brief-unit-2:finding:1", title: "second finding", verdict: "refuted", reason: "verdict for second finding" },
   ]);
 });
 
@@ -763,12 +736,8 @@ test("a brief verifier observation reaches the result alongside its verdicts", a
     verify: (label, prompt) => {
       const findings = findingsFromVerifierPrompt(prompt);
       return {
-        verdicts: findings.map((entry) => ({
-          findingId: entry.id,
-          verdict: "upheld",
-          confidence: 92,
-          reason: "confirmed",
-        })),
+        verdicts: findings.map((entry) => verdictFor(entry.id)),
+        newFindings: [],
         outOfScopeObservations: [observation({ title: "residue the verdict cannot carry" })],
       };
     },
@@ -915,4 +884,35 @@ test("the workflow refuses briefs the builder handed over without their determin
   await assert.rejects(run(input), /deterministic brief enumeration is incomplete/);
   const half = { ...briefRecords([bare], null, ["pkg/x.go"])[0], disposition: { status: "skipped" } };
   await assert.rejects(run({ ...args(), briefs: [half] }), /deterministic brief enumeration is incomplete/);
+});
+
+test("the brief stage carries the pull request's title and description to its reviewers and verifiers", async () => {
+  const pullRequest = { title: "Retry the upload", body: "Out of scope: the progress bar." };
+  const { calls } = await run(args({ pullRequest }));
+  const legs = calls.filter((call) => call.opts.label?.startsWith("repository-") || call.opts.label?.startsWith("verify-"));
+  assert.ok(legs.length >= 2);
+  for (const call of legs)
+    assert.ok(call.prompt.includes('<pull-request-description title="Retry the upload">\nOut of scope: the progress bar.\n</pull-request-description>'));
+  const without = await run(args());
+  assert.ok(without.calls.every((call) => !call.prompt.includes("<pull-request-description")));
+});
+
+test("a diff-extent brief reviewer is assigned what the change did within the brief's directory", async () => {
+  const { calls } = await run(args());
+  const reviewer = calls.find((call) => call.opts.label?.startsWith("repository-"));
+  assert.match(reviewer.prompt, /^# Repository-brief review\n/);
+  assert.match(reviewer.prompt, /<repository-brief path="\.review\/pkg\/errors\.md">\n---\nrelevance: Error-path changes\.\n---\nJudge errors\.\n<\/repository-brief>/);
+  assert.match(reviewer.prompt, /What `git diff target111\.\.\.head222` changed within `pkg\/`\./);
+  assert.ok(!/\{\{[a-z-]+\}\}/.test(reviewer.prompt), "every slot is filled");
+});
+
+test("a brief reviewer's finding outside the brief's concern is verified without a whole scope", async () => {
+  const candidate = brief(".review/pkg/errors.md", "---\nextent: full\nsweep: whole-tree\n---\nJudge errors.");
+  const { result } = await run(args({ briefs: [candidate] }), responder({
+    specialist: () => specialistResult([finding()], undefined, [], [finding({ title: "new race", line: 30 })]),
+  }));
+  assert.deepEqual(result.proposedFindings.map(({ title, outsideConcern, wholeScope }) => ({ title, outsideConcern, wholeScope })), [
+    { title: "new race", outsideConcern: true, wholeScope: undefined },
+    { title: "repository defect", outsideConcern: undefined, wholeScope: "pkg/" },
+  ]);
 });

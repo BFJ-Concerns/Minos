@@ -97,7 +97,44 @@ test("a blocking round posts only what blocks and files the rest", (t) => {
   const entries = readJson(plan.triage.entries);
   assert.deepEqual(entries.map((entry) => [entry.kind, entry.severity]),
     [["advisory-finding", "Medium"], ["advisory-finding", "Low"], ["out-of-scope-observation", undefined]]);
-  assert.deepEqual(plan.triage, { entries: plan.triage.entries, advisory: 2, observations: 1, misconfigurations: 0, guidanceMisconfigurations: 0 });
+  assert.deepEqual(plan.triage, { entries: plan.triage.entries, advisory: 2, unsettled: 0, observations: 1, misconfigurations: 0, guidanceMisconfigurations: 0 });
+});
+
+test("an unsettled finding is filed as an open question and never posted or classified", (t) => {
+  const confirmed = [finding("a")];
+  const unsettled = {
+    ...finding("u", { line: 77, severity: "Medium", title: "Stream lookup treats a 404 as empty" }),
+    verdict: "unsettled",
+    outsideFact: "The service answers 404 for a stream that has no messages.",
+    wouldSettle: "The service's API documentation for the stream endpoint.",
+  };
+  const elsewhere = { ...unsettled, id: "v", line: 42, title: "Second question at a confirmed site" };
+  const { result, plan, readJson } = compose(t, {
+    main: verdict(confirmed, { unsettledFindings: [unsettled, elsewhere] }),
+    mainDecision: decision("request-changes", [{ key: "a", gating: true }]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const comments = readJson(plan.posts[0].comments);
+  assert.equal(comments.length, 1);
+  assert.doesNotMatch(JSON.stringify(comments), /Stream lookup/);
+  const entries = readJson(plan.triage.entries);
+  assert.deepEqual(entries, [{
+    kind: "unsettled-finding",
+    title: "Stream lookup treats a 404 as empty",
+    severity: "Medium",
+    path: "internal/review.go",
+    line: 77,
+    explanation: "Explanation for u.",
+    outsideFact: "The service answers 404 for a stream that has no messages.",
+    wouldSettle: "The service's API documentation for the stream endpoint.",
+  }]);
+  assert.equal(plan.triage.unsettled, 1);
+  const filed = issueLogEntry(entries[0], "Filed by Minos");
+  assert.match(filed, /^- \*\*Unsettled · Medium: Stream lookup treats a 404 as empty\*\*/);
+  assert.match(filed, /neither confirm nor refute/);
+  assert.match(filed, /not a confirmed defect/);
+  assert.match(filed, /What would settle it: The service's API documentation/);
+  assert.doesNotMatch(filed, /Advisory|Blocking/);
 });
 
 for (const severities of [[], ["Medium", "Low"]]) {

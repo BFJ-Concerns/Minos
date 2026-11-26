@@ -1,5 +1,6 @@
 // Delivers a run's non-gating material — verified advisory findings,
-// unverified observations from outside the change, and configuration
+// unverified observations from outside the change, findings a verifier
+// could neither confirm nor refute, and configuration
 // diagnostics — to the repository's configured filing destination: a file
 // in a repository's default branch, an issue on a named repository, a
 // comment on the pull request, or nowhere. One entry files once,
