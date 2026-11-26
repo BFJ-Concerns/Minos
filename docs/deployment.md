@@ -148,12 +148,11 @@ needs; it is not required.
    (default `Minos`), and the sweep's completion marker is read under
    that context only. A status's Details link lands on the review Minos
    posted for the reviewed head, or on the pull request itself when it
-   posted none. For a Forgejo forge, `[forges.<key>] web-base`
-   sets the link's host and optional path prefix as an absolute HTTP(S)
-   URL; unset, the link derives the web host from `api-base` by stripping
-   a trailing `/api/v1`. GitHub links always derive the web host from the
-   API base (`https://github.com` for the public API, the Enterprise host
-   otherwise) and ignore `web-base`.
+   posted none. On either forge, `[forges.<key>] web-base` sets the link's
+   host and optional path prefix as an absolute HTTP(S) URL. When unset,
+   Forgejo strips a trailing `/api/v1` from `api-base`. GitHub uses
+   `https://github.com` for the public API and the Enterprise web host
+   for Enterprise Server.
 
    The status is review information, not a merge gate: do not make this
    context a required status check in branch protection. It can be missing
