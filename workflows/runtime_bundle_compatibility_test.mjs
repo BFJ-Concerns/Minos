@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import test from "node:test";
 import { operationRoot } from "./temporary-directory-fixture.mjs";
+import { shippedContracts } from "./shipped-prompts-fixture.mjs";
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = dirname(workflowsDir);
@@ -92,6 +93,58 @@ export { assertValidAgentOptions as minosAssertValidAgentOptions };
   const module = await import(`${pathToFileURL(probeRuntime).href}?probe=${Date.now()}`);
   return module.minosAssertValidAgentOptions;
 }
+
+async function installedSchemaValidator(t) {
+  const root = operationRoot(t, "minos-installed-runtime-schemas-");
+  const installation = installInPlace(root);
+  assert.equal(installation.status, 0, installation.stderr);
+  const probeRuntime = join(root, "runtime-schema-probe.mjs");
+  writeFileSync(
+    probeRuntime,
+    `${readFileSync(join(root, "runtime", "ensemble.mjs"), "utf8")}
+export {
+  assertCompilableSchema as minosAssertCompilableSchema,
+  normaliseForCodexOutputSchema as minosNormaliseForCodexOutputSchema,
+  validateJsonSchema as minosValidateJsonSchema,
+};
+`,
+  );
+  const module = await import(`${pathToFileURL(probeRuntime).href}?probe=${Date.now()}`);
+  return {
+    compile: module.minosAssertCompilableSchema,
+    forCodex: module.minosNormaliseForCodexOutputSchema,
+    validate: (value, schema) => module.minosValidateJsonSchema(value, schema).ok,
+  };
+}
+
+const sampleFinding = {
+  title: "t", severity: "High", confidence: 80, path: "a.go", line: 1, explanation: "e", dependsOn: "",
+};
+const observationSample = { title: "t", path: "a.go", line: 1, explanation: "e" };
+
+// One answer each shipped stage schema must accept, as a leg would return it.
+const schemaSamples = {
+  explorationSchema: {
+    applicability: { reason: "r" },
+    files: [{ path: "a.go", added: 1, deleted: 0 }],
+    plan: [{ id: "u", concern: "c", scope: ["a.go"], specialistType: "logic" }],
+  },
+  specialistSchema: {
+    applicability: { status: "applicable", reason: "r" },
+    findings: [sampleFinding],
+    outsideConcernFindings: [],
+    outOfScopeObservations: [observationSample],
+  },
+  mergeSchema: { groups: [{ findingIds: ["a", "b"], primary: "a", sharedCause: "one fix" }] },
+  verifierSchema: {
+    verdicts: [{
+      findingId: "a", verdict: "unsettled", confidence: 50, severity: "Medium",
+      reason: "r", outsideFact: "f", wouldSettle: "w",
+    }],
+    newFindings: [sampleFinding],
+    outOfScopeObservations: [],
+  },
+};
 
 function assertPinnedRuntimeUnchanged(t) {
   const original = readFileSync(pinnedRuntimePath);
@@ -187,6 +240,28 @@ test("the installed runtime accepts the free identifiers in every shipped workfl
       `${filename} uses only identifiers the installed runtime defines`,
     );
   }
+});
+
+test("the installed runtime compiles every shipped stage schema and accepts a well-formed answer to it", async (t) => {
+  const { compile, forCodex, validate } = await installedSchemaValidator(t);
+  const contracts = shippedContracts();
+  for (const [name, sample] of Object.entries(schemaSamples)) {
+    const schema = contracts[name];
+    assert.doesNotThrow(() => compile(schema), `${name} compiles under the installed runtime`);
+    const codexSchema = forCodex(schema);
+    assert.doesNotThrow(() => compile(codexSchema), `${name} compiles as a Codex output schema`);
+    assert.ok(validate(sample, schema), `${name} accepts a well-formed answer`);
+    assert.ok(validate(sample, codexSchema), `${name} accepts a well-formed answer as a Codex output schema`);
+  }
+  assert.ok(!validate({ ...schemaSamples.verifierSchema, verdicts: [{ ...schemaSamples.verifierSchema.verdicts[0], verdict: "upheld" }] }, contracts.verifierSchema),
+    "a verdict outside the three is refused");
+});
+
+test("the installed runtime refuses a stage schema shape it cannot compile", async (t) => {
+  const { compile } = await installedSchemaValidator(t);
+  const contracts = shippedContracts();
+  contracts.verifierSchema.properties.verdicts.items.properties.verdict.enum = "confirmed";
+  assert.throws(() => compile(contracts.verifierSchema), (error) => error?.name === "InvalidAgentSchemaError");
 });
 
 function writeInstallerFixture(t, checksumLine) {
