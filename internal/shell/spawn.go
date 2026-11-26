@@ -50,10 +50,6 @@ func preserveStaleReviewResult(path, stalePath string) error {
 	return nil
 }
 
-// Runs share the configured envelope live through this slice; each run's
-// MemoryMax is also the backstop on a box without the slice installed.
-const runsSliceName = "minos-runs.slice"
-
 // sweepAfterRunTemplate is the shipped template
 // (deploy/systemd/user/minos-sweep-after-run@.service) whose per-run
 // instance a run unit's clean exit starts. The instance enqueues the
@@ -290,7 +286,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"--property=ExitType=main",
 		"--property=KillMode=control-group",
 		"--property=RuntimeMaxSec=" + cfg.runDurationCeiling(),
-		"--slice=" + runsSliceName,
+		"--slice=" + runsSliceUnit,
 		"--property=MemoryMax=" + fmt.Sprintf("%dG", cfg.runMemoryEnvelopeGiB()),
 		"--property=OnSuccess=" + sweepAfterRunUnit(unit),
 	}
@@ -301,9 +297,6 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	out, err := commandCombinedOutput(ctx, "systemd-run", args...)
 	if err != nil {
 		cleanupSpawnFailure()
-		if strings.Contains(string(out), "already exists") {
-			return SpawnResult{Outcome: SpawnSuppressed, BlockingUnit: unit + ".service"}, nil
-		}
 		return SpawnResult{}, fmt.Errorf("systemd-run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if progressDecision == continuationProgressAdvanced {

@@ -1360,21 +1360,6 @@ func TestGitHubFilingRefusesWrongIdentity(t *testing.T) {
 	}
 }
 
-func TestGitHubAlertsUseIssuesAndRepeatAsComments(t *testing.T) {
-	state := newGitHubFixtureState(t)
-	adapter := state.adapter(t)
-	repository := state.guard().Repository
-	state.mu.Lock()
-	state.issues = []map[string]any{{"number": 7, "state": "open", "title": "Sweep failed", "pull_request": map[string]any{"url": "pull"}}}
-	state.mu.Unlock()
-	githubApplied(t, adapter.Alert(t.Context(), repository, "Sweep failed", "First alert"))
-	githubApplied(t, adapter.Alert(t.Context(), repository, "Sweep failed", "Repeat alert"))
-	writes := state.operationWrites()
-	if len(writes) != 2 || writes[0].path != "/repos/acme/widgets/issues" || writes[0].payload["body"] != "First alert" || writes[1].path != "/repos/acme/widgets/issues/101/comments" || writes[1].payload["body"] != "Repeat alert" {
-		t.Fatalf("alert writes = %#v", writes)
-	}
-}
-
 func TestGitHubStackedChildClaimSurvivesRetarget(t *testing.T) {
 	state := newGitHubFixtureState(t)
 	state.mu.Lock()
@@ -1430,7 +1415,7 @@ func TestGitHubStackedChildClaimSurvivesRetarget(t *testing.T) {
 }
 
 func TestGitHubWritesPreserveUncertainty(t *testing.T) {
-	for _, op := range []string{"status", "reaction", "label", "file", "alert"} {
+	for _, op := range []string{"status", "reaction", "label", "file"} {
 		t.Run(op, func(t *testing.T) {
 			state := newGitHubFixtureState(t)
 			adapter := state.adapter(t)
@@ -1451,8 +1436,6 @@ func TestGitHubWritesPreserveUncertainty(t *testing.T) {
 				result = adapter.AddMarker(t.Context(), guard, forge.Marker{Label: "review active"})
 			case "file":
 				result = adapter.FileIssue(t.Context(), guard.Repository, "Finding", "Body <!-- minos:entry_1 -->")
-			default:
-				result = adapter.Alert(t.Context(), guard.Repository, "Alert", "Body")
 			}
 			if result.Outcome != forge.WriteUncertain || len(state.operationWrites()) != 1 {
 				t.Fatalf("failed write = %#v, writes %#v", result, state.operationWrites())

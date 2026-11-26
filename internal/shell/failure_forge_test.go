@@ -56,7 +56,7 @@ failures-credential-file = %q
 	}
 	// An unauthenticated real push must be refused and cannot seed the assertion.
 	cmd := processGroupCommandContext(t.Context(), "git", "-C", checkout, "push", "origin", "HEAD:main")
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_COUNT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("unauthenticated push succeeded: %s", out)
 	}

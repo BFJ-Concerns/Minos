@@ -729,23 +729,6 @@ esac
 	return record
 }
 
-func systemdEnvironment(t *testing.T, arguments []string) map[string]string {
-	t.Helper()
-	environment := make(map[string]string)
-	for index := 0; index < len(arguments); index++ {
-		if arguments[index] != "--setenv" || index+1 >= len(arguments) {
-			continue
-		}
-		name, value, found := strings.Cut(arguments[index+1], "=")
-		if !found {
-			t.Fatalf("invalid systemd environment argument %q", arguments[index+1])
-		}
-		environment[name] = value
-		index++
-	}
-	return environment
-}
-
 func runRecordedBody(t *testing.T, runBody string, overrides map[string]string) {
 	t.Helper()
 	cmd := exec.Command(runBody)

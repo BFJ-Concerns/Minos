@@ -13,6 +13,8 @@ import (
 	"github.com/BFJ-Concerns/Minos/deploy"
 )
 
+// Runs share the configured envelope live through this slice; each run's
+// MemoryMax is also the backstop on a box without the slice installed.
 const runsSliceUnit = "minos-runs.slice"
 
 // InstallUnitsCommand writes the shipped systemd user units into the
