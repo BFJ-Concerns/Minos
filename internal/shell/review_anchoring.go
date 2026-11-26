@@ -279,12 +279,20 @@ func lineInIntervals(line int64, intervals [][2]int64) bool {
 	return false
 }
 
+// foldedReviewHeading opens the review-body section that holds findings
+// with no line to anchor to. A finding there has no thread to resolve or
+// reply in, so the section tells the author where an answer goes: a
+// comment on the pull request naming the finding, which a later round
+// reads as settling it.
+const foldedReviewHeading = "\n\n---\n\nFindings that could not be anchored inline:\n" +
+	"\nThese have no thread to resolve. To reject one, say so in a comment on the pull request that names it by its title or by its path and line.\n"
+
 func foldedReviewComments(comments []requestedReviewComment) string {
 	if len(comments) == 0 {
 		return ""
 	}
 	var addendum strings.Builder
-	addendum.WriteString("\n\n---\n\nFindings that could not be anchored inline:\n")
+	addendum.WriteString(foldedReviewHeading)
 	for _, comment := range comments {
 		fmt.Fprintf(&addendum, "\n#### `%s` %s\n\n%s\n", comment.Path, comment.location(), comment.Body)
 	}
