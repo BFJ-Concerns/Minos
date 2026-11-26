@@ -345,9 +345,11 @@ commit_statuses() {
   status_page=1
   while :; do
     status_current="$(api GET "${status_path}?limit=50&page=${status_page}")" || return 1
-    ! repeats_previous_page "$status_current" "$status_previous" || break
-    status_count="$(printf '%s' "$status_current" | jq 'if type == "array" then length else error("expected status array") end')" || return 1
+    status_count="$(printf '%s' "$status_current" | jq -es '
+      if length == 1 and (.[0] | type) == "array" then .[0] | length
+      else error("expected one status array") end')" || return 1
     [ "$status_count" -gt 0 ] || break
+    ! repeats_previous_page "$status_current" "$status_previous" || break
     status_all="$(json_concat "$status_all" "$status_current")" || return 1
     status_previous="$status_current"
     status_page=$((status_page + 1))
