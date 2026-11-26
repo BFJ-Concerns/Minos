@@ -26,7 +26,17 @@ func publishProjectionDocument(directory, filename string, document any, rename 
 	}
 	temporaryPath := temporary.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
-	return writeServiceStateAtomically(temporary, temporaryPath, path, content, rename)
+	if _, err := temporary.Write(content); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write service state: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close service state: %w", err)
+	}
+	if err := rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("rename service state: %w", err)
+	}
+	return nil
 }
 
 // readProjectionDocument omits missing, unreadable, malformed and unrelated

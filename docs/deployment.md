@@ -263,9 +263,8 @@ needs; it is not required.
    token. The token needs these Forgejo scopes: `read:user` (identity
    verification), `write:repository` (cloning, branch reads, commit
    statuses, requested reviewers, and reviews), and `write:issue`
-   (reactions, labels, dependency lookups, and alert issues). The account
-   named by
-   `service.bot-login` must match the token's authenticated identity; the
+   (reactions, labels, dependency lookups, and issue filing). The account
+   named by `service.bot-login` must match the token's authenticated identity; the
    claim adapter rejects a mismatch. The Forgejo instance must expose the
    issue-dependencies API (`/api/v1/repos/.../issues/.../dependencies`); a
    missing or disabled endpoint produces "dependency state unavailable" and
@@ -275,7 +274,7 @@ needs; it is not required.
    requests and commit statuses read and write, contents read — and write
    where a `file` filing destination or the failure ledger pushes to an
    installed repository — and issues read and write where a filing
-   destination or alert needs them; subscribe it
+   destination needs them; subscribe it
    to pull request, pull request review and issue comment events; one
    webhook pointing at `/hooks/github` with the secret), install it on each
    repository Minos reviews, and write the credential file as JSON:
@@ -291,12 +290,7 @@ needs; it is not required.
    `[forges.<key>]` instead, which overrides the service's login on that
    forge alone. A GitHub App cannot be a requested reviewer, so the claim on
    GitHub is the in-flight marker alone.
-5. Install `minos-sweep-alert.service` (the sweep's `OnFailure=` hook, which
-   files an operator alert issue on the repository named by the `[service]`
-   `alert-forge`/`alert-owner`/`alert-repo` keys; the sweep files the same
-   alert itself when a configured repo is skipped for six consecutive
-   sweep passes — roughly an hour at the default ten-minute cadence, but
-   pass-count-based, not time-based): run
+5. Install the systemd user units. Run
    `minos install-units --config /etc/minos ~/.config/systemd/user` as the
    deployment user, then `systemctl --user daemon-reload` and enable
    `minos-receiver.service` and `minos-sweep.timer`. The units are embedded
@@ -306,6 +300,11 @@ needs; it is not required.
    memory envelope, so runs share that envelope rather than a copied
    default, and the timer and the `minos-sweep-after-run@.service` template
    verbatim.
+
+   Before upgrading an installation that filed operator alerts, remove
+   `alert-forge`, `alert-owner` and `alert-repo` from the `[service]` table
+   in `service.toml`. Reinstall the user units and reload systemd to remove
+   the failure hook from `minos-sweep.service`.
 6. Optionally, configure a forge webhook so a review starts as soon as a
    pull request changes rather than on the sweep's next pass; the sweep
    finds every pull request needing review without one. Point it at `/hooks/<forge key>` —

@@ -23,7 +23,10 @@ func TestProjectionReceiverListening(t *testing.T) {
 	t.Cleanup(func() { serveReceiver = original })
 	stopped := errors.New("test listener stopped")
 	var observed bool
-	serveReceiver = func(listener net.Listener, handler http.Handler) error {
+	serveReceiver = func(server *http.Server, listener net.Listener) error {
+		if server.ReadTimeout <= 0 || server.WriteTimeout <= 0 {
+			t.Fatalf("receiver timeouts: read=%s write=%s", server.ReadTimeout, server.WriteTimeout)
+		}
 		observed = true
 		doc := projectionJSON(t, receiverHeartbeatPath(cfg))
 		if doc["activity"] != "listening" || doc["bind"] != listener.Addr().String() {

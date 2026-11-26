@@ -39,9 +39,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	}
 	var candidates []sweepCandidate
 	// One unreadable repo must not stop the pass: the rest of the fleet is
-	// swept, and only a total outage fails the unit. Skipped repos are
-	// counted across passes; a repo quietly failing for an hour files an
-	// operator alert.
+	// swept, and only a total outage fails the unit.
 	var attempted, unreadable int
 	skipped := make(map[string]string)
 	for _, repo := range repos {
@@ -123,7 +121,6 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err := expireInactiveRunHandoffs(ctx, cfg, repos); err != nil {
 		log.Printf("expire inactive run handoffs: %v", err)
 	}
-	recordRepoSkips(ctx, cfg, skipped)
 	if attempted > 0 && unreadable == attempted {
 		return fmt.Errorf("every configured repo (%d) was unreadable this pass", attempted)
 	}
