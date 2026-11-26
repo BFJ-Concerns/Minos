@@ -15,9 +15,16 @@ export const ENGINES = ["claude", "codex"];
 export const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
 
 const DEFAULT_MODEL = { claude: "claude-opus-5-5", codex: "gpt-6.1-sol" };
+// The shipped pairing proposes findings on GPT Astra and verifies them on
+// Claude Opus, both at medium: on the pull requests it was tried on,
+// Astra's specialists found most of the defects their authors later fixed,
+// and Opus was the verifier whose own severity grades sorted them. The
+// proposer takes Astra whenever it runs on Codex; any other role on Codex
+// runs on Sol.
+const PAIRED_MODEL = { proposer: { codex: "gpt-6.2-astra" } };
 const DEFAULT_EFFORT = {
   exploration: "high",
-  proposer: "high",
+  proposer: "medium",
   verifier: "medium",
   "engagement-gate": "medium",
   "brief-planner": "high",
@@ -32,6 +39,10 @@ const PAIRED_ENGINE = {
   "engagement-gate": "codex",
   "brief-planner": "codex",
 };
+
+function defaultModel(role, engine) {
+  return (PAIRED_MODEL[role] && PAIRED_MODEL[role][engine]) || DEFAULT_MODEL[engine];
+}
 
 function assertConfiguredRole(role, entry) {
   if (entry === undefined) return;
@@ -68,7 +79,7 @@ export function resolveRouting({ configured = {}, provisioned }) {
       throw new Error(`routing.${role}.engine names ${engine}, which this deployment has not provisioned`);
     routing[role] = {
       engine,
-      model: entry && entry.model !== undefined ? entry.model : DEFAULT_MODEL[engine],
+      model: entry && entry.model !== undefined ? entry.model : defaultModel(role, engine),
       effort: entry && entry.effort !== undefined ? entry.effort : DEFAULT_EFFORT[role],
     };
   }

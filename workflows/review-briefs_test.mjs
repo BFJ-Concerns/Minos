@@ -491,12 +491,12 @@ test("specialist inapplicability is recorded and never reaches verification", as
   assert.equal(result.briefs.find((entry) => entry.skipKind === "inapplicable").reason, "the diff gives this concern nothing to judge");
 });
 
-test("all applicable findings are proposed on Sol and verified cross-family on Claude", async () => {
+test("all applicable findings are proposed on Astra and verified cross-family on Claude", async () => {
   const { result, calls } = await run(args());
   const specialists = calls.filter((call) => call.opts.label?.startsWith("repository-"));
   const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
   assert.ok(specialists.every((call) =>
-    call.opts.engine === "codex" && call.opts.model === "gpt-6.1-sol"));
+    call.opts.engine === "codex" && call.opts.model === "gpt-6.2-astra"));
   assert.ok(verifiers.every((call) =>
     call.opts.engine === "claude" && call.opts.model === "claude-opus-5-5"));
   assert.ok(specialists.every((specialist) =>

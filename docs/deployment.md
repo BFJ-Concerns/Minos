@@ -194,12 +194,14 @@ needs; it is not required.
    `verifier`, `engagement-gate`, `brief-planner` — to an engine, model
    and effort. A role left unset defaults at run time: with both engines
    provisioned, proposing and planning roles (`exploration`, `proposer`,
-   `engagement-gate`, `brief-planner`) run on Codex (`gpt-6.1-sol`) and the
-   `verifier` on Claude (`claude-opus-5-5`); with one engine provisioned,
-   every role runs on it with that engine's default model. Default effort
-   is `high` for `exploration`, `proposer` and `brief-planner`, and
-   `medium` for `verifier` and `engagement-gate`. A configured role
-   overrides only the fields it sets.
+   `engagement-gate`, `brief-planner`) run on Codex and the `verifier` on
+   Claude. With one engine provisioned, every role runs on it. A role on
+   Claude defaults to `claude-opus-5-5`; on Codex the `proposer` defaults to
+   `gpt-6.2-astra` and every other role to `gpt-6.1-sol`. Default effort is `high` for
+   `exploration` and `brief-planner`, and `medium` for `proposer`,
+   `verifier` and `engagement-gate`. The verifier's routing also carries
+   the leg that merges findings one fix would resolve before they are
+   verified. A configured role overrides only the fields it sets.
 
    Size every capacity decision — this cap, the slice envelope, the box
    itself — by **anonymous memory plus swap peak, never the journal's cgroup

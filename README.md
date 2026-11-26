@@ -52,9 +52,10 @@ If any reviewer fails to finish, or any finding lacks a complete verifier
 verdict, the run is incomplete: Minos publishes no review and sets no clean
 status, and the sweep picks the pull request up again on a later pass.
 
-With both engines available, the proposing and planning roles run on Codex
-(`gpt-6.1-sol`) and the verifier on Claude (`claude-opus-5-5`), so every finding
-is checked by the family that did not propose it. `[routing]` in
+With both engines available, specialists propose findings on Codex
+(`gpt-6.2-astra`) and the verifier checks them on Claude (`claude-opus-5-5`),
+both at medium effort, so every finding is checked by the family that did
+not propose it; the planning roles run on Codex (`gpt-6.1-sol`). `[routing]` in
 `service.toml` moves any role to another engine, model or effort, and a box
 with only one engine runs every role on it.
 

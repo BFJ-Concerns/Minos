@@ -180,8 +180,8 @@ test("the script emits an envelope with every routed leg and raw verifier output
     result.requiredModelEvidence.map(({ role, pinnedModel }) => ({ role, pinnedModel })),
     [
       { role: "exploration", pinnedModel: "gpt-6.1-sol" },
-      { role: "specialist", pinnedModel: "gpt-6.1-sol" },
-      { role: "specialist", pinnedModel: "gpt-6.1-sol" },
+      { role: "specialist", pinnedModel: "gpt-6.2-astra" },
+      { role: "specialist", pinnedModel: "gpt-6.2-astra" },
       { role: "merge", pinnedModel: "claude-opus-5-5" },
       { role: "verifier", pinnedModel: "claude-opus-5-5" },
     ],
@@ -288,14 +288,14 @@ test("a specialist may omit an empty observation array", async () => {
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
 });
 
-test("all findings are proposed on Sol and verified cross-family on Claude", async () => {
+test("all findings are proposed on Astra and verified cross-family on Claude", async () => {
   const plan = [unit("correct", "logic"), unit("secure", "security")];
   const { calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
   const correctness = calls.find((call) => call.opts.label === "specialist-1-logic-codex");
   const security = calls.find((call) => call.opts.label === "specialist-2-security-codex");
   const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
-  assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-6.1-sol"]);
-  assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-6.1-sol"]);
+  assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-6.2-astra"]);
+  assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-6.2-astra"]);
   assert.ok(verifiers.length > 0);
   assert.ok(verifiers.every((call) => call.opts.engine === "claude" && call.opts.model === "claude-opus-5-5"));
   assert.ok(specialistCalls(calls).every((call) => call.opts.engine !== "claude"));
@@ -387,10 +387,10 @@ test("the input builder refuses routing it cannot honour, and the workflow refus
   assert.deepEqual(calls, []);
 });
 
-test("exploration and specialists run at high effort while verifiers stay at medium", async () => {
+test("exploration runs at high effort while specialists and verifiers run at medium", async () => {
   const { calls } = await runScript(ARGS, responder());
   assert.equal(calls.find((call) => call.opts.label === "exploration").opts.effort, "high");
-  assert.ok(specialistCalls(calls).every((call) => call.opts.effort === "high"));
+  assert.ok(specialistCalls(calls).every((call) => call.opts.effort === "medium"));
   assert.ok(calls.filter((call) => call.opts.label?.startsWith("verify-"))
     .every((call) => call.opts.effort === "medium"));
 });
