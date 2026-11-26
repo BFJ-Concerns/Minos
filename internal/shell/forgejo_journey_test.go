@@ -3303,15 +3303,17 @@ func TestForgeStatusRejectsFreeFormDescription(t *testing.T) {
 }
 
 func TestForgeStatusDetailsUsesForgeWebBase(t *testing.T) {
-	for _, test := range []struct{ name, webBase string }{
+	for _, test := range []struct{ name, webBase, apiSuffix string }{
 		{name: "configured", webBase: "https://forge.example/forge/"},
 		{name: "unset"},
+		{name: "versioned API base with trailing slash", apiSuffix: "/api/v1/"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
 			cfg, _, facts := state.service(t)
 			forge := cfg.Forges[facts.Forge]
 			forge.WebBase = test.webBase
+			forge.APIBase += test.apiSuffix
 			cfg.Forges[facts.Forge] = forge
 			writeServiceConfig(t, cfg)
 			t.Setenv("MINOS_CONFIG", cfg.Root)

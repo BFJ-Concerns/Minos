@@ -4,6 +4,11 @@ set -eu
 : "${MINOS_API_BASE:?MINOS_API_BASE is required}"
 : "${MINOS_FORGE_CREDENTIAL:?MINOS_FORGE_CREDENTIAL is required}"
 
+# Forgejo routes below already contain /api/v1. Accept a base with or
+# without that suffix, including deployments under a path prefix.
+forgejo_base="${MINOS_API_BASE%/}"
+forgejo_base="${forgejo_base%/api/v1}"
+
 api() {
   method="$1"
   path="$2"
@@ -13,7 +18,7 @@ api() {
     -H "Authorization: token ${MINOS_FORGE_CREDENTIAL}" \
     -H "Accept: application/json" \
     "$@" \
-    "${MINOS_API_BASE%/}${path}"
+    "${forgejo_base}${path}"
 }
 
 # api_with_status is for decisions where HTTP absence is materially different
@@ -31,7 +36,7 @@ api_with_status() {
     -H "Authorization: token ${MINOS_FORGE_CREDENTIAL}" \
     -H "Accept: application/json" \
     "$@" \
-    "${MINOS_API_BASE%/}${path}")"; then
+    "${forgejo_base}${path}")"; then
     api_status_body="$(cat "$api_status_file")"
     rm -f "$api_status_file"
     return 0

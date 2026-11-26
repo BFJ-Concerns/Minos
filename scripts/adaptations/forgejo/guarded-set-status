@@ -25,7 +25,7 @@ else
   exit 0
 fi
 
-web_base="${MINOS_WEB_BASE:-${MINOS_API_BASE%/api/v1}}"
+web_base="${MINOS_WEB_BASE:-$forgejo_base}"
 # The details link lands on the newest review this identity left on the
 # reviewed head, at the page anchor the forge reports for it, and on the
 # pull request itself when there is none. The read-back below matches on
