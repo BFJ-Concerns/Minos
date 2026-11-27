@@ -605,7 +605,9 @@ const state = JSON.parse(fs.readFileSync(path, "utf8"));
 const args = process.argv.slice(2);
 if (args.join(" ") === "forge snapshot") {
   if (process.env.FILING_TEST_SNAPSHOT_FAILURE) { console.error("snapshot unavailable"); process.exit(1); }
-  process.stdout.write(JSON.stringify({ authenticated_user: "review-bot", reviews: state.reviews }));
+  const comments = process.env.FILING_TEST_LONG_CONVERSATION
+    ? Array.from({ length: 300 }, (_, id) => ({ id, user: "author", body: "x".repeat(8192) })) : [];
+  process.stdout.write(JSON.stringify({ authenticated_user: "review-bot", reviews: state.reviews, comments }));
 } else if (args[0] === "forge" && args[1] === "review") {
   const body = fs.readFileSync(args[5], "utf8");
   state.calls.push({ args, body });
@@ -684,6 +686,12 @@ if (args.join(" ") === "forge snapshot") {
     const again = await f.deliver();
     assert.equal(again.outcome, "nothing-to-file");
     assert.equal(again.written, 0);
+    assert.equal(f.state().calls.length, 1);
+  });
+  await t.test("a conversation longer than a megabyte does not stop the delivery", async (t) => {
+    const f = await fixture(t, { FILING_TEST_LONG_CONVERSATION: "1" });
+    const outcome = await f.deliver([advisory]);
+    assert.equal(outcome.outcome, "filed", outcome.reason);
     assert.equal(f.state().calls.length, 1);
   });
   await t.test("another author's marker does not suppress delivery", async (t) => {
