@@ -323,6 +323,13 @@ type RepositoryKnobs struct {
 		// among; full is always one of them.
 		Outcomes []string `toml:"outcomes"`
 	} `toml:"push-inspection"`
+	Description struct {
+		// Enabled has the service keep a description of the repository,
+		// written again whenever its default branch moves, and hand it to
+		// the repository's reviewers. Off, no description is written and
+		// any kept one is removed.
+		Enabled bool `toml:"enabled"`
+	} `toml:"description"`
 	// GuidanceSources is the ordered list of documents that carry the
 	// reviewed project's declared intent. Empty means the reviewed
 	// repository's own checked-in guidance.
@@ -590,6 +597,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if defined("push-inspection", "outcomes") {
 		knobs.PushInspection.Outcomes = own.PushInspection.Outcomes
+	}
+	if defined("description", "enabled") {
+		knobs.Description.Enabled = own.Description.Enabled
 	}
 	if defined("guidance-sources") {
 		knobs.GuidanceSources = own.GuidanceSources

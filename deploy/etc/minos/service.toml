@@ -84,6 +84,13 @@ signature-header = "X-Forgejo-Signature"
 # or a full review. Outcomes lists the ones it may choose; full is required.
 # [repositories.push-inspection]
 # outcomes = ["no-review", "increment", "full"]
+# The repository description: an account of the repository's structure,
+# components and how they connect, which reviewers are shown beside the
+# guidance sources. Set true, the sweep writes one from the default branch
+# and writes it again each time that branch moves; unset or false, none is
+# written and a kept one is removed.
+# [repositories.description]
+# enabled = false
 # Guidance sources: the documents that carry each project's declared intent,
 # read in this order. A source names a path in the reviewed repository, or a
 # path in a named secondary repository on the same forge (cloned read-only

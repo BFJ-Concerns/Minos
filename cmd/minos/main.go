@@ -33,7 +33,7 @@ func exitStatus(err error) int {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos --version|receive|sweep|run|forge|install-units")
+		return fmt.Errorf("usage: minos --version|receive|sweep|run|describe|forge|install-units")
 	}
 	ctx := context.Background()
 	switch args[0] {
@@ -49,6 +49,8 @@ func run(args []string) error {
 		return shell.SweepCommand(ctx, args[1:])
 	case "run":
 		return shell.RunCommand(ctx, args[1:])
+	case "describe":
+		return shell.DescribeCommand(ctx, args[1:])
 	case "forge":
 		return shell.ForgeCommand(ctx, args[1:], os.Stdout)
 	case "install-units":

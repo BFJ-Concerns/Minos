@@ -1439,3 +1439,50 @@ func TestSpawnRunExportsTheShippedReviewDefaults(t *testing.T) {
 		}
 	}
 }
+
+// A run of a repository with its description on is handed the kept record's
+// path; one with the setting off, or with no whole record kept, is handed
+// none.
+func TestSpawnRunHandsTheKeptRepositoryDescriptionToTheRun(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			systemdArgs = append([]string(nil), args...)
+		}
+		return nil, nil
+	}
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, "")
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Forges = map[string]ForgeConfig{"local": {APIBase: "http://forge.local"}}
+	facts := Facts{Forge: "local", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head", BaseSHA: "target", BaseRef: "main", HeadRef: "feature"}
+	spawn := func(repo RepoConfig) (string, bool) {
+		t.Helper()
+		systemdArgs = nil
+		if _, err := SpawnRun(t.Context(), cfg, repo, facts); err != nil {
+			t.Fatal(err)
+		}
+		value, present := systemdEnvironment(t, systemdArgs)["MINOS_REPOSITORY_DESCRIPTION"]
+		return value, present
+	}
+	repo := RepoConfig{Forge: "local", Owner: "owner", Repo: "repo"}
+	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+	record := repositoryDescriptionPath(cfg, repo)
+
+	repo.Description.Enabled = true
+	if value, present := spawn(repo); present {
+		t.Fatalf("a run was handed %q before any description was kept", value)
+	}
+	if err := keepRepositoryDescription(record, strings.Repeat("1", 40), "A parsing library."); err != nil {
+		t.Fatal(err)
+	}
+	if value, present := spawn(repo); !present || value != record {
+		t.Fatalf("run environment MINOS_REPOSITORY_DESCRIPTION = %q, present = %t; want %s", value, present, record)
+	}
+	repo.Description.Enabled = false
+	if value, present := spawn(repo); present {
+		t.Fatalf("a repository with its description off handed its run %q", value)
+	}
+}
