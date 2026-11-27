@@ -117,9 +117,12 @@ A review proposes, merges, then verifies.
    write-up in its group. A finding a verifier raises itself, in
    `newFindings`, is a proposed finding too: it is merged with whatever else
    its round raised and verified in the next round, by a leg other than the
-   one that raised it. A workflow runs `VERIFICATION_ROUNDS` rounds
-   (`review-contracts.mjs`), and what the last of them raises has no
-   verdict, which leaves the run incomplete.
+   one that raised it. It names the finding its verifier was checking, and
+   where that finding is a whole-scope brief's and the raised one lies under
+   the brief's directory, the raised one is verified as whole-scope too. A
+   workflow runs `VERIFICATION_ROUNDS` rounds (`review-contracts.mjs`), and
+   what the last of them raises has no verdict, which leaves the run
+   incomplete.
 
 `workflows/review-stages.mjs` runs the merge and the verification for both
 review workflows. `workflows/finding-disposition.mjs` says what each verdict
