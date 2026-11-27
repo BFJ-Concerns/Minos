@@ -7,6 +7,9 @@
 //
 //   name                          the stage's name, which is also the name
 //                                 it is dispatched and recorded under
+//   role                          the routing role it runs on
+//                                 (role-routing.mjs); `judgement` where
+//                                 the definition names none
 //   slots                         the run slots its prompt carries
 //   inputProblem(input)           what is wrong with an input, or null
 //   promptValues(input)           the value of each run slot
@@ -26,7 +29,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fillFileSlots, fillPrompt, sharedSections, slotNames } from "./review-prompts.mjs";
-import { routingFromEnvironment } from "./role-routing.mjs";
+import { ROLES, routingFromEnvironment } from "./role-routing.mjs";
 
 export const JUDGEMENTS_DIRECTORY = "workflows/judgements";
 // The workflow every stage runs through, and the runner dispatch-stage
@@ -51,6 +54,7 @@ export async function loadStage(name) {
   const stage = module.stage;
   if (
     !stage || stage.name !== name || !Array.isArray(stage.slots) ||
+    (stage.role !== undefined && !ROLES.includes(stage.role)) ||
     ["inputProblem", "promptValues", "answerSchema", "answerProblem"].some((part) => typeof stage[part] !== "function")
   ) throw new Error(`workflows/judgements/${name}.mjs does not export a complete stage definition`);
   return stage;
@@ -81,7 +85,7 @@ export function judgementArgs(stage, input, { env = process.env } = {}) {
     input,
     prompt: fillPrompt(promptTemplate(stage), stage.promptValues(input)),
     schema: stage.answerSchema(input),
-    routing: routingFromEnvironment(env).judgement,
+    routing: routingFromEnvironment(env)[stage.role ?? "judgement"],
   };
 }
 
