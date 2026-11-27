@@ -186,22 +186,33 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	}, nil
 }
 
-// staleTerminalMarker reports whether the current head lacks the Minos
-// result a terminal marker stands for. A PR-wide marker — reaction or label
-// — has no head identity of its own; a current status or terminal review in
-// that state is its warrant, and the marker itself is never read.
+// staleTerminalMarker reports whether the current head's completion
+// state (headCompletion) is not the one a terminal marker stands for. A
+// PR-wide marker — reaction or label — has no head identity of its own;
+// the head's completion is its warrant, and the marker itself is never
+// read.
 func staleTerminalMarker(snapshot forge.Snapshot, botLogin, statusContext string, want product.State) bool {
-	if status, found := latestOwnedStatus(snapshot, botLogin, statusContext); found {
-		if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal && state == want {
-			return false
-		}
-	}
+	state, completed := headCompletion(snapshot, botLogin, statusContext)
+	return !completed || state != want
+}
+
+// headCompletion is the current head's completion marker: the state of a
+// terminal Minos review of the head, or else of the latest Minos status on
+// it when that status is terminal. Admission and marker reconciliation
+// both read it, so a head is never deferred as one outcome while carrying
+// the other's marker.
+func headCompletion(snapshot forge.Snapshot, botLogin, statusContext string) (product.State, bool) {
 	if review, found := currentReview(snapshot, botLogin); found {
-		if state, terminal := terminalState(review); terminal && state == want {
-			return false
+		if state, terminal := terminalState(review); terminal {
+			return state, true
 		}
 	}
-	return true
+	if status, found := latestOwnedStatus(snapshot, botLogin, statusContext); found {
+		if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal {
+			return state, true
+		}
+	}
+	return product.State{}, false
 }
 
 // settleCompletedMarkers gives a completed head the markers its verdict
@@ -249,17 +260,8 @@ func assessPullRequestAdmission(cfg ServiceConfig, repo RepoConfig, snapshot for
 		eligibility.workInProgress = true
 		eligibility.reasons = append(eligibility.reasons, fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))
 	}
-	if review, reviewed := currentReview(snapshot, cfg.BotLogin(repo.Forge)); reviewed {
-		if state, terminal := terminalState(review); terminal {
-			eligibility.terminalOutcome = state.Name()
-		}
-	}
-	if eligibility.terminalOutcome == "" {
-		if status, found := latestOwnedStatus(snapshot, cfg.BotLogin(repo.Forge), cfg.Service.StatusContext); found {
-			if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal {
-				eligibility.terminalOutcome = state.Name()
-			}
-		}
+	if state, completed := headCompletion(snapshot, cfg.BotLogin(repo.Forge), cfg.Service.StatusContext); completed {
+		eligibility.terminalOutcome = state.Name()
 	}
 	eligibility.completedRun = eligibility.terminalOutcome != ""
 	if eligibility.completedRun {

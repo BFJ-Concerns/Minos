@@ -663,6 +663,26 @@ func TestForgejoReconciliationSettlesACompletedHeadsMarkers(t *testing.T) {
 		}
 	})
 
+	t.Run("requested changes over an older clean status keep no clean marker", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.reactions = []string{"eyes", "+1"}
+		state.setStatuses([]map[string]any{{
+			"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(),
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1",
+			"creator":    map[string]any{"login": "Minos"},
+		}})
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "REQUEST_CHANGES", "commit_id": state.headSHA(),
+			"body": "blocking findings", "user": map[string]any{"login": "Minos"},
+		}})
+		sweep(t, state)
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if len(state.reactions) != 0 {
+			t.Fatalf("completed changes-requested head still carries reactions %v", state.reactions)
+		}
+	})
+
 	t.Run("a completed head already carrying its markers takes no write", func(t *testing.T) {
 		state := newForgejoFixtureState(t)
 		state.reactions = []string{"+1"}
