@@ -762,7 +762,6 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	cfg.Service.CommitAuthorName = "Reviewer Bot"
 	cfg.Service.CommitAuthorEmail = "reviewer@example.invalid"
 	cfg.Service.StatusContext = "Review Bot"
-	cfg.Routing.Verifier = RoleRouting{Engine: "codex", Model: "gpt-6-astra", Effort: "low"}
 	cfg.Ensemble.ConcurrencyClaude = 10
 	cfg.Ensemble.ConcurrencyCodex = 6
 	cfg.Ensemble.AgentCeiling = 12
@@ -772,6 +771,8 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	repo.Review.Threshold = "Medium"
+	repo.Routing.Verifier = RoleRouting{Engine: "codex", Model: "gpt-6-astra", Effort: "low"}
+	repo.Routing.Concerns = map[string]RoleRouting{"security": {Engine: "claude", Effort: "high"}}
 	repo.GuidanceSources = []GuidanceSource{
 		{Repository: "owner/repo-plans", Path: "README.md"},
 		{Path: "docs/intent.md"},
@@ -826,6 +827,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		`MINOS_GUIDANCE_SOURCES=[{"repository":"owner/repo-plans","path":"README.md"},{"path":"docs/intent.md"}]`,
 		`MINOS_FILING_DESTINATION={"kind":"file","repository":"owner/repo-plans","path":"ISSUES.md"}`,
 		`MINOS_ROUTING={"verifier":{"engine":"codex","model":"gpt-6-astra","effort":"low"}}`,
+		`MINOS_CONCERN_ROUTING={"security":{"engine":"claude","effort":"high"}}`,
 		"ENSEMBLE_CONCURRENCY_CLAUDE=10",
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
 		"ENSEMBLE_AGENT_CEILING=12",
@@ -897,6 +899,7 @@ func TestSpawnRunExportsUnsetStructuredKnobsAsTheirEmptyForms(t *testing.T) {
 		"MINOS_GUIDANCE_SOURCES":   "[]",
 		"MINOS_FILING_DESTINATION": `{"kind":"none"}`,
 		"MINOS_ROUTING":            "{}",
+		"MINOS_CONCERN_ROUTING":    "{}",
 	} {
 		if got := environment[name]; got != want {
 			t.Errorf("%s = %q, want %q", name, got, want)

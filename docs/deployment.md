@@ -274,6 +274,25 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    also set `engine`, the model's family: a model alone stops the
    configuration from loading.
 
+   `[routing.concerns.<concern>]` gives one specialist concern — `failure`,
+   `fit`, `logic`, `security` or `tests` — routing of its own. A concern
+   left unset proposes on the `proposer`'s routing; a set concern starts
+   from it, replaces the fields it sets, and takes the `proposer`'s default
+   model for an engine it moves to without naming a model. Each finding is
+   verified on the `verifier`'s routing unless the `verifier` runs on the
+   engine that proposed it, in which case the `proposer`'s routing verifies
+   it when that runs on the other engine; so a concern moved to Claude
+   beside a Claude verifier still has its findings checked by Codex. A name
+   outside the shipped concerns stops the configuration from loading.
+
+   `[routing]` in `service.toml` is the service-wide routing. A
+   repository's own file may carry `[routing]` too, and each role and each
+   concern it sets replaces the service's whole: the fields it leaves out
+   take the defaults above, not the service's values. Every role and
+   concern the repository leaves out keeps the service's routing.
+   On an upgrade, remove any `[routing.engagement-gate]` tables. Push
+   inspection runs on the `judgement` role in scripted mode.
+
    Size every capacity decision — this cap, the slice envelope, the box
    itself — by **anonymous memory plus swap peak, never the journal's cgroup
    memory peak**. The journal's figure includes reclaimable page cache, so
