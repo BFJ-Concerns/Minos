@@ -258,10 +258,19 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
       // What a verifier established while checking survives even when its
       // verdict set is discarded as malformed.
       recordObservations(response.outOfScopeObservations, "verification", batch.label);
-      (Array.isArray(response.newFindings) ? response.newFindings : []).forEach((finding, findingIndex) => {
+      (Array.isArray(response.newFindings) ? response.newFindings : []).forEach((raisedFinding, findingIndex) => {
+        // The name of the finding being checked is provenance, never part of
+        // the write-up; it lends that finding's whole scope where the raised
+        // finding's path lies within it (raisedFindingShape).
+        const { foundWhileChecking, ...finding } = raisedFinding || {};
+        const checked = batch.items.find((item) => item.id === foundWhileChecking);
+        const wholeScope = checked?.wholeScope !== undefined && pathWithinScope(finding.path, checked.wholeScope)
+          ? checked.wholeScope
+          : undefined;
         raised.push({
           id: `${batch.label}:raised:${findingIndex + 1}`,
           finding,
+          ...(wholeScope !== undefined ? { wholeScope } : {}),
           source: "verification",
           reportedBy: "verification",
           outsideConcern: false,
@@ -294,6 +303,17 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
     mergeProposed,
     verifySubjects,
   };
+}
+
+// Whether a repository-relative path lies under a whole scope: a directory
+// with a trailing slash, or `./` for the whole repository. A path that
+// climbs out with `..`, or is absolute, lies under none.
+export function pathWithinScope(path, scope) {
+  if (typeof path !== "string" || typeof scope !== "string") return false;
+  const segments = path.split("/").filter((segment) => segment !== "" && segment !== ".");
+  if (path.startsWith("/") || segments.length === 0 || segments.includes("..")) return false;
+  if (scope === "./") return true;
+  return `${segments.join("/")}/`.startsWith(scope);
 }
 
 // One finding to verify: a merged group's primary write-up, with what the

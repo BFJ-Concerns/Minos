@@ -226,6 +226,7 @@ work-in-progress-branch-prefixes = ["structural/"]
 [repositories.review]
 threshold = "Medium"
 file-safeguard-requests = true
+depth = "light"
 [repositories.push-inspection]
 outcomes = ["increment", "full"]
 [[repositories.guidance-sources]]
@@ -272,7 +273,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	writeRepoConfig(t, root, "inherits.toml", repoConfig(""))
 	writeRepoConfig(t, root, "overrides.toml", repoConfig(
 		"work-in-progress-branch-prefixes = []\n"+
-			"[review]\nthreshold = \"Low\"\nfile-safeguard-requests = false\n"+
+			"[review]\nthreshold = \"Low\"\nfile-safeguard-requests = false\ndepth = \"thorough\"\n"+
 			"[push-inspection]\noutcomes = [\"no-review\", \"full\"]\n"+
 			"[[guidance-sources]]\nrepository = \"owner/repo-plans\"\npath = \"README.md\"\n"+
 			"[[guidance-sources]]\npath = \"AGENTS.md\"\n"+
@@ -288,7 +289,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	}
 
 	inherits := byPath["inherits.toml"]
-	if inherits.Review.Threshold != "Medium" || !inherits.Review.FileSafeguardRequests ||
+	if inherits.Review.Threshold != "Medium" || !inherits.Review.FileSafeguardRequests || inherits.Review.Depth != "light" ||
 		!slices.Equal(inherits.PushInspection.Outcomes, []string{"increment", "full"}) ||
 		!slices.Equal(inherits.WorkInProgressBranchPrefixes, []string{"structural/"}) ||
 		!slices.Equal(inherits.GuidanceSources, []GuidanceSource{{Path: "docs/intent.md"}}) ||
@@ -300,7 +301,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	}
 
 	overrides := byPath["overrides.toml"]
-	if overrides.Review.Threshold != "Low" || overrides.Review.FileSafeguardRequests ||
+	if overrides.Review.Threshold != "Low" || overrides.Review.FileSafeguardRequests || overrides.Review.Depth != "thorough" ||
 		!slices.Equal(overrides.PushInspection.Outcomes, []string{"no-review", "full"}) ||
 		len(overrides.WorkInProgressBranchPrefixes) != 0 ||
 		!slices.Equal(overrides.GuidanceSources, []GuidanceSource{{Repository: "owner/repo-plans", Path: "README.md"}, {Path: "AGENTS.md"}}) ||
@@ -323,13 +324,37 @@ func TestRepositoryKnobsUnsetAtBothLevelsTakeTheShippedDefaults(t *testing.T) {
 		t.Fatalf("repos = %+v, error = %v", repos, err)
 	}
 	knobs := repos[0].RepositoryKnobs
-	if knobs.Review.Threshold != "High" || knobs.Review.FileSafeguardRequests || !slices.Equal(knobs.PushInspection.Outcomes, []string{"no-review", "increment", "full"}) ||
+	if knobs.Review.Threshold != "High" || knobs.Review.FileSafeguardRequests || knobs.Review.Depth != "standard" || !slices.Equal(knobs.PushInspection.Outcomes, []string{"no-review", "increment", "full"}) ||
 		len(knobs.GuidanceSources) != 0 || len(knobs.WorkInProgressBranchPrefixes) != 0 ||
 		knobs.FilingDestination != (FilingDestination{Kind: FilingKindPullRequestComment}) ||
 		knobs.Markers.InFlight == nil || *knobs.Markers.InFlight != (forge.Marker{Reaction: "eyes"}) ||
 		knobs.Markers.Clean == nil || *knobs.Markers.Clean != (forge.Marker{Reaction: "+1"}) ||
 		knobs.Markers.Attention != nil {
-		t.Fatalf("knobs = %+v, want High threshold, no safeguard-request filing, every push-inspection outcome, checked-in guidance, no prefixes, pull-request-comment filing, eyes and +1 markers and no attention marker", knobs)
+		t.Fatalf("knobs = %+v, want High threshold, no safeguard-request filing, standard depth, every push-inspection outcome, checked-in guidance, no prefixes, pull-request-comment filing, eyes and +1 markers and no attention marker", knobs)
+	}
+}
+
+// A repository that sets one review key over a service that sets none takes
+// that key and the shipped default for each other: setting a key in the
+// review table does not reset its neighbours.
+func TestRepositoryReviewKeySetAloneOverTheShippedDefaults(t *testing.T) {
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, "")
+	writeRepoConfig(t, root, "files.toml", repoConfig("[review]\nfile-safeguard-requests = true\n"))
+	writeRepoConfig(t, root, "deep.toml", repoConfig("[review]\ndepth = \"thorough\"\n"))
+	repos, err := LoadRepoConfigs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]RepoConfig{}
+	for _, repo := range repos {
+		byPath[filepath.Base(repo.Path)] = repo
+	}
+	if files := byPath["files.toml"].Review; !files.FileSafeguardRequests || files.Threshold != "High" || files.Depth != "standard" {
+		t.Fatalf("review knobs = %+v, want safeguard requests filed at the shipped threshold and depth", files)
+	}
+	if deep := byPath["deep.toml"].Review; deep.FileSafeguardRequests || deep.Threshold != "High" || deep.Depth != "thorough" {
+		t.Fatalf("review knobs = %+v, want thorough depth with no safeguard requests filed at the shipped threshold", deep)
 	}
 }
 
@@ -353,6 +378,7 @@ func TestRepositoryKnobsAreValidatedAtBothLevels(t *testing.T) {
 		{name: "issue kind without a repository", toml: "[filing-destination]\nkind = \"issue\"\n", want: "filing-destination.repository must name"},
 		{name: "issue kind with a path", toml: "[filing-destination]\nkind = \"issue\"\nrepository = \"owner/plans\"\npath = \"x\"\n", want: "filing-destination.path does not apply"},
 		{name: "none kind with a repository", toml: "[filing-destination]\nkind = \"none\"\nrepository = \"owner/plans\"\n", want: "do not apply to the none kind"},
+		{name: "unknown review depth", toml: "[review]\ndepth = \"deep\"\n", want: "review.depth must be one of light, standard, thorough"},
 		{name: "marker with both forms", toml: "[markers]\nclean = {reaction = \"+1\", label = \"minos/approved\"}\n", want: "markers.clean must set exactly one of reaction or label"},
 		{name: "marker with neither form", toml: "[markers]\nattention = {}\n", want: "markers.attention must set exactly one of reaction or label"},
 		{name: "marker reaction that is not a name", toml: "[markers]\nin-flight = {reaction = \"thumbs up\"}\n", want: "markers.in-flight reaction must be a reaction name"},
@@ -374,6 +400,7 @@ func TestRepositoryKnobsAreValidatedAtBothLevels(t *testing.T) {
 			serviceLevel = strings.ReplaceAll(serviceLevel, "[filing-destination]", "[repositories.filing-destination]")
 			serviceLevel = strings.ReplaceAll(serviceLevel, "[markers]", "[repositories.markers]")
 			serviceLevel = strings.ReplaceAll(serviceLevel, "[push-inspection]", "[repositories.push-inspection]")
+			serviceLevel = strings.ReplaceAll(serviceLevel, "[review]", "[repositories.review]")
 			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(testServiceConfig+serviceLevel), 0o644); err != nil {
 				t.Fatal(err)
 			}

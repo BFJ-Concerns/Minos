@@ -593,7 +593,7 @@ write, matching the target rule above.)
 
    A finding that fits a class takes it at any severity: one below the
    threshold is classed, not left advisory. A classed finding is never
-   published on the pull request, and with one exception it is filed
+   part of the review step 6 posts, and with one exception it is filed
    nowhere either; each class has its reason. The author declared the
    gap, so no surface tells them of it again. What was already raised,
    the author has. A hardening request filed among the defects is read
@@ -616,8 +616,9 @@ write, matching the target rule above.)
    finding makes the verdict `request-changes`; none makes it `clean`.
    A finding that neither gates nor takes a class is advisory. It goes to
    the repository's configured filing destination on either outcome and
-   is never posted on the pull request, which carries only what blocks
-   it.
+   is never part of the review, which carries only what blocks the pull
+   request. Where that destination is a comment on the pull request, the
+   comment is filing: it stands apart from the review and blocks nothing.
 
    Write your decision per verdict to
    `$MINOS_RUN_DIR/verdict-decision.json` (`verdict-decision-brief.json`

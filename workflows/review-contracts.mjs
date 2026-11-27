@@ -185,18 +185,35 @@ export const verifierVerdictShape = {
   },
 };
 
+// One finding a verifier raises, as verifier.md's `newFindings` takes it: a
+// proposed finding and, in `foundWhileChecking`, the id of the finding in
+// its batch that the verifier was checking when it established the defect.
+// The name is how a raised finding comes by a whole scope, which a verifier
+// never states itself: the finding is whole-scope exactly when the one it
+// names carries `wholeScope` and its own `path` is under that directory,
+// and it then carries that directory into the next round. A name that
+// matches no finding of the batch gives no scope, and the finding is judged
+// as a claim about the change. The name is provenance and no part of the
+// write-up the author reads.
+export const raisedFindingShape = {
+  ...findingShape,
+  required: [...findingShape.required, "foundWhileChecking"],
+  properties: { ...findingShape.properties, foundWhileChecking: { type: "string" } },
+};
+
 // What a verifier leg returns, on verifier.md. A `newFindings` entry is a
-// different defect the verifier established in the changed code. It is a
-// proposed finding whose proposer is that verifier leg, and it reaches the
-// author only with a verdict of its own from a leg other than the one that
-// raised it.
+// different defect the verifier established in the changed code, or under
+// the directory of a whole-scope finding it was checking. It is a proposed
+// finding whose proposer is that verifier leg, and it reaches the author
+// only with a verdict of its own from a leg other than the one that raised
+// it.
 export const verifierSchema = {
   type: "object",
   additionalProperties: false,
   required: ["verdicts", "newFindings", "outOfScopeObservations"],
   properties: {
     verdicts: { type: "array", items: verifierVerdictShape },
-    newFindings: { type: "array", items: findingShape },
+    newFindings: { type: "array", items: raisedFindingShape },
     outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
   },
 };
@@ -211,6 +228,7 @@ export function reviewContracts(concernNames) {
     verificationRounds: VERIFICATION_ROUNDS,
     explorationSchema: explorationSchema(concernNames),
     findingShape,
+    raisedFindingShape,
     outOfScopeObservationShape,
     applicabilityShape,
     specialistSchema,
@@ -235,6 +253,7 @@ export function contractsFromInput(input) {
   for (const name of [
     "explorationSchema",
     "findingShape",
+    "raisedFindingShape",
     "outOfScopeObservationShape",
     "applicabilityShape",
     "specialistSchema",
