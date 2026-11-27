@@ -56,3 +56,18 @@ test("prompts are refused without a value for every setting, and when a value's 
   assert.throws(() => reviewPrompts(root, promptSettingsFromEnvironment({})), /safeguard-requests\/true\.md/);
   assert.throws(() => settingSections(() => { throw new Error("unreadable"); }, promptSettingsFromEnvironment({})), /unreadable/);
 });
+
+// The classification stage and the lead are given no prompt setting: the
+// class a finding takes is the same under either value, and only the
+// composer routes it. Their text has to be true under both values.
+test("text that takes no safeguard-request passage says where a classed request goes under either value", () => {
+  const read = (path) => readFileSync(join(repositoryRoot, path), "utf8").replace(/\s+/g, " ");
+  for (const path of ["workflows/judgements/verdict-classification.md", "lifecycle/lifecycle.md"]) {
+    const text = read(path);
+    for (const unconditional of [/posted and filed nowhere/, /published and filed nowhere/, /kept off the filing destination/])
+      assert.doesNotMatch(text, unconditional, `${path} says a classed request is never filed`);
+  }
+  assert.match(read("workflows/judgements/verdict-classification.md"),
+    /By default it is filed nowhere\. A repository that has asked for its safeguard requests has each filed apart from the defects/);
+  assert.match(read("lifecycle/lifecycle.md"), /`\$MINOS_FILE_SAFEGUARD_REQUESTS` is `true`: there the composer/);
+});
