@@ -771,6 +771,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	repo.Review.Threshold = "Medium"
+	repo.Review.FileSafeguardRequests = true
 	repo.PushInspection.Outcomes = []string{"increment", "full"}
 	repo.Routing.Verifier = RoleRouting{Engine: "codex", Model: "gpt-6-astra", Effort: "low"}
 	repo.Routing.Concerns = map[string]RoleRouting{"security": {Engine: "claude", Effort: "high"}}
@@ -822,6 +823,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_CREDENTIAL_FILE=/etc/minos/forge.token",
 		"MINOS_RUN_BODY=/opt/minos/run-body/run-body",
 		"MINOS_REVIEW_THRESHOLD=Medium",
+		"MINOS_FILE_SAFEGUARD_REQUESTS=true",
 		"MINOS_COMMIT_AUTHOR_NAME=Reviewer Bot",
 		"MINOS_COMMIT_AUTHOR_EMAIL=reviewer@example.invalid",
 		"MINOS_STATUS_CONTEXT=Review Bot",

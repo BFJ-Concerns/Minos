@@ -1,5 +1,5 @@
 // Delivers a run's non-gating material — verified advisory findings,
-// unverified observations from outside the change, findings a verifier
+// safeguard requests where the repository files them, unverified observations from outside the change, findings a verifier
 // could neither confirm nor refute, and configuration
 // diagnostics — to the repository's configured filing destination: a file
 // in a repository's default branch, an issue on a named repository, a
@@ -45,19 +45,61 @@ export function markedFilingEntry(entry, attribution, reviewedRepository) {
   return `${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}`;
 }
 
-// Appends the entries missing from a file's text; returns the new text and
-// how many were added.
+// The heading safeguard requests sit under, apart from the defects, wherever
+// a destination gathers several entries in one text.
+export const SAFEGUARD_REQUESTS_HEADING = "## Safeguard requests";
+
+const isSafeguardRequest = (entry) => entry.kind === "safeguard-request";
+
+// Appends `entries` as list items to a Markdown text, one blank line apart.
+function appendItems(text, items) {
+  if (items.length === 0) return text;
+  return `${text.replace(/\n+$/, "")}\n${items.map((item) => `\n${item}\n`).join("")}`;
+}
+
+// Adds the entries missing from a file's text; returns the new text and how
+// many were added. Safeguard requests go at the end of the section under
+// SAFEGUARD_REQUESTS_HEADING, which is opened at the end of the file the
+// first time one is filed; every other entry goes before that section, so
+// a defect never lands under it. The section ends at the next heading of
+// its level or above, which a project may add after it.
 export function appendFilingEntries(contents, entries, attribution, reviewedRepository) {
   let text = contents.length === 0 ? "# Issues\n" : contents;
   if (!text.endsWith("\n")) text += "\n";
-  let written = 0;
-  for (const entry of entries) {
+  const markers = new Set();
+  const fresh = entries.filter((entry) => {
     const marker = filingMarker(entry, reviewedRepository);
-    if (text.includes(marker)) continue;
-    text += `\n${markedFilingEntry(entry, attribution, reviewedRepository)}\n`;
-    written += 1;
+    if (text.includes(marker) || markers.has(marker)) return false;
+    markers.add(marker);
+    return true;
+  });
+  if (fresh.length === 0) return { text, written: 0 };
+  const items = (wanted) => fresh.filter((entry) => isSafeguardRequest(entry) === wanted)
+    .map((entry) => markedFilingEntry(entry, attribution, reviewedRepository));
+  const defects = items(false);
+  const requests = items(true);
+
+  const lines = text.split("\n");
+  const heading = lines.indexOf(SAFEGUARD_REQUESTS_HEADING);
+  const offset = (index) => lines.slice(0, index).reduce((length, line) => length + line.length + 1, 0);
+  let before = text;
+  let section = "";
+  let after = "";
+  if (heading !== -1) {
+    const end = lines.findIndex((line, index) => index > heading && /^#{1,2} /.test(line));
+    before = text.slice(0, offset(heading));
+    section = end === -1 ? text.slice(offset(heading)) : text.slice(offset(heading), offset(end));
+    after = end === -1 ? "" : text.slice(offset(end));
+  } else if (requests.length > 0) {
+    section = `${SAFEGUARD_REQUESTS_HEADING}\n`;
   }
-  return { text, written };
+  const parts = [appendItems(before, defects)];
+  if (section !== "") parts.push(appendItems(section, requests));
+  if (after !== "") parts.push(after);
+  return {
+    text: parts.map((part, index) => (index < parts.length - 1 ? `${part.replace(/\n+$/, "")}\n` : part)).join("\n"),
+    written: fresh.length,
+  };
 }
 
 // Mirrors the loader's per-kind rules (internal/shell/config.go): the
@@ -222,6 +264,12 @@ async function deliverToFile({ destination, entries, attribution, reviewedReposi
   }
 }
 
+// A safeguard request's issue says what it is in its title, so a reader of
+// the issue list tells it from a defect without opening it.
+export function issueTitle(entry) {
+  return entry.kind === "safeguard-request" ? `Safeguard request: ${entry.title}` : entry.title;
+}
+
 // The forge command owns both marker lookup and the durable write. Temporary
 // payloads stay under the run directory, separate from any guidance clone.
 async function deliverToIssue({ destination, entries, attribution, reviewedRepository, runDir }) {
@@ -235,7 +283,7 @@ async function deliverToIssue({ destination, entries, attribution, reviewedRepos
     const titleFile = join(payloadDir, "title");
     const bodyFile = join(payloadDir, "body");
     for (const entry of entries) {
-      writeFileSync(titleFile, entry.title, { mode: 0o600 });
+      writeFileSync(titleFile, issueTitle(entry), { mode: 0o600 });
       writeFileSync(bodyFile, `${markedFilingEntry(entry, attribution, reviewedRepository)}\n`, { mode: 0o600 });
       const result = JSON.parse(execFileSync(process.env.MINOS_BIN,
         ["forge", "file-issue", location, titleFile, bodyFile],
@@ -285,8 +333,12 @@ async function deliverToPullRequestComment({ entries, attribution, reviewedRepos
     mkdirSync(join(runDir, "filing"), { recursive: true });
     payloadDir = mkdtempSync(join(runDir, "filing", "pull-request-comment-"));
     const bodyFile = join(payloadDir, "body.md");
-    writeFileSync(bodyFile, remaining.map((entry) =>
-      `${markedFilingEntry(entry, attribution, reviewedRepository)}\n`).join("\n"), { mode: 0o600 });
+    const listed = (wanted) => remaining.filter((entry) => isSafeguardRequest(entry) === wanted)
+      .map((entry) => `${markedFilingEntry(entry, attribution, reviewedRepository)}\n`).join("\n");
+    const defects = listed(false);
+    const requests = listed(true);
+    writeFileSync(bodyFile, [defects, requests === "" ? "" : `${SAFEGUARD_REQUESTS_HEADING}\n\n${requests}`]
+      .filter((part) => part !== "").join("\n"), { mode: 0o600 });
     const result = command("review", head, target, "comment", bodyFile);
     if (!result || result.outcome !== "applied") throw new Error(result?.reason || "comment review write was not confirmed");
     return { kind, outcome: "filed", written: remaining.length };

@@ -509,7 +509,9 @@ func TestArchiveRunEvidenceHonoursCallerDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	if err := archiveRunEvidence(ctx, "", helper, root, "fixture"); err == nil {
+	var cfg ServiceConfig
+	cfg.Runs.ArchiveCommand = helper
+	if err := archiveRunEvidence(ctx, cfg, root, "fixture"); err == nil {
 		t.Fatal("archive helper ignored caller deadline")
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {

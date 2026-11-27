@@ -73,9 +73,10 @@ if { [ "$skipped" = true ] || [ "$outcome" != clean ]; } && [ -r "$run_dir/repor
   report="$(head -c 8192 "$run_dir/report.md")"
 fi
 printf '%s\0' "$ledger_failure" "$skip_reason" "$report" |
-  jq -Rs --arg outcome "$outcome" --arg elapsed "$elapsed" --argjson skipped "$skipped" '
+  jq -Rs --arg outcome "$outcome" --arg elapsed "$elapsed" --argjson skipped "$skipped" --argjson salvaged "$salvaged" '
     split("\u0000") as [$failure, $skip, $report] |
     {outcome: $outcome, review_skipped: $skipped}
+    + (if $salvaged then {salvaged: true} else {} end)
     + (if $elapsed == "" then {} else {duration_seconds: ($elapsed | tonumber)} end)
     + (if $failure == "" then {} else {failure_reason: $failure} end)
     + (if $skip == "" then {} else {skip_reason: $skip} end)

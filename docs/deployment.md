@@ -154,8 +154,9 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    destination lives on the archive host, bound into the key's forced
    command below, so the box never names it.
 
-   Per-repository knobs — admission rules, review threshold, the outcomes
-   push inspection may choose, work-in-progress branch
+   Per-repository knobs — admission rules, review threshold, whether
+   safeguard requests are filed, the outcomes push inspection may choose,
+   work-in-progress branch
    prefixes, the guidance sources a review is grounded on, the filing
    destination for advisory material and configuration diagnostics,
    and the markers Minos writes on a pull request — are set once under
@@ -263,7 +264,9 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    `exploration` and `brief-planner`, and `medium` for `proposer`,
    `verifier`, `engagement-gate` and `judgement`. `judgement` is the role
    of the run driver's one-shot judgement stages
-   (`workflows/judgements/`). The verifier's routing also carries
+   (`workflows/judgements/`). An effort is one of the Ensemble
+   runtime's levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+   or `max`. The verifier's routing also carries
    the leg that merges findings one fix would resolve before they are
    verified. A finding a verifier raises while checking another is
    verified on the `proposer`'s routing when that runs on the other engine,
@@ -741,7 +744,7 @@ into the runs directory with a `completed_at` timestamp. The document records:
   outcome (`clean` or `attention`).
 - **`readied`** — pull requests a run was started or continued for this pass.
 - **`partial`** — true when one or more repositories could not be listed;
-  `skipped_repositories` names each and its reason.
+  `skipped_repositories` maps each `forge/owner/repo` to its reason.
 
 Publication is best-effort: a failed write logs the error and leaves the
 previous whole document in place. The status endpoint reads the file on each
@@ -774,7 +777,7 @@ route answers with no runs rather than failing.
 Listing the sidecars means reaching the archive host over SSH, so the route
 holds each window's answer in memory and asks again only once it has aged out.
 Two minutes is the default; `recent-timings-cache-seconds` in the same `[runs]`
-block sets it. The document's `generated_at` is when the archive host was last
+block sets it. A cancelled request leaves the cached listing alone. The document's `generated_at` is when the archive host was last
 listed, not when the response was built, so a reader can see how old the answer
 is. Runs end minutes to hours apart, so an operator surface can poll this route
 as often as it likes without the archive host hearing about it.

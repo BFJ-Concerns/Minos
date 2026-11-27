@@ -44,14 +44,15 @@ const (
 )
 
 type statusDocument struct {
-	Kind          string                     `json:"kind"`
-	GeneratedAt   string                     `json:"generated_at"`
-	MaxConcurrent int                        `json:"max_concurrent"`
-	Error         string                     `json:"error,omitempty"`
-	Repos         []statusRepo               `json:"repos"`
-	Runs          []statusRun                `json:"runs"`
-	Sweep         *sweepDeferralDocument     `json:"sweep,omitempty"`
-	Receiver      *receiverHeartbeatDocument `json:"receiver,omitempty"`
+	Kind              string                     `json:"kind"`
+	GeneratedAt       string                     `json:"generated_at"`
+	TimingsConfigured bool                       `json:"timings_configured"`
+	MaxConcurrent     int                        `json:"max_concurrent"`
+	Error             string                     `json:"error,omitempty"`
+	Repos             []statusRepo               `json:"repos"`
+	Runs              []statusRun                `json:"runs"`
+	Sweep             *sweepDeferralDocument     `json:"sweep,omitempty"`
+	Receiver          *receiverHeartbeatDocument `json:"receiver,omitempty"`
 }
 
 const sweepDeferralDocumentKind = "minos-sweep-deferrals-v1"
@@ -181,12 +182,12 @@ type orientationDocument struct {
 	} `json:"source"`
 }
 
-func handleStatus(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r *http.Request) error {
+func handleStatus(ctx context.Context, tokenFile string, read func(context.Context) (StatusDocument, error), w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return nil
 	}
-	token, err := ReadSecret(cfg.Listener.StatusTokenFile)
+	token, err := ReadSecret(tokenFile)
 	if err != nil {
 		http.Error(w, "status token unavailable", http.StatusInternalServerError)
 		return err
@@ -195,7 +196,7 @@ func handleStatus(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter,
 		http.Error(w, "unauthorised", http.StatusUnauthorized)
 		return nil
 	}
-	document, err := statusSnapshot(ctx, cfg)
+	document, err := read(ctx)
 	if err != nil {
 		http.Error(w, "status unavailable", http.StatusInternalServerError)
 		return err
@@ -232,13 +233,14 @@ func statusSnapshot(ctx context.Context, cfg ServiceConfig) (statusDocument, err
 	}
 	repos, configErr := LoadRepoConfigs(cfg)
 	document := statusDocument{
-		Kind:          statusDocumentKind,
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
-		MaxConcurrent: cfg.MaxConcurrentRuns(),
-		Repos:         configuredStatusRepos(repos),
-		Runs:          make([]statusRun, 0, len(units)),
-		Sweep:         readSweepDeferrals(cfg),
-		Receiver:      readReceiverHeartbeat(cfg),
+		Kind:              statusDocumentKind,
+		GeneratedAt:       time.Now().UTC().Format(time.RFC3339),
+		MaxConcurrent:     cfg.MaxConcurrentRuns(),
+		TimingsConfigured: cfg.Runs.TimingsCommand != "",
+		Repos:             configuredStatusRepos(repos),
+		Runs:              make([]statusRun, 0, len(units)),
+		Sweep:             readSweepDeferrals(cfg),
+		Receiver:          readReceiverHeartbeat(cfg),
 	}
 	if configErr != nil {
 		document.Error = fmt.Sprintf("load repository configuration: %v", configErr)
@@ -295,7 +297,7 @@ func describeRun(ctx context.Context, cfg ServiceConfig, repos []RepoConfig, con
 	orientation, err := readRunOrientation(runDir)
 	switch {
 	case err == nil:
-		if configErr == nil {
+		if configErr == nil && run.Forge == "" {
 			run.Forge = orientationForge(cfg, repos, orientation)
 		}
 		run.Owner = orientation.Source.Owner
@@ -376,10 +378,17 @@ func readRunOrientation(runDir string) (orientationDocument, error) {
 // from the repository configuration that admitted the run; a single configured
 // forge answers on its own.
 func orientationForge(cfg ServiceConfig, repos []RepoConfig, orientation orientationDocument) string {
+	var matched string
 	for _, repo := range repos {
 		if repo.Owner == orientation.Source.Owner && repo.Repo == orientation.Source.Repo {
-			return repo.Forge
+			if matched != "" && matched != repo.Forge {
+				return ""
+			}
+			matched = repo.Forge
 		}
+	}
+	if matched != "" {
+		return matched
 	}
 	if len(cfg.Forges) == 1 {
 		for name := range cfg.Forges {

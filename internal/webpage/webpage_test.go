@@ -181,7 +181,7 @@ func TestRefusedChangeShowsThePageAgainAndAnAcceptedOneMovesOn(t *testing.T) {
 		Title:    "Rename",
 		Template: "overview.html",
 		Show: func(r *http.Request, _ Readings) (any, error) {
-			return overview{BotLogin: r.PostFormValue("name")}, nil
+			return overview{}, nil
 		},
 		Change: func(r *http.Request, _ Readings, _ Settings) (string, error) {
 			if r.PostFormValue("name") == "" {

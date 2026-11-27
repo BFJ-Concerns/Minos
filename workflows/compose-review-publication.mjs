@@ -17,9 +17,14 @@
 // once: the same site and title raised by both groups merge mechanically,
 // and findings the lead's decisions label as one defect merge on that
 // judgement, whatever their sites and titles.
-// A finding the lead classed as already raised, as speculative hardening or
-// as a gap the description declares leaves the run on neither surface: the
-// plan counts it and nothing more.
+// A finding the lead classed as already raised or as a gap the description
+// declares leaves the run on neither surface: the plan counts it and
+// nothing more. One classed as speculative hardening, a request for a
+// safeguard against a failure nobody has observed, is counted the same way
+// unless the repository files safeguard requests
+// (MINOS_FILE_SAFEGUARD_REQUESTS is `true`): then it goes to the filing
+// destination as a safeguard request, marked apart from the defects, and
+// still never to the review.
 //
 // Usage:
 //   compose-review-publication.mjs OUTPUT_DIR ORIENTATION THRESHOLD MAIN_VERDICT MAIN_DECISION [BRIEF_VERDICT BRIEF_DECISION]
@@ -37,6 +42,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { findingComment, reviewBody } from "./finding-presentation.mjs";
+import { promptSettingsFromEnvironment } from "./prompt-settings.mjs";
 import { SEVERITY, alreadyRaised, declaredOutOfScope, findingKey, normalisedTitle, speculativeHardening, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
 
 const argv = process.argv.slice(2);
@@ -47,6 +53,18 @@ if (argv.length !== 5 && argv.length !== 7) {
   process.exit(2);
 }
 const [outputDir, orientationPath, threshold, mainVerdictPath, mainDecisionPath, briefVerdictPath, briefDecisionPath] = argv;
+
+// The setting the prompts read too, so a run's reviewers and its filing
+// never disagree on it; unset, as when the composer runs by hand, it is
+// off, the setting's documented default.
+const fileSafeguardRequests = (() => {
+  try {
+    return promptSettingsFromEnvironment()["file-safeguard-requests"] === "true";
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(2);
+  }
+})();
 
 function readJson(path, label, failureExit = 2) {
   try {
@@ -253,13 +271,17 @@ for (const [label, members] of byDefect) {
 
 const dispositionOf = (finding) => groups.find((group) => group.findings.includes(finding)).dispositionOf(finding);
 // What the author already has or has declared is not said again, and a
-// safeguard nothing in the change calls for is not handed on as work: these
-// findings were confirmed, so they are counted, and they reach no review
-// and no filing.
+// safeguard nothing in the change calls for is not handed on as work unless
+// the repository asks for safeguard requests: these findings were
+// confirmed, so they are counted, and they reach no review, and no filing
+// but that one.
 const confirmed = groups.flatMap((group) => group.findings);
 const surfacesNowhere = (disposition) =>
   alreadyRaised(disposition) || speculativeHardening(disposition) || declaredOutOfScope(disposition);
 const findings = confirmed.filter((finding) => !surfacesNowhere(dispositionOf(finding)));
+const safeguardRequests = fileSafeguardRequests
+  ? confirmed.filter((finding) => speculativeHardening(dispositionOf(finding)))
+  : [];
 const blocking = findings.filter((finding) => dispositionOf(finding)?.gating === true);
 const advisory = findings.filter((finding) => dispositionOf(finding)?.gating !== true);
 const verdict = blocking.length > 0 ? "request-changes" : "clean";
@@ -308,6 +330,7 @@ const unsettled = groups
   .filter((finding) => !confirmedSites.has(site(finding)));
 const triageEntries = [
   ...advisory.map((finding) => ({ ...finding, kind: "advisory-finding" })),
+  ...safeguardRequests.map((finding) => ({ ...finding, kind: "safeguard-request" })),
   ...unsettled.map(({ title, severity, path, line, explanation, outsideFact, wouldSettle }) =>
     ({ kind: "unsettled-finding", title, severity, path, line, explanation, outsideFact, wouldSettle })),
   ...observations.map(({ title, path, line, explanation }) => ({ kind: "out-of-scope-observation", title, path, line, explanation })),
@@ -338,6 +361,7 @@ const planDocument = {
   triage: {
     entries: triagePath,
     advisory: triageEntries.filter((entry) => entry.kind === "advisory-finding").length,
+    safeguardRequests: triageEntries.filter((entry) => entry.kind === "safeguard-request").length,
     unsettled: triageEntries.filter((entry) => entry.kind === "unsettled-finding").length,
     observations: triageEntries.filter((entry) => entry.kind === "out-of-scope-observation").length,
     misconfigurations: triageEntries.filter((entry) => entry.kind === "review-brief-misconfiguration").length,

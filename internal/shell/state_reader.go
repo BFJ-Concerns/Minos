@@ -33,12 +33,12 @@ type (
 // and the JSON status routes and a surface reading through it cannot
 // disagree. One is made for the listener's lifetime.
 type StateReader struct {
-	cfg    ServiceConfig
+	root   string
 	recent *recentRunsCache
 }
 
-func newStateReader(cfg ServiceConfig, recent *recentRunsCache) *StateReader {
-	return &StateReader{cfg: cfg, recent: recent}
+func newStateReader(root string) *StateReader {
+	return &StateReader{root: root, recent: newRecentRunsCache()}
 }
 
 // Configuration reads service.toml and every repository file as they stand
@@ -46,7 +46,7 @@ func newStateReader(cfg ServiceConfig, recent *recentRunsCache) *StateReader {
 // honour them. It is read afresh on every call, so a change saved a moment
 // ago, by hand or from a surface, is what comes back.
 func (reader *StateReader) Configuration() (ServiceConfig, []RepoConfig, error) {
-	cfg, err := LoadServiceConfig(reader.cfg.Root)
+	cfg, err := LoadServiceConfig(reader.root)
 	if err != nil {
 		return ServiceConfig{}, nil, err
 	}
@@ -76,7 +76,11 @@ func (reader *StateReader) RepositorySettings(repo RepoConfig) ([]SettingState, 
 // stage it is at; a surface takes the stage from here and never opens a run
 // directory itself, so the record can change form without a surface changing.
 func (reader *StateReader) Status(ctx context.Context) (StatusDocument, error) {
-	return statusSnapshot(ctx, reader.cfg)
+	cfg, err := LoadServiceConfig(reader.root)
+	if err != nil {
+		return StatusDocument{}, err
+	}
+	return statusSnapshot(ctx, cfg)
 }
 
 // Sweep reads the record of the last completed sweep alone, which costs one
@@ -85,8 +89,12 @@ func (reader *StateReader) Status(ctx context.Context) (StatusDocument, error) {
 // those held back by the concurrency cap, and CompletedAt, the sweep's own
 // stamp: a sweep that has stopped running shows as that stamp ageing. Nil
 // means no whole record is there to read.
-func (reader *StateReader) Sweep() *SweepDeferralDocument {
-	return readSweepDeferrals(reader.cfg)
+func (reader *StateReader) Sweep() (*SweepDeferralDocument, error) {
+	cfg, err := LoadServiceConfig(reader.root)
+	if err != nil {
+		return nil, err
+	}
+	return readSweepDeferrals(cfg), nil
 }
 
 // RecentRuns reads the timing records archived within the last hours, at
@@ -94,20 +102,11 @@ func (reader *StateReader) Sweep() *SweepDeferralDocument {
 // window. The listing is cached as /runs/recent's is, and shares its cache.
 // A deployment with no recent-timings-command has none to report.
 func (reader *StateReader) RecentRuns(ctx context.Context, hours, limit int) ([]RecentRun, time.Time, error) {
-	if reader.cfg.Runs.RecentTimingsCommand == "" {
-		return nil, time.Time{}, nil
+	cfg, err := LoadServiceConfig(reader.root)
+	if err != nil {
+		return nil, time.Time{}, err
 	}
-	// The cache keeps one reading for each window asked for, so the window
-	// is held to the bounds /runs/recent holds its query to.
-	if hours < 1 {
-		hours = defaultRecentWindowHours
-	}
-	if limit < 1 {
-		limit = defaultRecentRecords
-	}
-	hours, limit = min(hours, maximumRecentWindowHours), min(limit, maximumRecentRecords)
-	reading, err := reader.recent.read(ctx, reader.cfg, hours, limit)
-	return reading.runs, reading.takenAt, err
+	return reader.recent.recentRuns(ctx, cfg, hours, limit)
 }
 
 // ReviewThreads reads the inline threads Minos opened on one pull request as
@@ -115,7 +114,11 @@ func (reader *StateReader) RecentRuns(ctx context.Context, hours, limit int) ([]
 // comments. It is a read through the service's own forge adaptation and
 // credential, and each call reaches the forge.
 func (reader *StateReader) ReviewThreads(ctx context.Context, repo RepoConfig, pullRequest int64) ([]forge.ReviewThread, error) {
-	adapter, err := newBehaviouralForge(reader.cfg, repo.Forge)
+	cfg, err := LoadServiceConfig(reader.root)
+	if err != nil {
+		return nil, err
+	}
+	adapter, err := newBehaviouralForge(cfg, repo.Forge)
 	if err != nil {
 		return nil, err
 	}

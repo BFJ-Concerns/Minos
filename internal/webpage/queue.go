@@ -32,7 +32,10 @@ type queueView struct {
 }
 
 func showQueue(_ *http.Request, read Readings) (any, error) {
-	sweep := read.Sweep()
+	sweep, err := read.Sweep()
+	if err != nil {
+		return nil, err
+	}
 	if sweep == nil {
 		return nil, nil
 	}

@@ -19,7 +19,11 @@ type FindingHistoryPullRequest struct {
 // Each page bounds the number of individual thread reads the view can make.
 func (reader *StateReader) FindingHistoryPullRequests(ctx context.Context, repo RepoConfig, page int) ([]FindingHistoryPullRequest, bool, error) {
 	const pageSize = 10
-	configuration, ok := reader.cfg.Forges[repo.Forge]
+	cfg, err := LoadServiceConfig(reader.root)
+	if err != nil {
+		return nil, false, err
+	}
+	configuration, ok := cfg.Forges[repo.Forge]
 	if !ok {
 		return nil, false, fmt.Errorf("unknown forge %q", repo.Forge)
 	}

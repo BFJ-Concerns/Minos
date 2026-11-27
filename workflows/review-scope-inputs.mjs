@@ -10,6 +10,7 @@ import { routingFromEnvironment } from "./role-routing.mjs";
 import { reviewBriefsFromWorkspace } from "./review-brief-files.mjs";
 import { briefEngagement } from "./brief-dispositions.mjs";
 import { pullRequestFromOrientation } from "./pull-request-description.mjs";
+import { promptSettingsFromEnvironment } from "./prompt-settings.mjs";
 import { reviewPrompts } from "./review-prompts.mjs";
 
 const [target, head, ...rest] = process.argv.slice(2);
@@ -57,7 +58,7 @@ if (argumentError) {
   const engagement = briefEngagement(briefs, occasion, changedPaths);
 
   const pullRequest = pullRequestFromOrientation(orientation);
-  const { concerns, prompts } = reviewPrompts(workflowRoot);
+  const { concerns, prompts } = reviewPrompts(workflowRoot, promptSettingsFromEnvironment());
   const workflowInput = {
     target,
     head,

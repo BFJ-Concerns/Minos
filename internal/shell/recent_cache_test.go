@@ -16,7 +16,7 @@ import (
 // out is the host asked again.
 func TestRecentRunsServesAWindowFromCacheWithinItsTTL(t *testing.T) {
 	cfg, tally := countingArchiveListing(t)
-	cache := newRecentRunsCache(time.Hour)
+	cache := newRecentRunsCache()
 
 	for range 5 {
 		readCachedRecentRuns(t, cfg, cache, "")
@@ -30,7 +30,7 @@ func TestRecentRunsServesAWindowFromCacheWithinItsTTL(t *testing.T) {
 // reading the cache does not hold, not a stale answer to the wrong question.
 func TestRecentRunsCachesEachWindowSeparately(t *testing.T) {
 	cfg, tally := countingArchiveListing(t)
-	cache := newRecentRunsCache(time.Hour)
+	cache := newRecentRunsCache()
 
 	readCachedRecentRuns(t, cfg, cache, "hours=1")
 	readCachedRecentRuns(t, cfg, cache, "hours=2")
@@ -44,9 +44,10 @@ func TestRecentRunsCachesEachWindowSeparately(t *testing.T) {
 // an operator about a run that finished after the last listing.
 func TestRecentRunsListsAgainOnceAReadingHasExpired(t *testing.T) {
 	cfg, tally := countingArchiveListing(t)
-	cache := newRecentRunsCache(0)
+	cache := newRecentRunsCache()
 
 	readCachedRecentRuns(t, cfg, cache, "")
+	cache.entries[recentRunsWindow{defaultRecentWindowHours, defaultRecentRecords}].reading.takenAt = time.Now().Add(-3 * time.Minute)
 	readCachedRecentRuns(t, cfg, cache, "")
 	if listings := countListings(t, tally); listings != 2 {
 		t.Fatalf("archive listings = %d, want 2", listings)
@@ -57,7 +58,7 @@ func TestRecentRunsListsAgainOnceAReadingHasExpired(t *testing.T) {
 // request was served, so a cached reading does not claim to be current.
 func TestRecentRunsDatesTheDocumentByItsListing(t *testing.T) {
 	cfg, _ := countingArchiveListing(t)
-	cache := newRecentRunsCache(time.Hour)
+	cache := newRecentRunsCache()
 
 	first := readCachedRecentRuns(t, cfg, cache, "")
 	time.Sleep(1100 * time.Millisecond)
@@ -76,11 +77,13 @@ func TestRecentRunsHoldsAFailedListingForItsTTL(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "list-recent-timings")
 	writeScript(t, script, "#!/bin/sh\necho x >> '"+tally+"'\nexit 1\n")
 	cfg.Runs.RecentTimingsCommand = script
-	cache := newRecentRunsCache(time.Hour)
+	cache := newRecentRunsCache()
 
 	for range 3 {
 		response := httptest.NewRecorder()
-		if err := handleRecentRuns(context.Background(), cfg, cache, response,
+		if err := handleRecentRuns(context.Background(), cfg.Listener.StatusTokenFile, func(ctx context.Context, hours, limit int) ([]RecentRun, time.Time, error) {
+			return cache.recentRuns(ctx, cfg, hours, limit)
+		}, response,
 			authorisedRecentRunsRequest("")); err == nil {
 			t.Fatal("handleRecentRuns() error = nil, want the listing's failure")
 		}
@@ -137,7 +140,9 @@ func authorisedRecentRunsRequest(query string) *http.Request {
 func readCachedRecentRuns(t *testing.T, cfg ServiceConfig, cache *recentRunsCache, query string) recentRunsDocument {
 	t.Helper()
 	response := httptest.NewRecorder()
-	if err := handleRecentRuns(context.Background(), cfg, cache, response,
+	if err := handleRecentRuns(context.Background(), cfg.Listener.StatusTokenFile, func(ctx context.Context, hours, limit int) ([]RecentRun, time.Time, error) {
+		return cache.recentRuns(ctx, cfg, hours, limit)
+	}, response,
 		authorisedRecentRunsRequest(query)); err != nil {
 		t.Fatalf("handleRecentRuns() error = %v", err)
 	}
@@ -149,4 +154,89 @@ func readCachedRecentRuns(t *testing.T, cfg ServiceConfig, cache *recentRunsCach
 		t.Fatalf("decode recent runs: %v; body = %q", err, response.Body.String())
 	}
 	return document
+}
+
+func TestRecentRunsCancellationLeavesTheSharedWindowReadable(t *testing.T) {
+	cfg, tally := countingArchiveListing(t)
+	started := filepath.Join(t.TempDir(), "listing-started")
+	writeScript(t, cfg.Runs.RecentTimingsCommand, "#!/bin/sh\nif [ ! -e '"+started+"' ]; then\n"+
+		"  touch '"+started+"'\n  sleep 60\nfi\necho x >> '"+tally+"'\n")
+	cache := newRecentRunsCache()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := cache.recentRuns(ctx, cfg, 24, 60)
+		result <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first listing never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err != context.Canceled {
+			t.Fatalf("cancelled listing returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled listing did not exit")
+	}
+	readCachedRecentRuns(t, cfg, cache, "")
+	readCachedRecentRuns(t, cfg, cache, "")
+	if listings := countListings(t, tally); listings != 1 {
+		t.Fatalf("completed listings = %d, want 1", listings)
+	}
+}
+
+func TestMonitoringReadsCurrentConfigOnExistingRoutes(t *testing.T) {
+	cfg, firstTally := countingArchiveListing(t)
+	writeMonitoringConfig(t, cfg)
+	stubStatusCommands(t)
+	var reader *StateReader
+	mux := receiverRoutes(t.Context(), cfg, func(_ *http.ServeMux, _ ServiceConfig, state *StateReader) {
+		reader = state
+	})
+	request := authorisedRecentRunsRequest("")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || countListings(t, firstTally) != 1 {
+		t.Fatalf("initial archive listing: %d %s", response.Code, response.Body.String())
+	}
+
+	newRuns := t.TempDir()
+	secondTally := filepath.Join(newRuns, "listings")
+	cfg.Runs.Dir = newRuns
+	cfg.Runs.MaxConcurrent = 5
+	cfg.Runs.RecentTimingsCommand = filepath.Join(newRuns, "list")
+	writeScript(t, cfg.Runs.RecentTimingsCommand, "#!/bin/sh\necho x >> '"+secondTally+"'\n")
+	writeMonitoringConfig(t, cfg)
+	writeStatusFile(t, sweepDeferralsPath(cfg), `{"kind":"minos-sweep-deferrals-v1","completed_at":"2026-11-27T00:00:00Z"}`)
+
+	statusRequest := httptest.NewRequest(http.MethodGet, "/status", nil)
+	statusRequest.Header = request.Header.Clone()
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, statusRequest)
+	var status StatusDocument
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil || status.MaxConcurrent != 5 || status.Sweep == nil {
+		t.Fatalf("reloaded status: %d %s", response.Code, response.Body.String())
+	}
+	sweep, err := reader.Sweep()
+	if err != nil || sweep == nil || sweep.CompletedAt != status.Sweep.CompletedAt {
+		t.Fatalf("queue and status disagree: %#v, %v", sweep, err)
+	}
+	if _, _, err := reader.RecentRuns(t.Context(), 24, 60); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || countListings(t, secondTally) != 1 {
+		t.Fatalf("shared reloaded archive listing: %d %s", response.Code, response.Body.String())
+	}
 }
