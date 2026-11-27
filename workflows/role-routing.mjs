@@ -8,8 +8,10 @@
 // own — a workflow that received no routing fails before dispatch.
 
 // `judgement` is the role every one-shot judgement stage of the run driver
-// takes (workflows/judgements/README.md).
-export const ROLES = ["exploration", "proposer", "verifier", "brief-planner", "judgement"];
+// takes (workflows/judgements/README.md). `description` is the role of the
+// one stage that serves no run, the stage that writes the description Minos
+// keeps of a repository.
+export const ROLES = ["exploration", "proposer", "verifier", "brief-planner", "judgement", "description"];
 export const ENGINES = ["claude", "codex"];
 // The Ensemble runtime's canonical effort domain; the Go loader validates the
 // configured value against the same list, so nothing the run receives can be
@@ -30,17 +32,21 @@ const DEFAULT_EFFORT = {
   verifier: "medium",
   "brief-planner": "high",
   judgement: "medium",
+  description: "medium",
 };
 // The documented recommendation: every finding-proposing and planning role on
 // GPT, every verifier on Claude, so a finding is checked by the family that
 // did not propose it. A judgement stage decides a run's course or its
-// published result and proposes nothing; it takes Claude.
+// published result and proposes nothing; it takes Claude. So does the
+// description stage, whose prose is handed to the legs of both families
+// and checked by none.
 const PAIRED_ENGINE = {
   exploration: "codex",
   proposer: "codex",
   verifier: "claude",
   "brief-planner": "codex",
   judgement: "claude",
+  description: "claude",
 };
 
 export function defaultModel(role, engine) {

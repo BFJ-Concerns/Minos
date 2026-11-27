@@ -20,7 +20,7 @@ var files embed.FS
 
 var failurePage = Page{Title: "This page could not be shown", Template: "failure.html"}
 
-// frame is what the layout is handed. A page's own template sees Data alone.
+// frame is what the layout is handed. The content template sees Data alone by default.
 type frame struct {
 	Title      string
 	Navigation []navigationEntry

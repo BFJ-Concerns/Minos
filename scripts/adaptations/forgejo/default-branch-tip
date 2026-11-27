@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"
+repo="$2"
+
+# The commit a repository's default branch stands at, as
+# {default_branch, commit}. A repository with no commit on its default
+# branch, an empty one, reports the commit as null.
+repository_json="$(api_read "/api/v1/repos/${owner}/${repo}")"
+default_branch="$(printf '%s' "$repository_json" | jq -er --arg repository "${owner}/${repo}" '
+  if (.default_branch | type) == "string" and .default_branch != "" then .default_branch
+  else error("repository metadata for \($repository) omitted its default branch") end')"
+if ! api_with_status GET "/api/v1/repos/${owner}/${repo}/branches/$(urlencode "$default_branch")"; then
+  echo "default-branch-tip: the forge could not be reached" >&2
+  exit 1
+fi
+case "$api_status_code" in
+  200)
+    printf '%s' "$api_status_body" | jq -ec --arg branch "$default_branch" '
+      if (.commit.id | type) == "string" and .commit.id != "" then {default_branch: $branch, commit: .commit.id}
+      else error("branch \($branch) carried no commit") end'
+    ;;
+  404)
+    jq -nc --arg branch "$default_branch" '{default_branch: $branch, commit: null}'
+    ;;
+  *)
+    echo "default-branch-tip: branch lookup for ${owner}/${repo} returned HTTP $api_status_code" >&2
+    exit 1
+    ;;
+esac

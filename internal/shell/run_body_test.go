@@ -905,6 +905,24 @@ echo "$pid" >"$1/alive-at-archive"
 	}
 }
 
+func TestRunBodyClearsAnEarlierAttemptsStageStopBeforeTheDriverStarts(t *testing.T) {
+	fixture := scriptedDriverFixture(t, `
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const runDir = process.env.MINOS_RUN_DIR;
+writeFileSync(join(runDir, "stage-stop-seen"), existsSync(join(runDir, "stage-stopped")) ? "yes\n" : "no\n");
+writeFileSync(join(runDir, "lead-complete"), "clean\n");
+`)
+	if err := os.MkdirAll(fixture.runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(fixture.runDir, "stage-stopped"), "no run activity for 3600 seconds\n")
+	if output, err := fixture.execute(nil); err != nil {
+		t.Fatalf("scripted run: %v\n%s", err, output)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "stage-stop-seen"), "no")
+}
+
 func TestRunBodyCarriesARepinnedTargetIntoTheRun(t *testing.T) {
 	repinned := strings.Repeat("c", 40)
 	fixture := scriptedDriverFixture(t, `

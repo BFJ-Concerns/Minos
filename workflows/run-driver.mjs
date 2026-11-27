@@ -167,7 +167,9 @@ function dispatch(run, name, workflow, runner) {
         const stopped = supervisorStop(run);
         const reason = stopped ? `stopped by the run supervisor: ${stopped}` : signal ? `signal ${signal}` : `exit ${code}`;
         const failure = new Error(`stage ${name} ended without a result; ${name}.log has its diagnostics (${reason})`);
-        failure.killed = signal !== null || [130, 137, 143].includes(code);
+        // A stage the supervisor stopped for silence ends the run; only an
+        // interruption from elsewhere is worth the review's one retry.
+        failure.killed = !stopped && (signal !== null || [130, 137, 143].includes(code));
         return reject(failure);
       }
       try {

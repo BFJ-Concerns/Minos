@@ -306,6 +306,7 @@ button.quiet {
 }
 
 .refusal {
+  overflow-wrap: anywhere;
   background: var(--bad-ground);
   color: var(--bad);
 }
@@ -370,6 +371,18 @@ button.quiet {
   .finding-counts td {
     padding-inline: 0.25rem;
   }
+}
+
+.repository-description-link {
+  font-size: 0.875rem;
+}
+
+.description-source {
+  overflow-wrap: anywhere;
+}
+
+.repository-description {
+  max-width: 78ch;
 }
 
 .setting {

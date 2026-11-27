@@ -22,10 +22,12 @@
 {{- end}}
 </header>
 <main>
+{{block "page" .}}
 {{- if .Refusal}}
 <p class="refusal" role="alert">{{.Refusal}}</p>
 {{- end}}
 {{template "content" .Data}}
+{{end}}
 </main>
 </body>
 </html>

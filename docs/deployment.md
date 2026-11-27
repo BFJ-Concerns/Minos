@@ -256,18 +256,19 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    shipped example comments an illustrative value of 4).
 
    `[routing]` maps each workflow role — `exploration`, `proposer`,
-   `verifier`, `brief-planner`, `judgement` — to an
+   `verifier`, `brief-planner`, `judgement`, `description` — to an
    engine, model and effort. A role left unset defaults at run time: with
    both engines provisioned, proposing and planning roles (`exploration`,
    `proposer`, `brief-planner`) run on Codex, and the
-   `verifier` and `judgement` on Claude. With one engine provisioned, every
+   `verifier`, `judgement` and `description` on Claude. With one engine provisioned, every
    role runs on it. A role on
    Claude defaults to `claude-opus-5-5`; on Codex the `proposer` defaults to
    `gpt-6.2-astra` and every other role to `gpt-6.1-sol`. Default effort is `high` for
    `exploration` and `brief-planner`, and `medium` for `proposer`,
-   `verifier` and `judgement`. `judgement` is the role
+   `verifier`, `judgement` and `description`. `judgement` is the role
    of the run driver's one-shot judgement stages
-   (`workflows/judgements/`). An effort is one of the Ensemble
+   (`workflows/judgements/`), and `description` the role of the stage
+   that writes the description Minos keeps of a repository. An effort is one of the Ensemble
    runtime's levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
    or `max`. The verifier's routing also carries
    the leg that merges findings one fix would resolve before they are
@@ -678,7 +679,9 @@ waiting run ahead of it on the strength of quiet files.
 
 The receiver serves a web page for the operator at the root of its listener
 (`http://BOX:8919/` with the shipped `bind`), behind one sign-in. It opens on
-an overview of the enrolled repositories, and its settings pages show and
+an overview of the enrolled repositories. Each repository's Description
+link opens the account Minos keeps of its structure, with the default-branch
+commit it describes and when Minos recorded it. The settings pages show and
 change the configuration. Nothing Minos does depends on the
 page: a deployment that never opens it reviews exactly the same.
 
@@ -730,9 +733,10 @@ equals sign.
   layout stay where they are. Replacing or removing a multiline value can
   discard comments inside it. The receiver needs write access to the
   configuration directory and `repos/` and reports a refusal if it lacks access.
-- The service's loader validates the edited file before saving it and
-  shows the reason for any refusal. You can repair each file independently.
-  The receiver and sweep still validate the configuration they use.
+- The service's loader validates the edited file before saving it. The
+  setting stays open with the reason if the loader refuses the change.
+  You can repair each file independently. The settings index shows where
+  the loader stopped if the current configuration fails to load.
 - A change takes effect from the next run, since the sweep, each webhook
   and each run read the files afresh. The page says where a setting is read
   only when the receiver starts, or sizes the runs slice and needs
@@ -947,6 +951,40 @@ secondary repository is cloned read-only beside the workspace; the clone's
 push URL is disabled. A configured source that is missing or empty is recorded
 as a misconfiguration and reported to the lead, never silently skipped; when
 every configured source fails, setup stops the run.
+
+### Repository descriptions
+
+With `description.enabled = true`, under `[repositories.description]` in
+`service.toml` or `[description]` in a repository's own file, Minos keeps
+a description of the repository: an account of its layout, its
+components and how they connect, written by a model from the default
+branch. Every review of the repository shows it to the review legs, push
+inspection and verdict classification beside the guidance sources, as a
+map of the code made from another commit and never as the project's
+intent. It is off until enabled.
+
+Each sweep pass reads the commit each enabled repository's default branch
+stands at (the adaptation's `default-branch-tip` operation) and, when the
+description kept was made from another commit or none is kept, starts a
+`minos-describe-<forge>-<owner>-<repo>` unit. The unit runs `minos
+describe`, which runs `describe-body` from the directory of the
+repository's `adaptation.run-body`: it clones the default branch at that
+commit, provisions the engines `run-body.env` names as a run does, and asks
+the `repository-description` stage (routing role `description`) to revise
+the kept description against the change. A description unit is not a run:
+it takes no place under `runs.max-concurrent`, runs at most once per
+repository at a time, and shares the runs slice, memory ceiling and
+duration ceiling of a run. A failed description is reported in the unit's
+journal with the end of the stage's log, and the same commit is not tried
+again for an hour; a default branch that has moved is described at once.
+
+The description is kept as one record per repository under
+`<runs.dir>/.descriptions/`, with the commit it was made from. A run copies
+it into its own directory at setup, so every leg of one run is shown the
+same description. The record is a cache: removing it costs one new
+description. The sweep removes the record of a repository whose
+description is switched off or that is no longer enrolled, and a run of
+such a repository is shown none.
 
 ## Filing deduplication
 

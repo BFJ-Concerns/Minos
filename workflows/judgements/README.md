@@ -11,6 +11,16 @@ answer the driver carries out as given.
 | `verdict-classification` | which confirmed findings of the main and brief verdicts gate, take a never-gating class or are advisory | `run-steps/classify.mjs` |
 | `earlier-findings` | whether each blocking finding of an earlier Minos review still stands: answered by the author, gone from the code, or not | `run-steps/settle-earlier-findings.mjs` |
 
+One stage serves no run and decides nothing about one:
+
+| Stage | Writes |
+|---|---|
+| `repository-description` | the description Minos keeps of a repository: its layout, its components and how they connect, as the default branch stands at one commit |
+
+It is defined as the others are, in the same two files, and runs through
+the same workflow and runner, so a record of its input replays it as one
+replays theirs. *A stage asked outside a run* below says what differs.
+
 ## A stage's files
 
 A stage is two files here, both named for it.
@@ -26,6 +36,7 @@ pass, so a value is never itself read for slots.
 | Part | What it is |
 |---|---|
 | `name` | the stage's name: lower-case words joined by hyphens, the same as the files |
+| `role` | the routing role the stage runs on (`workflows/role-routing.mjs`); a definition that names none runs on `judgement` |
 | `slots` | the run slots the prompt carries; a prompt with any other slot is refused before dispatch |
 | `inputProblem(input)` | what is wrong with an input, or `null` |
 | `promptValues(input)` | the text of each run slot |
@@ -72,7 +83,7 @@ like the reviews are: its span is in the run's timings, its diagnostics are
 in `NAME.log`, and the status page shows it.
 
 The routing is the `judgement` role's (`workflows/role-routing.mjs`), one
-role for every stage.
+role for every stage a run's driver asks.
 
 A stage that gives no answer, or one its `answerProblem` refuses, fails
 the step that asked, and the run ends incomplete. No default answer stands
@@ -110,6 +121,23 @@ prints the recorded answer beside the replayed one. It reads and writes no
 forge. A record written by hand, holding the choice some other reader made
 on a head as its `answer`, is replayed the same way; that is how a stage's
 choices are compared with choices made before it existed.
+
+## A stage asked outside a run
+
+`repository-description` is asked for a repository, not for a pull request.
+Its agent works in a clone of the repository's default branch at the commit
+its input names, where the other stages' agents work in a pull request's
+clone. Its input holds that commit and the description kept until now with
+the commit that one was made from, or `null`, and its answer is the whole
+description that replaces it. It runs on a role of its own, `description`,
+so that a deployment can route the reading of a whole repository apart from
+the judgements of a run.
+
+Its answer is not carried out by a driver step. The service keeps the
+description with the commit it was made from, one record for each
+repository (`internal/shell/repository_description.go`), and a pull
+request's run is shown the record it was set up with
+(`workflows/repository-description.mjs`).
 
 ## Adding a stage
 

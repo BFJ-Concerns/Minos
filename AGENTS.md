@@ -118,6 +118,13 @@ Claude Code by default or on Codex (`MINOS_LEAD_ENGINE`).
   reactions and `Minos` status. The status is a best-effort write,
   informational only — it never serves as a required check. Scratch data
   may disappear with the run.
+- A repository with `description.enabled` on has a description kept of
+  it, written by the `repository-description` stage from its default
+  branch. The sweep asks of current forge state whether one is due
+  (`internal/shell/describe.go`) and starts a `minos-describe-` unit,
+  which is no run and takes no run place; a run is handed a copy of the
+  kept record, which its legs are shown beside the guidance and never as
+  the project's intent.
 - Each pull request has one summary comment: a conversation comment the
   service creates at the first claim and edits in place ever after
   (`minos forge summary`, each adaptation's `guarded-write-summary`). Its

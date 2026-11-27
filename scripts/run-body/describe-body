@@ -1,0 +1,116 @@
+#!/usr/bin/env sh
+set -eu
+
+# The body of the unit that writes one repository's description: it clones
+# the repository at the default-branch commit the sweep found, and asks
+# the repository-description stage (workflows/judgements) for the
+# description of that commit, revising the one kept until now. The answer
+# lands at $MINOS_RUN_DIR/repository-description-result.json, as any
+# stage's does under dispatch-stage; `minos describe`, which started this
+# script, keeps it. Nothing here reads or writes a pull request.
+#
+# It runs on the engine environment a review run has (engine-home.sh),
+# read from the same run-body.env, and clones through the forge's
+# adaptation as workspace setup does (forge-git.sh).
+#
+#   MINOS_CONFIG               the configuration root holding run-body.env
+#   MINOS_RUN_DIR              this unit's own directory
+#   MINOS_FORGE, MINOS_OWNER, MINOS_REPO_NAME
+#                              the repository
+#   MINOS_DESCRIPTION_COMMIT   the commit to describe
+#   MINOS_DESCRIPTION_RECORD   the record the service keeps (may be absent)
+
+script_dir="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/run-body/engine-home.sh
+. "$script_dir/engine-home.sh"
+# shellcheck source=scripts/run-body/forge-git.sh
+. "$script_dir/forge-git.sh"
+
+failure_stage="configuration"
+failure_cause="describe-body exited before loading its configuration"
+run_tmpdir=""
+
+on_exit() {
+  status="$1"
+  trap - 0
+  if [ -n "$run_tmpdir" ]; then
+    rm -rf -- "$run_tmpdir"
+  fi
+  if [ "$status" -ne 0 ]; then
+    echo "describe-body: failed at $failure_stage: $failure_cause" >&2
+  fi
+  exit "$status"
+}
+trap 'on_exit $?' 0
+trap 'exit 129' 1
+trap 'exit 130' 2
+trap 'exit 143' 15
+
+require_variable() {
+  failure_cause="$1 is required"
+  eval "required_value=\${$1:-}"
+  if [ -z "$required_value" ]; then
+    echo "describe-body: $failure_cause" >&2
+    exit 1
+  fi
+}
+
+for variable in MINOS_CONFIG MINOS_RUN_DIR MINOS_FORGE MINOS_OWNER MINOS_REPO_NAME \
+  MINOS_DESCRIPTION_COMMIT MINOS_DESCRIPTION_RECORD; do
+  require_variable "$variable"
+done
+
+unset_gateway_environment
+set -a
+failure_cause="could not load ${MINOS_CONFIG%/}/run-body.env"
+# shellcheck source=/dev/null
+. "${MINOS_CONFIG%/}/run-body.env"
+set +a
+load_gateway_credential
+# A description is written by no lead, whatever run-body.env says of one.
+unset MINOS_LEAD_ENGINE MINOS_LEAD_MODEL
+resolve_provisioned_engines
+if [ -z "$provisioned_engines" ]; then
+  failure_cause="the description stage requires at least one provisioned engine"
+  echo "describe-body: $failure_cause" >&2
+  exit 1
+fi
+MINOS_PROVISIONED_ENGINES="$provisioned_engines"
+export MINOS_PROVISIONED_ENGINES
+for variable in MINOS_BIN MINOS_REVIEW_WORKFLOW MINOS_SETUP_WORKSPACE; do
+  require_variable "$variable"
+done
+FORCE_COLOR=0
+CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1
+export FORCE_COLOR CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP
+
+failure_stage="run-directory"
+failure_cause="could not enter the description directory $MINOS_RUN_DIR"
+cd "$MINOS_RUN_DIR"
+provision_engine_home
+
+failure_stage="clone"
+repository="$MINOS_OWNER/$MINOS_REPO_NAME"
+workspace="$MINOS_RUN_DIR/workspace"
+failure_cause="the forge named no clone URL for $repository"
+repository_url="$(clone_url "$repository")"
+failure_cause="could not clone $repository"
+authenticated_git "$repository" clone --quiet --no-checkout "$repository_url" "$workspace"
+failure_cause="could not check out $MINOS_DESCRIPTION_COMMIT, which the default branch stood at"
+git -C "$workspace" checkout --quiet --detach "$MINOS_DESCRIPTION_COMMIT"
+checked_out="$(git -C "$workspace" rev-parse HEAD)"
+if [ "$checked_out" != "$MINOS_DESCRIPTION_COMMIT" ]; then
+  failure_cause="checked out $checked_out, expected $MINOS_DESCRIPTION_COMMIT"
+  exit 1
+fi
+# The clone is read, never written back: its push URL goes nowhere.
+git -C "$workspace" remote set-url --push origin "no-push://minos-description-clone"
+
+failure_stage="repository-description"
+failure_cause="could not build the description stage's input"
+workflows_dir="${MINOS_REVIEW_WORKFLOW%/*}"
+node "$workflows_dir/repository-description-input.mjs"
+failure_cause="the description stage gave no description"
+# The stage's agent works in the clone, its caller's working directory.
+cd "$workspace"
+"$script_dir/dispatch-stage" repository-description judgement.js run-judgement
