@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/BFJ-Concerns/Minos/internal/forge"
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 // The fixture serves raw forge responses and records actual branch reads;
@@ -133,5 +134,22 @@ func TestForgejoStatusReaderRejectsInvalidIDsOnBothEntrypoints(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestForgejoStatusReadBackFindsAnExistingStatusOnALaterPage(t *testing.T) {
+	fixture := newStatusReaderFixture(t, []string{
+		`[{"id":40,"context":"ci","state":"success"}]`,
+		`[{"id":12,"context":"Minos","status":"success","creator":{"login":"Minos"},"description":"review complete","target_url":"https://web.example/owner/repo/pulls/17"}]`,
+	}, false, false)
+	fixture.runner.WebBase = "https://web.example"
+	adapter, err := forge.NewAdapter(fixture.runner, "Minos", "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := forge.Guard{Repository: forge.Repository{Owner: "owner", Name: "repo"}, PullRequest: 17, HeadSHA: "head", TargetSHA: "target"}
+	result := adapter.SetProductStatusWithDescription(t.Context(), guard, product.Clean(), "review complete")
+	if result.Outcome != forge.WriteApplied || result.Reason != "status already present" {
+		t.Fatalf("status read-back = %#v, want existing status", result)
 	}
 }

@@ -371,7 +371,9 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		if result.Decision != "started" {
 			t.Fatalf("result = %q, want started", result)
 		}
-		assertArgument(t, systemdArgs, "MINOS_HEAD_BRANCH=")
+		if branch, present := systemdEnvironment(t, systemdArgs)["MINOS_HEAD_BRANCH"]; !present || branch != "" {
+			t.Fatalf("MINOS_HEAD_BRANCH = %q, present=%t, want a present, empty value", branch, present)
+		}
 		if state.virtualBranchReads() != 0 {
 			t.Fatalf("virtual pull ref caused %d branch reads", state.virtualBranchReads())
 		}
@@ -3303,15 +3305,17 @@ func TestForgeStatusRejectsFreeFormDescription(t *testing.T) {
 }
 
 func TestForgeStatusDetailsUsesForgeWebBase(t *testing.T) {
-	for _, test := range []struct{ name, webBase string }{
+	for _, test := range []struct{ name, webBase, apiSuffix string }{
 		{name: "configured", webBase: "https://forge.example/forge/"},
 		{name: "unset"},
+		{name: "versioned API base with trailing slash", apiSuffix: "/api/v1/"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
 			cfg, _, facts := state.service(t)
 			forge := cfg.Forges[facts.Forge]
 			forge.WebBase = test.webBase
+			forge.APIBase += test.apiSuffix
 			cfg.Forges[facts.Forge] = forge
 			writeServiceConfig(t, cfg)
 			t.Setenv("MINOS_CONFIG", cfg.Root)

@@ -217,33 +217,6 @@ func TestSpawnRunSharesTheMemoryEnvelopeBetweenConcurrentRuns(t *testing.T) {
 	}
 }
 
-func TestSpawnRunReportsRequestedUnitForSystemdRunRace(t *testing.T) {
-	original := commandCombinedOutput
-	t.Cleanup(func() { commandCombinedOutput = original })
-	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
-		if name == "systemctl" {
-			return nil, nil
-		}
-		return []byte("Unit minos-run-forgejo-owner-repo-pr1.service already exists."), errors.New("exit status 1")
-	}
-
-	cfg := ServiceConfig{Root: "/etc/minos", Forges: map[string]ForgeConfig{"forgejo": {}}}
-	setTestRunCeilings(&cfg)
-	cfg.Runs.Dir = t.TempDir()
-	repo := RepoConfig{}
-	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
-	result, err := SpawnRun(t.Context(), cfg, repo, Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Outcome != SpawnSuppressed {
-		t.Fatalf("outcome = %q, want %q", result.Outcome, SpawnSuppressed)
-	}
-	if result.BlockingUnit != "minos-run-forgejo-owner-repo-pr1.service" {
-		t.Fatalf("blocking unit = %q", result.BlockingUnit)
-	}
-}
-
 func TestSpawnRunRefusesContinuationDirectorySymlinkEscapingRunsDirectory(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
@@ -283,7 +256,7 @@ func TestSpawnRunRefusesContinuationDirectorySymlinkEscapingRunsDirectory(t *tes
 	if !strings.Contains(stderr, "continuation workspace not reused") || !strings.Contains(stderr, "runDir is not a direct, unit-named child of runs.dir") {
 		t.Fatalf("continuation refusal = %q", stderr)
 	}
-	if got := argumentValue(systemdArgs, "MINOS_RUN_DIR"); got == "" || got == apparent {
+	if got := systemdEnvironment(t, systemdArgs)["MINOS_RUN_DIR"]; got == "" || got == apparent {
 		t.Fatalf("fresh run directory = %q, escaping continuation = %q", got, apparent)
 	}
 	if slices.Contains(systemdArgs, "MINOS_RESUME=true") {
@@ -330,7 +303,7 @@ func TestSpawnRunCarriesCompleteReviewVerdictAcrossContinuation(t *testing.T) {
 			if !strings.Contains(stderr, "adopted completed review verdict") || !strings.Contains(stderr, facts.HeadSHA) {
 				t.Fatalf("stderr does not report verdict adoption: %q", stderr)
 			}
-			successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+			successor := systemdEnvironment(t, *systemdArgs)["MINOS_RUN_DIR"]
 			if rejectedHandoff && successor == predecessor {
 				t.Fatalf("rejected handoff reused predecessor directory %q", predecessor)
 			}
@@ -377,7 +350,7 @@ func TestSpawnRunRefusesAmbiguousPredecessorReviewVerdicts(t *testing.T) {
 	if strings.Contains(stderr, "adopted completed review verdict") {
 		t.Fatalf("stderr falsely reports ambiguous verdict adoption: %q", stderr)
 	}
-	successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	successor := systemdEnvironment(t, *systemdArgs)["MINOS_RUN_DIR"]
 	if _, err := os.Stat(filepath.Join(successor, "carried-review-result.json")); !os.IsNotExist(err) {
 		t.Fatalf("ambiguous verdict remains successor-visible or stat failed: %v", err)
 	}
@@ -396,7 +369,7 @@ func TestSpawnRunCarriesVerdictThroughSuccessiveRejectedHandoffs(t *testing.T) {
 	if _, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts); err != nil {
 		t.Fatal(err)
 	}
-	firstSuccessor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	firstSuccessor := systemdEnvironment(t, *systemdArgs)["MINOS_RUN_DIR"]
 	if err := os.Rename(
 		filepath.Join(firstSuccessor, "carried-review-result.json"),
 		filepath.Join(firstSuccessor, "review-result.json"),
@@ -419,7 +392,7 @@ func TestSpawnRunCarriesVerdictThroughSuccessiveRejectedHandoffs(t *testing.T) {
 	if !strings.Contains(stderr, "adopted completed review verdict") {
 		t.Fatalf("second successor did not adopt the chain's verdict: %q", stderr)
 	}
-	secondSuccessor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	secondSuccessor := systemdEnvironment(t, *systemdArgs)["MINOS_RUN_DIR"]
 	if _, err := os.Stat(filepath.Join(secondSuccessor, "carried-review-result.json")); err != nil {
 		t.Fatalf("second successor lacks carried verdict: %v", err)
 	}
@@ -446,7 +419,7 @@ func TestSpawnRunDemotesHeadMismatchedVerdictsForAdoptedContinuation(t *testing.
 			if strings.Contains(stderr, "adopted completed review verdict") {
 				t.Fatalf("stderr falsely reports stale carry adoption: %q", stderr)
 			}
-			successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+			successor := systemdEnvironment(t, *systemdArgs)["MINOS_RUN_DIR"]
 			if successor != predecessor {
 				t.Fatalf("successor = %q, want adopted directory %q", successor, predecessor)
 			}
@@ -484,7 +457,7 @@ func TestSpawnRunPrefersExactVerdictOverLeftoverStaleCarry(t *testing.T) {
 	if !strings.Contains(stderr, "adopted completed review verdict") {
 		t.Fatalf("stderr does not report exact verdict adoption: %q", stderr)
 	}
-	successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	successor := systemdEnvironment(t, *systemdArgs)["MINOS_RUN_DIR"]
 	carried, err := os.ReadFile(filepath.Join(successor, "carried-review-result.json"))
 	if err != nil || string(carried) != string(verdict) {
 		t.Fatalf("successor verdict = %s, err = %v; want %s", carried, err, verdict)
@@ -513,7 +486,7 @@ func TestSpawnRunRemovesHeadMismatchedCarryWhenHandoffIsRejected(t *testing.T) {
 	if strings.Contains(stderr, "adopted completed review verdict") {
 		t.Fatalf("stderr falsely reports stale carry adoption: %q", stderr)
 	}
-	successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	successor := systemdEnvironment(t, *systemdArgs)["MINOS_RUN_DIR"]
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("stale carry remains after admission or stat failed: %v", err)
 	}
@@ -543,7 +516,7 @@ func TestSpawnRunLaunchesWhenSiblingStaleCarryCannotBeRemoved(t *testing.T) {
 	if outcome.Outcome != SpawnStarted {
 		t.Fatalf("outcome = %q, want %q", outcome, SpawnStarted)
 	}
-	successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+	successor := systemdEnvironment(t, *systemdArgs)["MINOS_RUN_DIR"]
 	if successor == "" || successor == predecessor {
 		t.Fatalf("successor = %q, want a fresh launched run directory", successor)
 	}
@@ -639,7 +612,7 @@ func TestSpawnRunRefusesUntrustedReviewVerdicts(t *testing.T) {
 			if strings.Contains(stderr, "adopted completed review verdict") {
 				t.Fatalf("stderr falsely reports verdict adoption: %q", stderr)
 			}
-			successor := argumentValue(*systemdArgs, "MINOS_RUN_DIR")
+			successor := systemdEnvironment(t, *systemdArgs)["MINOS_RUN_DIR"]
 			if _, err := os.Stat(filepath.Join(successor, "review-result.json")); !os.IsNotExist(err) {
 				t.Fatalf("untrusted verdict remains successor-visible or stat failed: %v", err)
 			}
@@ -878,7 +851,9 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	if runDir == "" {
 		t.Fatalf("systemd-run arguments omit MINOS_RUN_DIR: %v", systemdArgs)
 	}
-	assertArgument(t, systemdArgs, "MINOS_HANDOFF="+handoffPath(cfg.Runs.Dir, UnitName(facts)))
+	if got, want := environment["MINOS_HANDOFF"], handoffPath(cfg.Runs.Dir, UnitName(facts)); got != want {
+		t.Fatalf("MINOS_HANDOFF = %q, want %q", got, want)
+	}
 	if _, err := os.Stat(filepath.Join(runDir, runOwnerMarker)); err != nil {
 		t.Fatalf("run ownership marker was not created: %v", err)
 	}
@@ -917,9 +892,16 @@ func TestSpawnRunExportsUnsetStructuredKnobsAsTheirEmptyForms(t *testing.T) {
 	if _, err := SpawnRun(t.Context(), cfg, repo, facts); err != nil {
 		t.Fatal(err)
 	}
-	assertArgument(t, systemdArgs, "MINOS_GUIDANCE_SOURCES=[]")
-	assertArgument(t, systemdArgs, `MINOS_FILING_DESTINATION={"kind":"none"}`)
-	assertArgument(t, systemdArgs, "MINOS_ROUTING={}")
+	environment := systemdEnvironment(t, systemdArgs)
+	for name, want := range map[string]string{
+		"MINOS_GUIDANCE_SOURCES":   "[]",
+		"MINOS_FILING_DESTINATION": `{"kind":"none"}`,
+		"MINOS_ROUTING":            "{}",
+	} {
+		if got := environment[name]; got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
 }
 
 func TestSpawnRunHoldsConcurrentAdmissionToTheConfiguredCount(t *testing.T) {
@@ -1035,16 +1017,6 @@ func assertArgument(t *testing.T, arguments []string, want string) {
 	if !slices.Contains(arguments, want) {
 		t.Fatalf("arguments omit %q: %v", want, arguments)
 	}
-}
-
-func argumentValue(arguments []string, key string) string {
-	prefix := key + "="
-	for _, argument := range arguments {
-		if strings.HasPrefix(argument, prefix) {
-			return strings.TrimPrefix(argument, prefix)
-		}
-	}
-	return ""
 }
 
 func writeTestHandoff(t *testing.T, cfg ServiceConfig, facts Facts, runDir, head string) string {

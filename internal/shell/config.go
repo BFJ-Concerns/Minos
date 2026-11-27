@@ -37,12 +37,6 @@ type ServiceConfig struct {
 		// StatusContext names every commit status Minos writes and the only
 		// one the sweep reads as its completion marker. Unset, it is Minos.
 		StatusContext string `toml:"status-context"`
-		// Operator alerts are filed as issues on this repository (one open
-		// issue per alert title, repeats as comments). All three keys unset
-		// leaves alerting off and alerts as journal lines only.
-		AlertForge string `toml:"alert-forge"`
-		AlertOwner string `toml:"alert-owner"`
-		AlertRepo  string `toml:"alert-repo"`
 	} `toml:"service"`
 	Listener struct {
 		Bind string `toml:"bind"`

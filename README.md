@@ -224,8 +224,6 @@ systemctl --user start minos-sweep.service   # run a sweep pass now
   heartbeat, and `/runs/recent` lists recently finished runs. Both are
   optional, read-only and behind a bearer token:
   [setup](docs/deployment.md#serving-run-status-to-an-operator-surface).
-- With an alert repository configured, Minos files an issue there when the
-  sweep fails or a repository is skipped on six consecutive passes.
 - With an archive host configured, each run's transcripts and run records
   stream to it over SSH as a zstd tarball.
 - With a failure ledger configured, the sweep records summaries of failed

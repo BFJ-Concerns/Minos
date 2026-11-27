@@ -10,11 +10,12 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const maxWebhookBodyBytes int64 = 1 << 20
 
-var serveReceiver = http.Serve
+var serveReceiver = (*http.Server).Serve
 
 func ReceiveCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("receive", flag.ContinueOnError)
@@ -35,7 +36,12 @@ func ReceiveCommand(ctx context.Context, args []string) error {
 		log.Printf("publish receiver heartbeat: %v", err)
 	}
 	log.Printf("minos receiver listening on %s", listener.Addr())
-	return serveReceiver(listener, receiverRoutes(ctx, cfg))
+	server := &http.Server{
+		Handler:      receiverRoutes(ctx, cfg),
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: time.Minute,
+	}
+	return serveReceiver(server, listener)
 }
 
 // receiverRoutes mounts the listener's surface. The status projection is

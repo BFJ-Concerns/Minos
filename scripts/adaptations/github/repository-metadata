@@ -5,6 +5,7 @@ set -eu
 
 owner="$1"
 repo="$2"
+github_authenticate "$owner" "$repo" public
 
 # A forge answer other than 200 is the lookup's outcome, reported as its
 # status for the caller to word; only an unreachable forge fails the script.

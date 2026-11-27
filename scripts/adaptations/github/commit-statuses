@@ -2,4 +2,5 @@
 set -eu
 # shellcheck source-path=SCRIPTDIR
 . "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
 commit_statuses "$1" "$2" "$3"
