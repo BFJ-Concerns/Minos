@@ -11,7 +11,7 @@
 {{- else}}
 <h1>Settings</h1>
 <p class="muted">Written to <code>service.toml</code> in the configuration directory, the file the deployer edits by hand. Each repository's own file overrides any setting listed under <em>for every repository</em>.</p>
-{{- if .ConfigurationError}}
+{{- if and .ConfigurationError (ne .ConfigurationError $.Refusal)}}
 <p class="refusal">Minos cannot load its configuration. {{.ConfigurationError}}</p>
 {{- end}}
 {{- range .Unavailable}}

@@ -37,8 +37,9 @@ type Page struct {
 	// repository's settings say, leaves Nav unset.
 	Title string
 	Nav   bool
-	// Template is the page's file under templates/. It defines "content",
-	// which the layout places and hands whatever Show returned.
+	// Template is the page's file under templates/. The layout passes Show's
+	// value to "content". A template can define "page" to receive the full
+	// frame, including the value in Data and any form error in Refusal.
 	Template string
 	// Refresh, when set, has the browser reload the page at that interval:
 	// how a page showing live state stays current with no script.

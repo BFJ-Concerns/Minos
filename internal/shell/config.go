@@ -307,7 +307,9 @@ type RepositoryKnobs struct {
 	Admission                    AdmissionRules `toml:"admission"`
 	WorkInProgressBranchPrefixes []string       `toml:"work-in-progress-branch-prefixes"`
 	Review                       struct {
-		Threshold string `toml:"threshold"`
+		Threshold            string `toml:"threshold"`
+		CommitStatus         bool   `toml:"commit-status"`
+		RequestChangesRounds *int   `toml:"request-changes-rounds"`
 		// FileSafeguardRequests sends the confirmed findings the lead classes
 		// as requests for a safeguard against a failure nobody has observed
 		// to the filing destination, each marked as such. Off, they are
@@ -562,7 +564,7 @@ func readRepoConfigFile(path string) (RepoConfig, toml.MetaData, error) {
 	}
 	repo.Path = path
 	if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
-		return RepoConfig{}, metadata, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
+		return RepoConfig{}, metadata, missingRepositoryIdentity(path)
 	}
 	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
 		return RepoConfig{}, metadata, err

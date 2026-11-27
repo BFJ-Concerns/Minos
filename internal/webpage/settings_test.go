@@ -469,3 +469,29 @@ func TestSettingsIndexNamesLoaderRefusalAfterSavingAnotherFile(t *testing.T) {
 		t.Fatalf("index still reports a loader error after repair: %s", index.Body)
 	}
 }
+
+func TestSettingsIndexShowsEachConfigurationFaultOnce(t *testing.T) {
+	root, read, write := configurationRoot(t)
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	path := filepath.Join(root, "repos", "missing-owner.toml")
+	if err := os.WriteFile(path, []byte("forge = \"forgejo\"\nrepo = \"missing-owner\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index := visit(site, "/settings", session)
+	if count := strings.Count(index.Body.String(), path); index.Code != http.StatusOK || count != 1 {
+		t.Fatalf("index answered %d and listed the repository fault %d times", index.Code, count)
+	}
+
+	servicePath := filepath.Join(root, "service.toml")
+	if err := os.WriteFile(servicePath, []byte(fileText(t, servicePath)+"max-concurrent = -1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	refused := submit(site, "/settings", url.Values{"setting": {"runs.recent-timings-cache-seconds"}, "value": {"2"}}, session)
+	page := refused.Body.String()
+	row := settingRowHTML(t, page, "runs.recent-timings-cache-seconds")
+	const fault = "runs max-concurrent must be"
+	if count := strings.Count(page, fault); refused.Code != http.StatusUnprocessableEntity || count != 1 || !strings.Contains(row, fault) {
+		t.Fatalf("settings refusal answered %d and listed the fault %d times, row %q", refused.Code, count, row)
+	}
+}

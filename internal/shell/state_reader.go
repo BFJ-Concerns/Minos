@@ -74,7 +74,7 @@ func (reader *StateReader) SettingsRepositories() ([]RepoConfig, []string, error
 		owner, _ := values["owner"].(string)
 		repo, _ := values["repo"].(string)
 		if forgeName == "" || owner == "" || repo == "" {
-			unavailable = append(unavailable, path+" must name a forge, owner and repository.")
+			unavailable = append(unavailable, missingRepositoryIdentity(path).Error())
 			continue
 		}
 		repos = append(repos, RepoConfig{Path: path, Forge: forgeName, Owner: owner, Repo: repo})
