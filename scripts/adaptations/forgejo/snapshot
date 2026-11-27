@@ -50,15 +50,17 @@ statuses="$(commit_statuses "$owner" "$repo" "$(printf '%s' "$pr_json" | jq -r '
 
 reviews="$(pull_request_reviews "$owner" "$repo" "$pr")"
 
+summary="$(summary_comment "$owner" "$repo" "$pr" "$(printf '%s' "$user_json" | jq -r '.login // .username // ""')")"
+
 head_branch="$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
 case "$head_branch" in
   refs/pull/*/head) head_branch="" ;;
 esac
-printf '%s\n' "$user_json" "$repository_json" "$pr_json" "$base_json" "$statuses" "$reviews" "$dependencies" | jq -cs \
+printf '%s\n' "$user_json" "$repository_json" "$pr_json" "$base_json" "$statuses" "$reviews" "$dependencies" "$summary" | jq -cs \
   --arg dependency_error "$dependency_error" \
   --arg head_branch "$head_branch" '
-  if length != 7 then error("expected seven forge payloads") else . end |
-  . as [$user, $repository, $pr, $base, $statuses, $reviews, $dependencies] |
+  if length != 8 then error("expected eight forge payloads") else . end |
+  . as [$user, $repository, $pr, $base, $statuses, $reviews, $dependencies, $summary] |
   {
     authenticated_user: ($user.login // $user.username // ""),
     repository: $repository.full_name,
@@ -78,6 +80,7 @@ printf '%s\n' "$user_json" "$repository_json" "$pr_json" "$base_json" "$statuses
     statuses: $statuses,
     labels: [($pr.labels // [])[] | .name] | sort,
     reviews: [$reviews[] | {id, state, commit_id, body:(.body // ""), user:(.user.login // .user.username // ""), submitted_at:(.submitted_at // "")}],
+    summary: $summary,
     dependencies_available: ($dependency_error == ""),
     dependency_error: $dependency_error,
     open_dependencies: [$dependencies[] | select(.state == "open") |

@@ -292,6 +292,22 @@ guard_open_pull_request() {
   return 0
 }
 
+# How the summary comment opens: the summary record's opening, which
+# internal/product names SummaryOpening.
+summary_opening='<!-- Minos summary:'
+
+# summary_comment prints the summary comment the login keeps on the pull
+# request as {id, body}, or null when it keeps none: the oldest of its
+# conversation comments whose body opens with the summary record. Returns 1
+# when the comments could not be read. This is the one place the comment is
+# found, for the snapshot that reads it and the guarded write that edits it.
+summary_comment() {
+  summary_listing="$(collect "/repos/$1/$2/issues/$3/comments")" || return 1
+  printf '%s' "$summary_listing" | jq -c --arg login "$4" --arg opening "$summary_opening" '
+    [.[] | select((.user.login // "") == $login and ((.body // "") | startswith($opening)))] |
+    if length == 0 then null else min_by(.id) | {id, body} end'
+}
+
 # The same projection serves snapshots and commit-status readers.
 commit_statuses() {
   status_records="$(collect "/repos/$1/$2/commits/$3/statuses")" || return 1
