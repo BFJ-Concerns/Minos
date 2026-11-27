@@ -1,4 +1,4 @@
 repository=BFJ-Concerns/Ensemble-Workflows
-revision=089b75980015072a157ab2e13324b63de76ef0e0
-bundle=skills/ensemble-workflow/Base/scripts/ensemble.mjs
-bundle-last-changed=089b75980015072a157ab2e13324b63de76ef0e0
+revision=d01a01d13ee9bc51b4db013eb9857aa4d4796cb8
+bundle=plugin/skills/ensemble-workflow/scripts/ensemble.mjs
+bundle-last-changed=d01a01d13ee9bc51b4db013eb9857aa4d4796cb8
