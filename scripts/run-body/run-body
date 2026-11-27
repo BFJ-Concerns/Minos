@@ -132,8 +132,18 @@ archive_run() {
     fi
   fi
   [ -n "$archive_command" ] || return 0
-  "$archive_command" "$MINOS_RUN_DIR" \
-    "${MINOS_OWNER:-unknown}-${MINOS_REPO_NAME:-unknown}-pr${MINOS_PR:-unknown}" || true
+  archive_label="${MINOS_OWNER:-unknown}-${MINOS_REPO_NAME:-unknown}-pr${MINOS_PR:-unknown}"
+  pending="$MINOS_RUN_DIR/.archive-pending"
+  # Keep the directory until the destination has accepted its evidence.
+  if ! printf '%s\n' "$archive_label" >"$pending"; then
+    echo "run-body: could not mark the run directory for archive retry" >&2
+    return 1
+  fi
+  if "$archive_command" "$MINOS_RUN_DIR" "$archive_label"; then
+    rm -f -- "$pending"
+  else
+    echo "run-body: keeping the run directory for archive retry" >&2
+  fi
 }
 
 append_failure() {
@@ -174,12 +184,19 @@ on_exit() {
   status="$1"
   trap - 0
   set +e
-  if [ "$status" -ne 0 ] &&
-    { [ "$prelaunch" = true ] || [ "$supervisor_failure" = true ]; }; then
-    append_failure
-  fi
   stop_session
-  archive_run
+  if [ "$status" -ne 0 ]; then
+    if [ "$prelaunch" = true ] || [ "$supervisor_failure" = true ]; then
+      append_failure
+    elif ! grep -Eqx 'clean|non-clean|continuation' "$completion_marker" 2>/dev/null; then
+      failure_stage="lead-supervision"
+      failure_cause="$MINOS_LEAD_ENGINE lead ended without a verdict (last state: ${agent_state:-unknown}, driver exit: $status)"
+      append_failure
+    fi
+  fi
+  # The wrapper also preserves on exit 74 if the retry marker could not
+  # be written (for example on a full filesystem).
+  archive_run || status=74
   remove_run_tmpdir
   exit "$status"
 }

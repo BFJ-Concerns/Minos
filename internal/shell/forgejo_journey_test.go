@@ -2798,7 +2798,13 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.secondaryCloneURL, "default_branch": "main"})
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/pulls":
-		writeFixtureJSON(s.t, w, append([]map[string]any{s.pullRequest}, s.stackedChildren...))
+		pulls := append([]map[string]any{s.pullRequest}, s.stackedChildren...)
+		if r.URL.Query().Get("state") == "open" {
+			pulls = slices.DeleteFunc(pulls, func(pr map[string]any) bool {
+				return pr["state"] != "open" || pr["merged"] == true
+			})
+		}
+		writeFixtureJSON(s.t, w, pulls)
 	case r.Method == http.MethodGet && path == pullPath:
 		s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])]++
 		pullRequest := maps.Clone(s.pullRequest)

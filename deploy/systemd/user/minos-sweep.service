@@ -7,5 +7,8 @@ After=network-online.target
 [Service]
 Type=oneshot
 TimeoutStartSec=7d
+# Consume requests present before this pass. Requests arriving during it
+# remain present and the path unit activates the service again on exit.
+ExecStartPre=/usr/bin/rm -f %t/minos-sweep.request
 ExecStart=/usr/local/bin/minos sweep --config /etc/minos
 UMask=0077

@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -384,10 +385,35 @@ func lockAdmission(runsDir string) (func(), error) {
 	}, nil
 }
 
+// Leave room for the sweep instance prefix, the transient service's
+// suffix, and the random directory suffix in archived timing filenames.
+const (
+	maxRunUnitStem       = 200
+	maxPullRequestDigits = 19 // positive int64
+)
+
 // UnitName carries the minos-run- prefix so the admission check's unit glob
 // matches only run units, never the long-lived receiver or sweep services.
 func UnitName(facts Facts) string {
-	return unitSafe.ReplaceAllString(fmt.Sprintf("minos-run-%s-%s-%s-pr%s", facts.Forge, facts.Owner, facts.Repo, facts.PR), "-")
+	return runRepoUnitPrefix(facts) + boundedUnitNamePart(facts.PR, facts.PR, maxPullRequestDigits)
+}
+
+// Keep the repository prefix stable across pull request numbers so sweep
+// ordering can count this repository's live runs.
+func runRepoUnitPrefix(facts Facts) string {
+	name := fmt.Sprintf("minos-run-%s-%s-%s", facts.Forge, facts.Owner, facts.Repo)
+	key := strings.Join([]string{facts.Forge, facts.Owner, facts.Repo}, "\x00")
+	return boundedUnitNamePart(name, key, maxRunUnitStem-len("-pr")-maxPullRequestDigits) + "-pr"
+}
+
+func boundedUnitNamePart(name, key string, limit int) string {
+	name = unitSafe.ReplaceAllString(name, "-")
+	if len(name) <= limit {
+		return name
+	}
+	sum := sha256.Sum256([]byte(key))
+	suffix := fmt.Sprintf("-%x", sum[:8])
+	return name[:limit-len(suffix)] + suffix
 }
 
 func runBodyPath() string { return filepath.Clean(os.Getenv("MINOS_RUN_BODY")) }
