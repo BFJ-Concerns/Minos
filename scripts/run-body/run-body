@@ -5,6 +5,8 @@ set -eu
 # script's own directory and the run moves out of it.
 # shellcheck source=scripts/run-body/cgroup-memory.sh
 . "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/cgroup-memory.sh"
+# shellcheck source=scripts/run-body/engine-home.sh
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/engine-home.sh"
 
 prelaunch=true
 supervisor_failure=false
@@ -227,12 +229,6 @@ require_variable() {
 require_variable MINOS_CONFIG
 require_variable MINOS_RUN_DIR
 
-unset_gateway_environment() {
-  unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_DEFAULT_HAIKU_MODEL
-  unset CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY CLAUDE_CODE_MAX_CONTEXT_TOKENS
-  unset CLAUDE_CODE_AUTO_COMPACT_WINDOW MINOS_ANTHROPIC_CREDENTIAL_FILE
-}
-
 unset_gateway_environment
 
 set -a
@@ -252,25 +248,7 @@ if [ -n "${MINOS_RUN_DRIVER:-}" ]; then
   fi
 fi
 
-if [ -n "${MINOS_ANTHROPIC_CREDENTIAL_FILE:-}" ]; then
-  require_variable ANTHROPIC_BASE_URL "ANTHROPIC_BASE_URL is required in gateway mode"
-  if [ ! -f "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ] ||
-    [ ! -r "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ]; then
-    failure_cause="gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is missing or unreadable"
-    echo "run-body: gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is missing or unreadable" >&2
-    exit 1
-  fi
-  ANTHROPIC_AUTH_TOKEN=""
-  IFS= read -r ANTHROPIC_AUTH_TOKEN <"$MINOS_ANTHROPIC_CREDENTIAL_FILE" || true
-  if [ -z "$ANTHROPIC_AUTH_TOKEN" ]; then
-    failure_cause="gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is empty"
-    echo "run-body: gateway credential file ($MINOS_ANTHROPIC_CREDENTIAL_FILE) is empty" >&2
-    exit 1
-  fi
-  export ANTHROPIC_AUTH_TOKEN
-else
-  unset_gateway_environment
-fi
+load_gateway_credential
 
 # The lead's engine. Each engine names its executable, its default
 # model and its configuration seed; an engine is provisioned exactly when
@@ -300,9 +278,7 @@ if [ -z "${MINOS_RUN_DRIVER:-}" ]; then
 else
   unset MINOS_LEAD_MODEL
 fi
-provisioned_engines=""
-[ -z "${MINOS_CLAUDE_CONFIG_SEED:-}" ] || provisioned_engines="claude"
-[ -z "${MINOS_CODEX_CONFIG_SEED:-}" ] || provisioned_engines="${provisioned_engines:+$provisioned_engines }codex"
+resolve_provisioned_engines
 if [ -z "${MINOS_RUN_DRIVER:-}" ]; then
   case " $provisioned_engines " in
     *" $MINOS_LEAD_ENGINE "*) ;;
@@ -350,63 +326,7 @@ if [ -n "${MINOS_FAILURE_LOG:-}" ]; then
   }
 fi
 
-HOME="${MINOS_RUN_DIR%/}/home"
-CLAUDE_CONFIG_DIR="$HOME/.claude"
-CODEX_HOME="$HOME/.codex"
-XDG_STATE_HOME="${MINOS_RUN_DIR%/}/state"
-# Pin the data home to the run-private HOME's default: an ambient
-# XDG_DATA_HOME in the service environment would silently relocate the
-# Ensemble launcher's direct-launch run records outside the run directory,
-# emptying the timing record's worker rows and dodging the archive.
-XDG_DATA_HOME="$HOME/.local/share"
-failure_stage="runtime-home"
-MINOS_RUNS_DIR="$(dirname "${MINOS_RUN_DIR%/}")"
-# Workers write large artefacts to temp; the box's shared tmpfs /tmp cannot
-# hold concurrent runs' output. Keep a short, private temp path on the same
-# disk-backed Minos storage and remove it with the run.
-MINOS_RUN_TMP_ROOT="$(dirname "$MINOS_RUNS_DIR")/tmp"
-failure_cause="could not create run temp directory root $MINOS_RUN_TMP_ROOT"
-mkdir -p "$MINOS_RUN_TMP_ROOT"
-failure_cause="could not secure run temp directory root $MINOS_RUN_TMP_ROOT"
-chmod 700 "$MINOS_RUN_TMP_ROOT"
-failure_cause="could not create isolated run temp directory in $MINOS_RUN_TMP_ROOT"
-run_tmpdir="$(mktemp -d "$MINOS_RUN_TMP_ROOT/t.XXXXXXXXXX")"
-TMPDIR="$run_tmpdir"
-export HOME CLAUDE_CONFIG_DIR CODEX_HOME XDG_STATE_HOME XDG_DATA_HOME \
-  TMPDIR
-failure_stage="runtime-home"
-failure_cause="could not create isolated runtime home and state directories"
-mkdir -p "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME"
-failure_cause="could not secure isolated runtime home and state directories"
-chmod 700 "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME" "$XDG_STATE_HOME" "$TMPDIR"
-if [ -n "${MINOS_CLAUDE_CONFIG_SEED:-}" ]; then
-  failure_stage="claude-seed"
-  failure_cause="could not copy Claude configuration seed from $MINOS_CLAUDE_CONFIG_SEED"
-  cp -R "${MINOS_CLAUDE_CONFIG_SEED%/}/." "$CLAUDE_CONFIG_DIR/"
-fi
-if [ -n "${MINOS_CODEX_CONFIG_SEED:-}" ]; then
-  failure_stage="codex-seed"
-  failure_cause="could not copy Codex configuration seed from $MINOS_CODEX_CONFIG_SEED"
-  cp -R "${MINOS_CODEX_CONFIG_SEED%/}/." "$CODEX_HOME/"
-fi
-failure_stage="runtime-home"
-failure_cause="could not secure copied Claude and Codex configuration"
-chmod -R go-rwx "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"
-# Claude refuses to start a background session in a workspace its state
-# file has not trusted, and the run-private state starts empty. The lead
-# runs from the run directory, so that directory, under the path Claude
-# resolves it to, is the one workspace the run trusts.
-failure_stage="claude-seed"
-failure_cause="could not resolve the run directory for Claude workspace trust"
-trusted_workspace="$(cd "$MINOS_RUN_DIR" && pwd -P)"
-failure_cause="could not write Claude onboarding and workspace acceptance"
-jq -cn --arg workspace "$trusted_workspace" '{
-  hasCompletedOnboarding: true,
-  bypassPermissionsModeAccepted: true,
-  projects: {($workspace): {hasTrustDialogAccepted: true}}
-}' >"$CLAUDE_CONFIG_DIR/.claude.json"
-failure_cause="could not secure Claude onboarding and workspace acceptance"
-chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json"
+provision_engine_home
 failure_stage="workspace-setup"
 failure_cause="workspace setup failed"
 setup_status=0
