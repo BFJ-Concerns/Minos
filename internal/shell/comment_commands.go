@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,9 +28,9 @@ import (
 //
 // Commands are read from the forge on every pass, so a webhook that never
 // arrived only delays one to the next sweep. A command is acknowledged with
-// the commandAcknowledgement reaction on its comment until a run that
-// started after it has finished, whether or not a newer command superseded
-// it.
+// the commandAcknowledgement reaction on its comment until it is answered or,
+// where a newer command superseded it, until a run that started after it
+// has finished.
 type commentCommand string
 
 const (
@@ -125,9 +127,12 @@ type commandEffect struct {
 	// full review was asked for, or the head already carries a result, over
 	// which an increment would be empty.
 	fullOnly bool
-	// acknowledge are the command comments no run has overtaken, those a
-	// newer command superseded included: no run that left a result
-	// started after them.
+	// waiting are the review commands not yet answered since the last skip;
+	// a run started now is started for them.
+	waiting []forge.PullRequestComment
+	// acknowledge are the waiting commands, and every other command that
+	// no run which left a result started after: a skip, or a review
+	// command a newer skip superseded.
 	acknowledge []forge.PullRequestComment
 }
 
@@ -137,17 +142,18 @@ type headStatuses struct {
 	statuses []forge.Status
 }
 
-// commandsInForce works out the commands' effect from current forge state.
-// A review command is answered once a run that started after it has left a
+// commandsInForce works out the commands' effect from current forge state
+// and from spawnedWith, the review commands the service has started a run
+// for. A review command is answered once a run started for it has left a
 // terminal Minos result: a request-changes or approving review on any head,
 // or a clean or attention status on the current head or on the earlier
-// head lastFinished names (its statuses read only where the pull request
-// carries a command). On a head whose statuses are read, a result's run is taken to
-// have started at the newest working status written before the result, so
-// a run already under way when the command was written does not answer it;
-// elsewhere, and where no working status was written, the result's own
-// time stands in.
-func commandsInForce(commands []issuedCommand, snapshot forge.Snapshot, lastFinished func() (headStatuses, error), botLogin, statusContext string) (commandEffect, error) {
+// head lastFinished names. A run fixes its review's scope when it is
+// started, so a run already under way when the command was written never
+// answers it, however late it finishes. A result is taken to come from a
+// run started after the command when that run's working status, the newest
+// one before the result on a head whose statuses are read, or else the
+// result itself, is newer than the command.
+func commandsInForce(commands []issuedCommand, snapshot forge.Snapshot, lastFinished func() (headStatuses, error), spawnedWith map[int64]bool, botLogin, statusContext string) (commandEffect, error) {
 	var effect commandEffect
 	if len(commands) == 0 {
 		return effect, nil
@@ -165,21 +171,29 @@ func commandsInForce(commands []issuedCommand, snapshot forge.Snapshot, lastFini
 		return commandEffect{}, err
 	}
 	skipAt := -1
+	var waiting []forge.PullRequestComment
 	for index, command := range commands {
-		answered := slices.ContainsFunc(starts, command.at.Before)
-		if !answered {
-			effect.acknowledge = append(effect.acknowledge, command.comment)
-		}
-		switch {
-		case command.command == commandSkip:
+		if command.command == commandSkip {
 			skipAt = index
-			effect.reviewRequested, effect.fullOnly = false, false
-		case !answered:
-			effect.reviewRequested = true
+			waiting, effect.fullOnly = nil, false
+			continue
+		}
+		answered := spawnedWith[command.comment.ID] && slices.ContainsFunc(starts, command.at.Before)
+		if !answered {
+			waiting = append(waiting, command.comment)
 			effect.fullOnly = effect.fullOnly || command.command == commandFullReview || headReviewed
 		}
 	}
 	effect.skipped = skipAt == len(commands)-1
+	effect.reviewRequested = len(waiting) > 0
+	effect.waiting = waiting
+	for _, command := range commands {
+		isWaiting := slices.ContainsFunc(waiting, func(comment forge.PullRequestComment) bool { return comment.ID == command.comment.ID })
+		if !isWaiting && !slices.ContainsFunc(starts, command.at.Before) {
+			effect.acknowledge = append(effect.acknowledge, command.comment)
+		}
+	}
+	effect.acknowledge = append(effect.acknowledge, waiting...)
 	return effect, nil
 }
 
@@ -252,6 +266,82 @@ func newestAtOrBefore(times []time.Time, limit time.Time) (time.Time, bool) {
 		}
 	}
 	return newest, found
+}
+
+// commandRecordPath is where the service keeps, for one pull request, the
+// review commands it has started a run for. The record is a cache beside
+// the runs: losing it costs one more review of each command already
+// answered, and nothing else.
+func commandRecordPath(cfg ServiceConfig, forgeName string, guard forge.Guard) string {
+	name := reviewedChangePrefix(forgeName, guard.Repository) + strconv.FormatInt(guard.PullRequest, 10) + ".json"
+	return filepath.Join(cfg.Runs.Dir, ".commands", name)
+}
+
+type commandRecord struct {
+	SpawnedWith []int64 `json:"spawned_with"`
+}
+
+// readSpawnedWith reads the review commands a run has been started for.
+// An unreadable record reads as empty, as a lost one does.
+func readSpawnedWith(cfg ServiceConfig, forgeName string, guard forge.Guard) map[int64]bool {
+	spawnedWith := make(map[int64]bool)
+	raw, err := os.ReadFile(commandRecordPath(cfg, forgeName, guard))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("read command record: %v", err)
+		}
+		return spawnedWith
+	}
+	var record commandRecord
+	if err := json.Unmarshal(raw, &record); err != nil {
+		log.Printf("decode command record %s: %v", commandRecordPath(cfg, forgeName, guard), err)
+		return spawnedWith
+	}
+	for _, id := range record.SpawnedWith {
+		spawnedWith[id] = true
+	}
+	return spawnedWith
+}
+
+// recordSpawnedWith adds the commands a run was just started for to the
+// record. A failed write is logged: those commands are then answered only
+// by a later run started for them.
+func recordSpawnedWith(cfg ServiceConfig, forgeName string, guard forge.Guard, spawnedWith map[int64]bool, started []forge.PullRequestComment) {
+	ids := make([]int64, 0, len(spawnedWith)+len(started))
+	for id := range spawnedWith {
+		ids = append(ids, id)
+	}
+	for _, comment := range started {
+		if !spawnedWith[comment.ID] {
+			ids = append(ids, comment.ID)
+		}
+	}
+	slices.Sort(ids)
+	err := func() error {
+		encoded, err := json.Marshal(commandRecord{SpawnedWith: ids})
+		if err != nil {
+			return err
+		}
+		path := commandRecordPath(cfg, forgeName, guard)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
+		staging := path + ".next"
+		if err := os.WriteFile(staging, append(encoded, '\n'), 0o600); err != nil {
+			return err
+		}
+		return os.Rename(staging, path)
+	}()
+	if err != nil {
+		log.Printf("record the commands a run was started for: %v", err)
+	}
+}
+
+func removeCommandRecord(cfg ServiceConfig, forgeName string, guard forge.Guard) error {
+	if err := os.Remove(commandRecordPath(cfg, forgeName, guard)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove command record: %w", err)
+	}
+	return nil
 }
 
 // lastFinishedHeadStatuses reads the status history of the head the

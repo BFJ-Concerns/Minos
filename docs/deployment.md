@@ -471,18 +471,23 @@ yet overtaken, one a newer command superseded included:
 - The newest command decides between skip and review. While a skip is the
   newest, the pull request is deferred as `skipped by comment command`,
   whatever its head.
-- A review command waits until a run that started after it has left a
-  terminal result: an approving or request-changes review on any head, or
-  a clean or attention status on the current head or on the head the
-  `.reviewed/` record names. While it waits, it spends the current head's
-  completion marker, so the next pass starts a run.
+- A review command waits until a run started for it has left a terminal
+  result: an approving or request-changes review on any head, or a clean
+  or attention status on the current head or on the head the `.reviewed/`
+  record names. While it waits, it spends the current head's completion
+  marker, so the next pass starts a run. Which commands each run was
+  started for is kept in `.commands/` under `runs.dir`, one file per pull
+  request, deleted with the pull request. It is a cache: losing it costs
+  one more review of each command already answered.
 - The run it starts may not choose `no-review`. It is given a full review
   alone where the command asked for one or the head already carries a
   result, over which an increment would be empty. Otherwise the
   repository's `push-inspection.outcomes` apply without `no-review`.
 
-A run's start is read from its `working` status, so a run already under way
-when the command arrived does not answer it. Commands need the forge to
+A run already started when the command arrived never answers it, since its
+review's scope was fixed at its start; it is told apart from the command's
+own run by that run's `working` status, or its result where no status was
+written, being newer than the command. Commands need the forge to
 report each status's and review's time. The Forgejo token's
 `write:issue` scope covers the reactions; a GitHub App needs no permission
 beyond those listed above.

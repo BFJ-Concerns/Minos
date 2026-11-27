@@ -356,6 +356,9 @@ func TestReviewCommandAnsweredOnAnEarlierHeadStaysAnswered(t *testing.T) {
 		t.Run(fmt.Sprintf("recorded=%t", recorded), func(t *testing.T) {
 			journey := newCommandJourney(t)
 			journey.comment("maintainer", "@minos-review review")
+			if result := journey.reconcile(t); result.Decision != SpawnStarted {
+				t.Fatalf("command reconciliation = %#v", result)
+			}
 			journey.status(t, product.Working())
 			journey.status(t, product.Clean())
 			if result := journey.reconcile(t); result.DeferralReason != "completed-marker" {
@@ -408,5 +411,54 @@ func TestCommandSupersededBeforeAPassIsStillAcknowledged(t *testing.T) {
 	}
 	if got := journey2.launchedOutcomes(t); got != `["full"]` {
 		t.Fatalf("outcomes = %s", got)
+	}
+}
+
+// A run fixes its review's scope when it is started, before it writes its
+// working status, so a run started before the command never answers it,
+// whether its working status lands after the command or is never written.
+func TestReviewCommandIsNotAnsweredByARunStartedBeforeIt(t *testing.T) {
+	for _, writesWorking := range []bool{true, false} {
+		t.Run(fmt.Sprintf("working=%t", writesWorking), func(t *testing.T) {
+			journey := newCommandJourney(t)
+			if result := journey.reconcile(t); result.Decision != SpawnStarted || journey.launchedOutcomes(t) != `["no-review","increment","full"]` {
+				t.Fatalf("first reconciliation = %#v", result)
+			}
+			id := journey.comment("maintainer", "@minos-review full review")
+			if writesWorking {
+				journey.status(t, product.Working())
+			}
+			journey.status(t, product.Clean())
+			result := journey.reconcile(t)
+			if result.Decision != SpawnStarted || len(journey.launches) != 2 || !journey.acknowledged(id) {
+				t.Fatalf("reconciliation after the earlier run finished = %#v after %d launches, acknowledged %t; want a second run", result, len(journey.launches), journey.acknowledged(id))
+			}
+			if got := journey.launchedOutcomes(t); got != `["full"]` {
+				t.Fatalf("second run outcomes = %s, want full alone", got)
+			}
+			journey.finishClean(t)
+			if result := journey.reconcile(t); result.DeferralReason != "completed-marker" || len(journey.launches) != 2 {
+				t.Fatalf("answered command reconciliation = %#v after %d launches", result, len(journey.launches))
+			}
+		})
+	}
+}
+
+func TestCommandRecordGoesWithTheClosedPullRequest(t *testing.T) {
+	journey := newCommandJourney(t)
+	journey.comment("maintainer", "@minos-review review")
+	if result := journey.reconcile(t); result.Decision != SpawnStarted {
+		t.Fatalf("reconciliation = %#v", result)
+	}
+	path := commandRecordPath(journey.cfg, "github", journey.state.guard())
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("no command record after a commanded run: %v", err)
+	}
+	journey.state.mu.Lock()
+	journey.state.pullRequest["state"] = "closed"
+	journey.state.mu.Unlock()
+	journey.reconcile(t)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("command record outlived the closed pull request: %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -122,7 +123,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		TargetSHA:   snapshot.TargetSHA,
 	}
 	if pullRequestClosed(snapshot) {
-		return ReconcileResult{Decision: ReconcileNothing}, removeReviewedChange(cfg, facts.Forge, guard)
+		return ReconcileResult{Decision: ReconcileNothing}, errors.Join(removeReviewedChange(cfg, facts.Forge, guard), removeCommandRecord(cfg, facts.Forge, guard))
 	}
 	if snapshot.State != "open" {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
@@ -172,7 +173,8 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	lastFinished := func() (headStatuses, error) {
 		return lastFinishedHeadStatuses(ctx, cfg, facts.Forge, adapter, guard)
 	}
-	effect, err := commandsInForce(commands, snapshot, lastFinished, botLogin, cfg.Service.StatusContext)
+	spawnedWith := readSpawnedWith(cfg, facts.Forge, guard)
+	effect, err := commandsInForce(commands, snapshot, lastFinished, spawnedWith, botLogin, cfg.Service.StatusContext)
 	if err != nil {
 		return ReconcileResult{
 			Decision: ReconcileNothing, DeferralReason: "comment commands unavailable",
@@ -208,6 +210,9 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	outcome, err := SpawnRun(ctx, cfg, repo, facts)
 	if err != nil {
 		return ReconcileResult{}, err
+	}
+	if outcome.Outcome == SpawnStarted || outcome.Outcome == SpawnContinued {
+		recordSpawnedWith(cfg, facts.Forge, guard, spawnedWith, effect.waiting)
 	}
 	return ReconcileResult{
 		Decision:     outcome.Outcome,
