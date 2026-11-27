@@ -42,6 +42,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { findingComment, reviewBody } from "./finding-presentation.mjs";
+import { promptSettingsFromEnvironment } from "./prompt-settings.mjs";
 import { SEVERITY, alreadyRaised, declaredOutOfScope, findingKey, normalisedTitle, speculativeHardening, validateVerdictDecision, verdictDigest } from "./verdict-classification.mjs";
 
 const argv = process.argv.slice(2);
@@ -53,14 +54,16 @@ if (argv.length !== 5 && argv.length !== 7) {
 }
 const [outputDir, orientationPath, threshold, mainVerdictPath, mainDecisionPath, briefVerdictPath, briefDecisionPath] = argv;
 
-// The service always exports the setting; unset, as when the composer is
-// run by hand, it is off, the setting's documented default.
+// The setting the prompts read too, so a run's reviewers and its filing
+// never disagree on it; unset, as when the composer runs by hand, it is
+// off, the setting's documented default.
 const fileSafeguardRequests = (() => {
-  const value = process.env.MINOS_FILE_SAFEGUARD_REQUESTS;
-  if (value === undefined || value === "" || value === "false") return false;
-  if (value === "true") return true;
-  process.stderr.write(`MINOS_FILE_SAFEGUARD_REQUESTS must be true or false, not ${JSON.stringify(value)}\n`);
-  process.exit(2);
+  try {
+    return promptSettingsFromEnvironment()["file-safeguard-requests"] === "true";
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(2);
+  }
 })();
 
 function readJson(path, label, failureExit = 2) {

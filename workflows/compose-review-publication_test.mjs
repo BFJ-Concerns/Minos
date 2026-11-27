@@ -260,7 +260,7 @@ test("a safeguard-request setting that is neither true nor false stops the compo
     environment: { MINOS_FILE_SAFEGUARD_REQUESTS: "yes" },
   });
   assert.equal(result.status, 2);
-  assert.equal(result.stderr, 'MINOS_FILE_SAFEGUARD_REQUESTS must be true or false, not "yes"\n');
+  assert.equal(result.stderr, "MINOS_FILE_SAFEGUARD_REQUESTS must be one of false, true\n");
   assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
 });
 
