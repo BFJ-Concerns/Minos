@@ -8,17 +8,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
+import { invokeWorkflow, loadWorkflow } from "./workflow-invocation-fixture.mjs";
 import { adjudicateEnvelope } from "./archive-fixture.mjs";
 import { findingsFromVerifierPrompt, verdictFor } from "./verifier-prompt-fixture.mjs";
 
-const scriptPath = fileURLToPath(new URL("./review.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-inputs.mjs", import.meta.url));
-const source = await readFile(scriptPath, "utf8");
 const lifecycle = await readFile(fileURLToPath(new URL("../lifecycle/lifecycle.md", import.meta.url)), "utf8");
-const body = source.replace(/^export const meta =/m, "const meta =");
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const script = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", body);
+const script = loadWorkflow("review.js");
 
 function runScript(args, respond) {
   return invokeWorkflow(script, args, respond);

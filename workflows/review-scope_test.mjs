@@ -2,7 +2,6 @@ import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,21 +11,16 @@ import { executableVerdict as wrapperVerdict } from "./executable-verdict-fixtur
 import { resolveRouting } from "./role-routing.mjs";
 import { verdictDigest } from "./verdict-classification.mjs";
 import { adjudicateEnvelope } from "./archive-fixture.mjs";
+import { loadWorkflow } from "./workflow-invocation-fixture.mjs";
 
 const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
-const scriptPath = join(workflowsDir, "review-scope.js");
 const inputScriptPath = join(workflowsDir, "review-scope-inputs.mjs");
 function executableVerdict(t, envelope) {
   return wrapperVerdict(t, envelope, { namespace: "scope", workflow: "review-scope.js" });
 }
-const source = await readFile(scriptPath, "utf8");
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const script = new AsyncFunction(
-  "agent", "parallel", "pipeline", "phase", "log", "args",
-  source.replace(/^export const meta =/m, "const meta ="),
-);
+const script = loadWorkflow("review-scope.js");
 
 async function runScript(args, respond) {
   const calls = [];

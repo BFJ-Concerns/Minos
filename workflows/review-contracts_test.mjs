@@ -9,20 +9,12 @@ import test from "node:test";
 
 import { shippedContracts } from "./shipped-prompts-fixture.mjs";
 import { findingsFromVerifierPrompt, verdictFor } from "./verifier-prompt-fixture.mjs";
-import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
+import { invokeWorkflow, loadWorkflow } from "./workflow-invocation-fixture.mjs";
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-
-function workflow(filename) {
-  const body = readFileSync(join(workflowsDir, filename), "utf8")
-    .replace(/^export const meta =/m, "const meta =");
-  return new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", body);
-}
-
 const workflows = {
-  review: workflow("review.js"),
-  briefs: workflow("review-briefs.js"),
+  review: loadWorkflow("review.js"),
+  briefs: loadWorkflow("review-briefs.js"),
 };
 
 function git(root, ...rest) {

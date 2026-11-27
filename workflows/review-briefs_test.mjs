@@ -2,14 +2,13 @@ import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { findingsFromVerifierPrompt, verdictFor } from "./verifier-prompt-fixture.mjs";
-import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
+import { invokeWorkflow, loadWorkflow } from "./workflow-invocation-fixture.mjs";
 import { adjudicateEnvelope } from "./archive-fixture.mjs";
 import { resolveRouting } from "./role-routing.mjs";
 
@@ -18,13 +17,9 @@ const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 import { briefRecords } from "./brief-dispositions.mjs";
 import { shippedBriefPrompts, shippedContracts } from "./shipped-prompts-fixture.mjs";
 
-const scriptPath = fileURLToPath(new URL("./review-briefs.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-brief-inputs.mjs", import.meta.url));
 const scopeInputScriptPath = fileURLToPath(new URL("./review-scope-inputs.mjs", import.meta.url));
-const source = await readFile(scriptPath, "utf8");
-const body = source.replace(/^export const meta =/m, "const meta =");
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const script = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", body);
+const script = loadWorkflow("review-briefs.js");
 
 function brief(path, content, overrides = {}) {
   const inner = path.replace(/^\.review\//, "");
