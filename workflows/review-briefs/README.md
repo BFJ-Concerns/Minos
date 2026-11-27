@@ -78,6 +78,7 @@ Run slots take a value from the run:
 | `{{relevance-conditions}}` | the briefs awaiting a relevance judgement, as a JSON array of `brief` (the path) and `relevance` (the condition) |
 | `{{file-inventory}}` | every tracked file in the part a brief covers, as a JSON array of paths |
 | `{{findings}}` | the findings as a JSON array, with the fields `review-contracts.mjs` lists for that stage |
+| `{{changed-files}}` | every path the change touches, as a JSON array of `path`, `added` and `deleted`, the lines the change added to that file and removed from it: zero for both on a binary file, and a moved file listed under both its paths |
 
 File slots are filled first and run slots after, in one pass, so that a
 value is never itself read for slots: a pull-request description may contain
