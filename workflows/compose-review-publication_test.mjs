@@ -437,6 +437,22 @@ for (const order of ["listed", "reversed"])
     assert.match(result.stderr, /classed differently across the decisions: unclassed and declared-out-of-scope/);
   });
 
+for (const order of ["raised first", "gating first"])
+  test(`a brief twin of main findings that disagree on whether the finding is new stops the composer (${order})`, (t) => {
+    const mainFindings = [finding("a", { title: "Lost update" }), finding("b", { title: "Lost update" })];
+    const mainDispositions = [{ key: "a", gating: false, class: "already-raised" }, { key: "b", gating: true }];
+    const reversed = order === "gating first";
+    const { result, scratch } = compose(t, {
+      main: verdict(reversed ? [...mainFindings].reverse() : mainFindings),
+      mainDecision: decision("request-changes", reversed ? [...mainDispositions].reverse() : mainDispositions),
+      brief: verdict([finding("c", { title: "Lost update", source: "Money safety" })]),
+      briefDecision: decision("clean", [{ key: "c", gating: false, class: "already-raised" }]),
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /one finding at internal\/review\.go:42 is already raised in one decision and new in the other/);
+    assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
+  });
+
 test("advisory twins sharing a class keep it", (t) => {
   const { result, plan, readJson } = compose(t, {
     main: verdict([finding("a", { title: "Lost update" })]),

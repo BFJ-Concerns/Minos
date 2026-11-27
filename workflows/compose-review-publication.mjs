@@ -136,10 +136,18 @@ function nameSource(finding, source) {
 // the composer refuses them rather than publish or withhold the finding by
 // one side's call.
 if (brief) {
-  const mainBySiteAndTitle = new Map(main.findings.map((finding) => [siteAndTitle(finding), finding]));
+  // The main review may confirm more than one finding at a site and title.
+  // Brief twins merge into the first by key, so the main listing order
+  // picks nothing, and every main finding there counts when the composer
+  // asks whether the author already has the defect.
+  const mainBySiteAndTitle = new Map();
+  for (const finding of main.findings)
+    mainBySiteAndTitle.set(siteAndTitle(finding), [...(mainBySiteAndTitle.get(siteAndTitle(finding)) || []), finding]);
+  for (const findings of mainBySiteAndTitle.values())
+    findings.sort((a, b) => findingKey(a).localeCompare(findingKey(b)));
   const briefTwinsOf = new Map();
   brief.findings = brief.findings.filter((finding) => {
-    const twin = mainBySiteAndTitle.get(siteAndTitle(finding));
+    const twin = mainBySiteAndTitle.get(siteAndTitle(finding))?.[0];
     if (!twin) return true;
     briefTwinsOf.set(twin, [...(briefTwinsOf.get(twin) || []), finding]);
     return false;
@@ -149,6 +157,8 @@ if (brief) {
     const twinDisposition = main.dispositionOf(twin) || {};
     const briefDispositions = briefTwins.map((finding) => brief.dispositionOf(finding) || {});
     const members = [twinDisposition, ...briefDispositions];
+    const mainSiblings = mainBySiteAndTitle.get(siteAndTitle(twin)).slice(1)
+      .map((finding) => main.dispositionOf(finding) || {});
     // Main's call is named first, then the brief's distinct calls in a
     // fixed order, so a refusal reads the same in any listing order.
     const calls = (read) => {
@@ -164,7 +174,7 @@ if (brief) {
     const classes = calls((disposition) => disposition.class);
     if (!gating && classes.length > 1)
       refuse(`one finding at ${at} is classed differently across the decisions: ${classes.map((name) => name ?? "unclassed").join(" and ")}`);
-    if (new Set(members.map(alreadyRaised)).size > 1)
+    if (new Set([...members, ...mainSiblings].map(alreadyRaised)).size > 1)
       refuse(`one finding at ${at} is already raised in one decision and new in the other`);
     for (const finding of briefTwins) {
       if (SEVERITY[finding.severity] > SEVERITY[twin.severity]) twin.severity = finding.severity;
