@@ -38,15 +38,16 @@ const threads = [
   ] },
   { path: "src/parse.go", line: 30, resolved: true, comments: [{ user: "minos", body: "**Blocking · High: Resolved one**", commit_id: earlierHead }] },
   { path: "src/parse.go", line: 40, resolved: false, comments: [{ user: "minos", body: "**Advisory · Low: Naming**", commit_id: earlierHead }] },
-  { path: "src/parse.go", line: 50, resolved: false, comments: [{ user: "minos", body: "**Blocking · High: This head's own**", commit_id: head }] },
 ];
+// A blocking finding an earlier run raised on the head this run reviews.
+const sameHeadThread = { path: "src/parse.go", line: 50, resolved: false, comments: [{ user: "minos", body: "**Blocking · High: Raised on this head**", commit_id: head }] };
 
 test("only another reviewer's reviews are skipped, and every Minos finding is listed with a unique key", () => {
   const found = earlierMinosFindings(snapshotWith([minosReview, { ...minosReview, id: 8, user: "carol" }]), threads);
 
-  assert.equal(found.length, 6);
-  assert.equal(new Set(found.map((finding) => finding.key)).size, 6);
-  assert.deepEqual(found.filter((finding) => finding.blocking).map((finding) => finding.line), [9, 30, 50, 3]);
+  assert.equal(found.length, 5);
+  assert.equal(new Set(found.map((finding) => finding.key)).size, 5);
+  assert.deepEqual(found.filter((finding) => finding.blocking).map((finding) => finding.line), [9, 30, 3]);
   assert.throws(() => earlierMinosFindings({ reviews: [] }, []), /no authenticated user/);
 });
 
@@ -61,9 +62,9 @@ test("the author's comments answer a review-body finding only when written after
   assert.throws(() => authorCommentsAfter(comments, "alice", ""), /not a time/);
 });
 
-test("what is settled mechanically is set aside: resolved threads, findings that do not block, this head's own", () => {
+test("what is settled mechanically is set aside: resolved threads and findings that do not block", () => {
   const comments = [{ user: "alice", body: "The Stale claim finding is wrong.", created_at: "2026-11-21T00:00:00Z" }];
-  const findings = findingsToRead({ snapshot: snapshotWith([minosReview]), threads, comments, head });
+  const findings = findingsToRead({ snapshot: snapshotWith([minosReview]), threads, comments });
 
   assert.deepEqual(findings, [
     {
@@ -78,8 +79,14 @@ test("what is settled mechanically is set aside: resolved threads, findings that
   assert.equal(stage.inputProblem({ head, findings }), null);
 });
 
+test("a blocking finding raised on this head by an earlier run is read, not taken as this run's own", () => {
+  const findings = findingsToRead({ snapshot: snapshotWith([]), threads: [sameHeadThread], comments: [] });
+
+  assert.deepEqual(findings.map((finding) => [finding.key, finding.head]), [["thread-1", head]]);
+});
+
 test("the prompt carries the head and the findings, and the answer can name only findings shown", () => {
-  const findings = findingsToRead({ snapshot: snapshotWith([minosReview]), threads, comments: [], head });
+  const findings = findingsToRead({ snapshot: snapshotWith([minosReview]), threads, comments: [] });
   const { prompt, schema } = judgementArgs(stage, { head, findings }, { env });
 
   assert.ok(prompt.includes(`checked out at this head, \`${head}\``));
@@ -89,7 +96,7 @@ test("the prompt carries the head and the findings, and the answer can name only
 });
 
 test("an answer must settle every finding once, each with a reason", () => {
-  const input = { head, findings: findingsToRead({ snapshot: snapshotWith([minosReview]), threads, comments: [], head }) };
+  const input = { head, findings: findingsToRead({ snapshot: snapshotWith([minosReview]), threads, comments: [] }) };
   const entry = (key, outcome = STANDS, reason = "The parser still stops early at src/parse.go:9.") => ({ key, outcome, reason });
 
   assert.equal(stage.answerProblem({ findings: [entry("thread-1"), entry("review-7-1")] }, input), null);
@@ -140,11 +147,23 @@ test("the step keeps the findings the stage says stand, with the stage's reason"
 });
 
 test("with nothing left to read the step asks no stage and reads no comments", async () => {
-  const { run, asked, read } = fixtureRun({ reviews: [], forgeThreads: [threads[1], threads[2], threads[3]] });
+  const { run, asked, read } = fixtureRun({ reviews: [], forgeThreads: [threads[1], threads[2]] });
 
   assert.deepEqual(await settleEarlierFindings(run, {}), { outstanding: [] });
   assert.equal(asked.length, 0);
   assert.deepEqual(read, ["snapshot", "threads"]);
+});
+
+test("a review-body finding raised on this head still has the author's comments read", async () => {
+  const { run, asked, read } = fixtureRun({
+    reviews: [{ ...minosReview, commit_id: head }],
+    forgeThreads: [],
+    answer: { findings: [{ key: "review-7-1", outcome: AUTHOR_REJECTED, reason: "The author named the Stale claim finding and rejected it." }] },
+  });
+
+  assert.deepEqual(await settleEarlierFindings(run, {}), { outstanding: [] });
+  assert.deepEqual(read, ["snapshot", "threads", "comments"]);
+  assert.deepEqual(asked[0].given.findings[0].comments, ["The Stale claim finding is wrong."]);
 });
 
 test("a defect read as gone lifts its block", async () => {
