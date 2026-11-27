@@ -60,7 +60,7 @@ const SLOT = /\{\{([a-z-]+)\}\}/g;
 const REVIEWED_CHANGE_SLOTS = ["target", "head", "project-documents", "pull-request"];
 const STAGE_SLOTS = {
   exploration: [...REVIEWED_CHANGE_SLOTS, "concerns"],
-  specialist: [...REVIEWED_CHANGE_SLOTS, "concern-name", "other-concerns", "planned-focus"],
+  specialist: [...REVIEWED_CHANGE_SLOTS, "concern-name", "other-concerns", "planned-focus", "same-concern-units"],
   repository: [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "assignment"],
   merge: ["target", "head", "findings"],
   verifier: [...REVIEWED_CHANGE_SLOTS, "findings"],

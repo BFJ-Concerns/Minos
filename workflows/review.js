@@ -54,7 +54,7 @@ const SLOT = /\{\{([a-z-]+)\}\}/g;
 const REVIEWED_CHANGE_SLOTS = ["target", "head", "project-documents", "pull-request"];
 const STAGE_SLOTS = {
   exploration: [...REVIEWED_CHANGE_SLOTS, "concerns"],
-  specialist: [...REVIEWED_CHANGE_SLOTS, "concern-name", "other-concerns", "planned-focus"],
+  specialist: [...REVIEWED_CHANGE_SLOTS, "concern-name", "other-concerns", "planned-focus", "same-concern-units"],
   repository: [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "assignment"],
   merge: ["target", "head", "findings"],
   verifier: [...REVIEWED_CHANGE_SLOTS, "findings"],
@@ -533,12 +533,22 @@ phase("Specialise");
 for (const unit of specialistUnits)
   addLeg(unit.label, "specialist", routing.proposer.model);
 
+// A planned unit's focus sentence and its scope paths, as the specialist
+// prompt shows its own unit and each other unit of its concern.
+function plannedFocus(unit) {
+  return `${unit.concern}\n\n${unit.scope.map((path) => `- \`${path}\``).join("\n")}`;
+}
+
 function specialistPrompt(unit) {
   return fillPrompt(prompts.specialist[unit.specialistType], {
     ...reviewedChangeValues,
     "concern-name": unit.specialistType,
     "other-concerns": concerns.filter((concern) => concern.name !== unit.specialistType).map(concernLine).join("\n"),
-    "planned-focus": `${unit.concern}\n\n${unit.scope.map((path) => `- \`${path}\``).join("\n")}`,
+    "planned-focus": plannedFocus(unit),
+    "same-concern-units": specialistUnits
+      .filter((other) => other !== unit && other.specialistType === unit.specialistType)
+      .map(plannedFocus)
+      .join("\n\n"),
   });
 }
 

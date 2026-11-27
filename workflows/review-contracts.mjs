@@ -125,7 +125,9 @@ export const specialistSchema = {
 // What the merge leg is shown of each proposed finding, as merge.md's
 // `{{findings}}`: no severity and no confidence, which grouping does not
 // turn on. `reportedBy` is the proposing leg's concern and `outsideConcern`
-// says whether the finding came back in `outsideConcernFindings`.
+// says whether the finding came back in `outsideConcernFindings`. Nor is it
+// shown `wholeScope`: a group carries the scope of any whole-scope write-up
+// in it, whichever is primary, so grouping need not weigh it.
 export const MERGE_FINDING_FIELDS = ["id", "reportedBy", "outsideConcern", "title", "path", "line", "explanation", "dependsOn"];
 
 // What the merge leg returns, on merge.md. A schema cannot say the rest of
