@@ -913,3 +913,24 @@ test("identified null answer keeps reviewer settlement truthful", async () => {
   assert.ok(result.incomplete.includes(`agent ${answeredLabel} answered without usable output`));
   assert.ok(!result.incomplete.some((reason) => reason.includes("failed:")));
 });
+
+test("the lifecycle finds its workflow's status snapshot by the names the workflows declare", async () => {
+  assert.match(lifecycle, /`\$MINOS_RUN_DIR\/ensemble\.<run-id>\.local\.json`/);
+  assert.doesNotMatch(lifecycle, /`\$MINOS_RUN_DIR\/ensemble\.local\.json`/);
+  for (const [file, stage] of [["./review.js", "the main review"], ["./review-briefs.js", "the brief stage"]]) {
+    const source = await readFile(fileURLToPath(new URL(file, import.meta.url)), "utf8");
+    const name = source.match(/^\s*name: "([^"]+)"/m)?.[1];
+    assert.ok(name, `${file} declares a workflow name`);
+    assert.match(lifecycle, new RegExp(`\`${name}\` for ${stage}`));
+  }
+  assert.match(lifecycle, /the later\s+`startedAt` is the attempt you are waiting on/);
+});
+
+test("the lifecycle approves a clean outcome through the guarded command and settles comments by time and author", () => {
+  assert.match(lifecycle, /A clean plan has no posts: write no review,/);
+  assert.doesNotMatch(lifecycle, /publish no approval review/);
+  assert.match(lifecycle, /run\s+`"\$MINOS_BIN" forge approve HEAD TARGET` first, on every clean\s+outcome, a run that reviewed nothing included/);
+  assert.match(lifecycle, /An\s+approval the forge will not take, for any reason but a moved head,[\s\S]*?forge status HEAD TARGET incomplete`/);
+  assert.match(lifecycle, /refuses as well twins that one decision classes `already-raised` and\s+the other calls new, even where the other gates them/);
+  assert.match(lifecycle, /only when its `user` is the\s+snapshot's `author` and its `created_at` is later than the\s+`submitted_at` the snapshot gives for the Minos review whose body\s+holds the finding/);
+});

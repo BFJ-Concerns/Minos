@@ -43,8 +43,9 @@ author, and the forge's own CI remains the build evidence.
    unchanged. An earlier blocking finding still counts on a later head
    until the author resolves or rejects its thread, or the defect is gone
    from the code. A finding that could not be anchored to a line sits in
-   the review body with no thread; the author rejects it in a comment on
-   the pull request that names it by its title or its path and line. A
+   the review body with no thread; the pull request's author rejects it in
+   a comment, written after that review, that names it by its title or its
+   path and line. A
    request for a safeguard against a failure the project
    gives no sign of having is recorded with the run and reported nowhere.
 
@@ -68,7 +69,7 @@ label on the pull request, and, where there are findings, a review.
 | Under review | `pending` — Reviewing changes | The in-flight marker (an `eyes` reaction by default) |
 | Continuing | `pending` — Review continuing in a fresh run | The in-flight marker stays while a fresh run carries on the review |
 | Changes needed | `failure` — Changes need attention | A request-changes review carrying the blocking findings, inline where they can be anchored to the diff and in the review body otherwise, plus the attention marker if one is configured |
-| Clean | `success` — Changes approved | The clean marker (a `+1` reaction by default) |
+| Clean | `success` — Changes approved | The clean marker (a `+1` reaction by default), and an approving review where Minos's latest review had requested changes |
 | Incomplete | `error` — Review incomplete | No review; the head is retried on a later sweep pass. A run that fails before the lead starts writes no status |
 
 Each finding comment opens with **Blocking** and its severity, and closes
