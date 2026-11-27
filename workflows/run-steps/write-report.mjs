@@ -9,7 +9,7 @@ export async function writeReport(run, settled, ending, closingProblems = []) {
   const problems = [
     ...closingProblems,
     settled.claimSummaryProblem, settled.reviewingSummaryProblem,
-    settled.workingStatusProblem, settled.terminalStatusProblem, settled.terminalMarkerProblem,
+    settled.workingStatusProblem, settled.summaryLayoutProblem, settled.terminalStatusProblem, settled.terminalMarkerProblem,
     settled.reviewDispatchProblem, settled.briefDispatchProblem, publication?.filingRecordProblem,
     ...(publication?.filing.outcome === "unfiled" ? [publication.filing.reason] : []),
   ].filter(Boolean);

@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { HeadMoved } from "../run-endings.mjs";
-import { composeSummary } from "../summary-comment.mjs";
+import { composeSummary, plainSummary } from "../summary-comment.mjs";
 
 export async function currentSnapshot(run) {
   const snapshot = await run.forge("snapshot");
@@ -42,10 +42,26 @@ export async function setStatus(run, state, head = run.head, target = run.target
 // HeadMoved does. This is how a step writes a state that is the head's
 // completion marker, clean or changes requested: the step fails when the
 // marker is not on the forge.
+//
+// The record the command writes is the comment's first line and needs no
+// template, so a text that cannot be composed, from an unreadable template,
+// a slot that names no part or facts a part cannot render, costs only the
+// layout: the comment goes out with the plain headline, and the reason is
+// returned as a presentation problem for the report.
 export async function writeSummary(run, state, facts = {}) {
   const text = join(run.runDir, "summary-comment.md");
-  writeFileSync(text, `${composeSummary({ ...facts, state, head: run.head, target: run.target })}\n`);
-  return applied(run, "summary", [run.head, run.target, state, text]);
+  const summaryFacts = { ...facts, state, head: run.head, target: run.target };
+  let body;
+  let problem;
+  try {
+    body = composeSummary(summaryFacts);
+  } catch (error) {
+    body = plainSummary(summaryFacts);
+    problem = `The summary comment was written without its layout: ${error.message}`;
+  }
+  writeFileSync(text, `${body}\n`);
+  await applied(run, "summary", [run.head, run.target, state, text]);
+  return problem;
 }
 
 // The same write for a state that only shows where the run has got to. A
@@ -54,7 +70,7 @@ export async function writeSummary(run, state, facts = {}) {
 // on, unless it says the head moved.
 export async function showSummary(run, state, facts) {
   try {
-    await writeSummary(run, state, facts);
+    return await writeSummary(run, state, facts);
   } catch (error) {
     if (movedHead(error)) throw error;
     return error.message;

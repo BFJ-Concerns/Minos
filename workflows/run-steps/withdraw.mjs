@@ -4,16 +4,18 @@ import { summaryFacts } from "./summary-facts.mjs";
 
 // Keep operator diagnostics, which can include local paths and command
 // output, in the run report. The author sees the operation that failed.
+// Each cause is worded as what happened to the review of the head, never
+// as what the service could not do.
 const incompleteConditions = {
-  claim: "Minos could not claim the pull request for review.",
-  markWorking: "Minos could not mark the pull request as in progress.",
-  inspectPush: "Minos could not finish inspecting what changed.",
-  review: "The specialist review did not complete.",
-  reviewBriefs: "The repository brief review did not complete.",
-  classify: "Minos could not finish classifying the findings.",
-  settleEarlierFindings: "Minos could not determine which earlier blocking findings still stand.",
-  publish: "Minos could not confirm publication of the findings.",
-  conclude: "Minos could not confirm the final result on the pull request.",
+  claim: "the pull request could not be claimed for review.",
+  markWorking: "the pull request could not be marked as in progress.",
+  inspectPush: "the inspection of what changed did not finish.",
+  review: "the specialist review did not complete.",
+  reviewBriefs: "the repository brief review did not complete.",
+  classify: "the classification of the findings did not finish.",
+  settleEarlierFindings: "which earlier blocking findings still stand could not be determined.",
+  publish: "the publication of the findings could not be confirmed.",
+  conclude: "the final result could not be confirmed on the pull request.",
 };
 
 async function removeFromCurrentHead(run) {
@@ -28,7 +30,7 @@ export async function withdraw(run, settled, ending, problems) {
     if (ending.outcome === INCOMPLETE) {
       const summaryProblem = await showSummary(run, INCOMPLETE, {
         ...summaryFacts(settled),
-        condition: incompleteConditions[ending.step] ?? "Minos stopped before recording a result.",
+        condition: incompleteConditions[ending.step] ?? "the review stopped before recording a result.",
       });
       if (summaryProblem) problems?.push(summaryProblem);
       const statusProblem = await setStatus(run, "incomplete");
