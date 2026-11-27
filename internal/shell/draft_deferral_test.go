@@ -76,35 +76,53 @@ func TestSweepRecordsDraftDeferrals(t *testing.T) {
 }
 
 func TestSweepStartsDraftWhenMarkedReady(t *testing.T) {
-	state := newForgejoFixtureState(t)
-	cfg := writeSweepFixtureConfig(t, state)
-	state.changePullRequest(func(pr map[string]any) { pr["draft"] = true })
-	original := commandCombinedOutput
-	t.Cleanup(func() { commandCombinedOutput = original })
-	starts := 0
-	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
-		if name == "systemd-run" {
-			starts++
-		}
-		return nil, nil
-	}
-	if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
-		t.Fatal(err)
-	}
-	doc := projectionJSON(t, sweepDeferralsPath(cfg))
-	if row := projectionRow(t, doc, "deferrals"); row["reason"] != "draft" || starts != 0 {
-		t.Fatalf("draft pass: row=%#v starts=%d", row, starts)
-	}
-	state.changePullRequest(func(pr map[string]any) { pr["draft"] = false })
-	if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
-		t.Fatal(err)
-	}
-	doc = projectionJSON(t, sweepDeferralsPath(cfg))
-	if rows, ok := doc["deferrals"].([]any); !ok || len(rows) != 0 {
-		t.Fatalf("ready pass retained deferrals: %#v", doc["deferrals"])
-	}
-	if row := projectionRow(t, doc, "readied"); row["decision"] != string(SpawnStarted) || row["cause"] != "current forge head is eligible" || starts != 1 {
-		t.Fatalf("ready pass: row=%#v starts=%d", row, starts)
+	for _, test := range []struct {
+		name                 string
+		markDraft, markReady func(map[string]any)
+	}{
+		{
+			name:      "native draft flag",
+			markDraft: func(pr map[string]any) { pr["draft"] = true },
+			markReady: func(pr map[string]any) { pr["draft"] = false },
+		},
+		{
+			name:      "Forgejo WIP title with draft flag false",
+			markDraft: func(pr map[string]any) { pr["title"], pr["draft"] = "WIP: change", false },
+			markReady: func(pr map[string]any) { pr["title"] = "change" },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg := writeSweepFixtureConfig(t, state)
+			state.changePullRequest(test.markDraft)
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			starts := 0
+			commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+				if name == "systemd-run" {
+					starts++
+				}
+				return nil, nil
+			}
+			if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+				t.Fatal(err)
+			}
+			doc := projectionJSON(t, sweepDeferralsPath(cfg))
+			if row := projectionRow(t, doc, "deferrals"); row["reason"] != "draft" || starts != 0 {
+				t.Fatalf("draft pass: row=%#v starts=%d", row, starts)
+			}
+			state.changePullRequest(test.markReady)
+			if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+				t.Fatal(err)
+			}
+			doc = projectionJSON(t, sweepDeferralsPath(cfg))
+			if rows, ok := doc["deferrals"].([]any); !ok || len(rows) != 0 {
+				t.Fatalf("ready pass retained deferrals: %#v", doc["deferrals"])
+			}
+			if row := projectionRow(t, doc, "readied"); row["decision"] != string(SpawnStarted) || row["cause"] != "current forge head is eligible" || starts != 1 {
+				t.Fatalf("ready pass: row=%#v starts=%d", row, starts)
+			}
+		})
 	}
 }
 
