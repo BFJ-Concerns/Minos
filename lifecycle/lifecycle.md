@@ -581,14 +581,21 @@ write, matching the target rule above.)
    the threshold never takes it on that ground.
 
    A finding that fits a class takes it at any severity: one below the
-   threshold is classed, not left advisory. Whatever its class,
-   such a finding is published and filed nowhere, and each class has its
-   reason. The author declared the gap, so no surface tells them of it
-   again. A filed hardening request is read later as work to do, and work
-   done from these is how a project fills with guards it never needed.
-   What was already raised, the author has. A classed finding stays in
-   the run record: the verdict file holds the finding and your decision
-   holds its class.
+   threshold is classed, not left advisory. A classed finding is never
+   published on the pull request, and with one exception it is filed
+   nowhere either; each class has its reason. The author declared the
+   gap, so no surface tells them of it again. What was already raised,
+   the author has. A hardening request filed among the defects is read
+   later as work to do, and work done from these is how a project fills
+   with guards it never needed. The exception is a repository that has
+   asked for its safeguard requests, where
+   `$MINOS_FILE_SAFEGUARD_REQUESTS` is `true`: there the composer in step
+   6 sets each `speculative-hardening` finding aside for the filing
+   destination as a safeguard request, marked apart from the defects as a
+   suggestion. The setting decides where such a finding goes and nothing
+   about its class: class a finding by what it asks for, the same way
+   under either value. A classed finding stays in the run record: the
+   verdict file holds the finding and your decision holds its class.
 
    A verifier's reason may say that the delivered behaviour is correct
    and the finding is a gap; that is advice for your gating call, never
@@ -764,10 +771,11 @@ write, matching the target rule above.)
 
    Deliver the plan's `triage.entries` to the repository's configured
    filing destination. On either outcome it contains the confirmed
-   advisory findings, the unverified observations (each entry says it was
-   never verified, and none goes to a pull-request-comment destination),
-   brief configuration diagnostics and the guidance sources setup could
-   not read. The destination — a file in a repository's default branch, an issue on a named repository, a
+   advisory findings, the safeguard requests where the repository files
+   them (each entry says it is a suggestion and not a defect), the
+   unverified observations (each entry says it was never verified, and
+   none goes to a pull-request-comment destination), brief configuration
+   diagnostics and the guidance sources setup could not read. The destination — a file in a repository's default branch, an issue on a named repository, a
    comment on the pull request, or nowhere — is the service's exported
    configuration, never a choice you make; the script files each entry
    once, skipping entries the destination already carries, and commits as
