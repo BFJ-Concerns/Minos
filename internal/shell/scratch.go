@@ -525,7 +525,7 @@ func processGroupCommandContext(ctx context.Context, name string, arguments ...s
 
 func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 	if cfg.Runs.FailuresRepo == "" || cfg.Runs.FailuresCredentialFile == "" {
-		return fmt.Errorf("Minos annexe push is not fully configured; durable local append retained")
+		return fmt.Errorf("failure-ledger repository or credential file is unset. The local entry was retained")
 	}
 	forgeConfig, ok := cfg.Forges[cfg.Runs.FailuresForge]
 	if !ok {
