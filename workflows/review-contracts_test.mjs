@@ -1,7 +1,7 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,13 +181,3 @@ test("both workflows dispatch with the contracts they are handed, keeping no cop
   }
 });
 
-test("both workflows carry the same input checks", () => {
-  const shared = (filename) => {
-    const source = readFileSync(join(workflowsDir, filename), "utf8");
-    const start = source.indexOf("// The input checks below are the same in review.js and review-briefs.js.");
-    const end = source.indexOf("\n}\n", source.indexOf("function pullRequestSection"));
-    assert.ok(start !== -1 && end > start, `${filename} carries the shared input checks`);
-    return source.slice(start, end);
-  };
-  assert.equal(shared("review.js"), shared("review-briefs.js"));
-});

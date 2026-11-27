@@ -221,3 +221,34 @@ export function reviewContracts(concernNames) {
     verifierSchema,
   }));
 }
+
+// A workflow's check of the `contracts` its input builder attached from
+// reviewContracts: the set, or null when it is missing or malformed, which
+// fails the workflow before dispatch.
+export function contractsFromInput(input) {
+  const contracts = input && input.contracts;
+  if (!contracts || typeof contracts !== "object" || Array.isArray(contracts)) return null;
+  if (!Number.isInteger(contracts.verifierBatchSize) || contracts.verifierBatchSize < 1) return null;
+  if (!Number.isInteger(contracts.verificationRounds) || contracts.verificationRounds < 1) return null;
+  for (const name of ["mergeFindingFields", "verifierFindingFields"])
+    if (!Array.isArray(contracts[name]) || !contracts[name].includes("id")) return null;
+  for (const name of [
+    "explorationSchema",
+    "findingShape",
+    "outOfScopeObservationShape",
+    "applicabilityShape",
+    "specialistSchema",
+    "mergeSchema",
+    "verifierVerdictShape",
+    "verifierSchema",
+  ]) {
+    const shape = contracts[name];
+    if (
+      !shape || typeof shape !== "object" || Array.isArray(shape) ||
+      shape.type !== "object" ||
+      !Array.isArray(shape.required) ||
+      !shape.properties || typeof shape.properties !== "object" || Array.isArray(shape.properties)
+    ) return null;
+  }
+  return contracts;
+}

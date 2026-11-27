@@ -6,6 +6,12 @@ export const meta = {
   ],
 };
 
+// A workflow script cannot import statically, so the checks of the input
+// its builder attached are loaded from beside it, from the builder's own
+// modules.
+const { routingFromInput } = await import("./role-routing.mjs");
+const { projectGuidanceFromInput, projectGuidanceSection } = await import("./orientation-guidance.mjs");
+
 const SCOPE_BRIEF_PATH = "workflows/review-briefs/scope.md";
 
 const scopeSchema = {
@@ -33,54 +39,6 @@ const scopeBrief = (Array.isArray(input.instructionBriefs) ? input.instructionBr
     typeof entry.content === "string"
 );
 if (!scopeBrief) throw new Error("deterministic input omitted the shipped scope brief");
-
-function projectGuidanceFromInput(input) {
-  const guidance = input && input.guidance;
-  if (!Array.isArray(guidance) || guidance.length === 0) return null;
-  for (const entry of guidance) {
-    if (
-      !entry ||
-      typeof entry.path !== "string" ||
-      entry.path === "" ||
-      (entry.repository !== null && (typeof entry.repository !== "string" || entry.repository === "")) ||
-      (entry.origin !== "configured" && entry.origin !== "checked-in") ||
-      typeof entry.content !== "string" ||
-      entry.content.trim() === ""
-    ) return null;
-  }
-  return guidance;
-}
-
-// One block per guidance document, in the configured order: the reviewed
-// project's declared intent, as the repository owner names it.
-function projectGuidanceSection(guidance) {
-  return guidance.map((entry) =>
-    `<project-guidance origin="${entry.origin}"${entry.repository === null ? "" : ` repository="${entry.repository}"`} path="${entry.path}">\n` +
-    `${entry.content}\n</project-guidance>\n`
-  ).join("\n") + "\n";
-}
-
-const ROUTING_ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner"];
-const ROUTING_ENGINES = ["claude", "codex"];
-
-// The resolved routing the input builder attached: every role's engine,
-// model and effort, already defaulted for what the deployment provisioned.
-// Nothing here is fixed in source; a missing or malformed table fails the
-// workflow before any dispatch.
-function routingFromInput(input) {
-  const routing = input && input.routing;
-  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
-  for (const role of ROUTING_ROLES) {
-    const entry = routing[role];
-    if (
-      !entry ||
-      !ROUTING_ENGINES.includes(entry.engine) ||
-      typeof entry.model !== "string" || entry.model === "" ||
-      typeof entry.effort !== "string" || entry.effort === ""
-    ) return null;
-  }
-  return routing;
-}
 
 const guidance = projectGuidanceFromInput(input);
 if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
@@ -134,7 +92,7 @@ const result = await agent(
     `<role-brief path="${SCOPE_BRIEF_PATH}">\n${scopeBrief.content}\n</role-brief>\n\n` +
     `Judge the change against the reviewed project's declared intent below — every guidance document its owner configured, ` +
     `or its own checked-in guidance where none is configured. This project intent governs whether behaviour is correct.\n\n` +
-    projectGuidanceSection(guidance) +
+    `${projectGuidanceSection(guidance)}\n\n` +
     `Judge ${target}...${head}. Changed files: ${JSON.stringify(changedFiles)}\n` +
     `Every repository review brief has already settled deterministically as not applying to this change. ` +
     `Decide only whether the change itself gives any reviewable concern real work.`,

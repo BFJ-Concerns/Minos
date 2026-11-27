@@ -27,3 +27,23 @@ export function pullRequestFromOrientation(orientation) {
   if (record.title.trim() === "" && body.trim() === "") return undefined;
   return { title: record.title, body };
 }
+
+// A workflow's check of the description its input builder attached from
+// pullRequestFromOrientation: the title and body, or null when there is
+// none to show.
+export function pullRequestFromInput(input) {
+  const pullRequest = input && input.pullRequest;
+  if (
+    !pullRequest ||
+    typeof pullRequest.title !== "string" ||
+    typeof pullRequest.body !== "string" ||
+    (pullRequest.title.trim() === "" && pullRequest.body.trim() === "")
+  ) return null;
+  return { title: pullRequest.title, body: pullRequest.body };
+}
+
+// The description as the prompts show it, or nothing when there is none.
+export function pullRequestSection(pullRequest) {
+  if (!pullRequest) return "";
+  return `<pull-request-description title=${JSON.stringify(pullRequest.title)}>\n${pullRequest.body}\n</pull-request-description>`;
+}

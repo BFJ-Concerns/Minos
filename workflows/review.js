@@ -10,108 +10,15 @@ export const meta = {
 };
 
 // A workflow script cannot import statically, so what this one shares with
-// review-briefs.js is loaded from beside it: the prompt slots, and the merge
-// and verification stages every review runs on its proposed findings.
+// review-briefs.js is loaded from beside it: the checks of the input each builder
+// attached, beside the builder's own module; the prompt slots; and the
+// merge and verification stages every review runs on its proposed findings.
+const { contractsFromInput } = await import("./review-contracts.mjs");
+const { routingFromInput } = await import("./role-routing.mjs");
+const { projectGuidanceFromInput, projectGuidanceSection } = await import("./orientation-guidance.mjs");
+const { pullRequestFromInput, pullRequestSection } = await import("./pull-request-description.mjs");
 const { promptFits, fillPrompt } = await import("./review-prompts.mjs");
 const { reviewStages, subjectOf, proposedFindingOf, uncheckedFindingOf } = await import("./review-stages.mjs");
-
-// The input checks below are the same in review.js and review-briefs.js.
-
-// The finding, merge and verifier contracts arrive as `contracts`, built
-// once in workflows/review-contracts.mjs by the input builder; this script
-// keeps no copy, and a missing or malformed set fails the workflow before
-// dispatch.
-function contractsFromInput(input) {
-  const contracts = input && input.contracts;
-  if (!contracts || typeof contracts !== "object" || Array.isArray(contracts)) return null;
-  if (!Number.isInteger(contracts.verifierBatchSize) || contracts.verifierBatchSize < 1) return null;
-  if (!Number.isInteger(contracts.verificationRounds) || contracts.verificationRounds < 1) return null;
-  for (const name of ["mergeFindingFields", "verifierFindingFields"])
-    if (!Array.isArray(contracts[name]) || !contracts[name].includes("id")) return null;
-  for (const name of [
-    "explorationSchema",
-    "findingShape",
-    "outOfScopeObservationShape",
-    "applicabilityShape",
-    "specialistSchema",
-    "mergeSchema",
-    "verifierVerdictShape",
-    "verifierSchema",
-  ]) {
-    const shape = contracts[name];
-    if (
-      !shape || typeof shape !== "object" || Array.isArray(shape) ||
-      shape.type !== "object" ||
-      !Array.isArray(shape.required) ||
-      !shape.properties || typeof shape.properties !== "object" || Array.isArray(shape.properties)
-    ) return null;
-  }
-  return contracts;
-}
-
-const ROUTING_ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner"];
-const ROUTING_ENGINES = ["claude", "codex"];
-
-// The resolved routing the input builder attached: every role's engine,
-// model and effort, already defaulted for what the deployment provisioned.
-// Nothing here is fixed in source; a missing or malformed table fails the
-// workflow before any dispatch.
-function routingFromInput(input) {
-  const routing = input && input.routing;
-  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
-  for (const role of ROUTING_ROLES) {
-    const entry = routing[role];
-    if (
-      !entry ||
-      !ROUTING_ENGINES.includes(entry.engine) ||
-      typeof entry.model !== "string" || entry.model === "" ||
-      typeof entry.effort !== "string" || entry.effort === ""
-    ) return null;
-  }
-  return routing;
-}
-
-function projectGuidanceFromInput(input) {
-  const guidance = input && input.guidance;
-  if (!Array.isArray(guidance) || guidance.length === 0) return null;
-  for (const entry of guidance) {
-    if (
-      !entry ||
-      typeof entry.path !== "string" ||
-      entry.path === "" ||
-      (entry.repository !== null && (typeof entry.repository !== "string" || entry.repository === "")) ||
-      (entry.origin !== "configured" && entry.origin !== "checked-in") ||
-      typeof entry.content !== "string" ||
-      entry.content.trim() === ""
-    ) return null;
-  }
-  return guidance;
-}
-
-// One block per guidance document, in the configured order: the reviewed
-// project's declared intent, as the repository owner names it.
-function projectGuidanceSection(guidance) {
-  return guidance.map((entry) =>
-    `<project-guidance origin="${entry.origin}"${entry.repository === null ? "" : ` repository="${entry.repository}"`} path="${entry.path}">\n` +
-    `${entry.content}\n</project-guidance>`
-  ).join("\n\n");
-}
-
-function pullRequestFromInput(input) {
-  const pullRequest = input && input.pullRequest;
-  if (
-    !pullRequest ||
-    typeof pullRequest.title !== "string" ||
-    typeof pullRequest.body !== "string" ||
-    (pullRequest.title.trim() === "" && pullRequest.body.trim() === "")
-  ) return null;
-  return { title: pullRequest.title, body: pullRequest.body };
-}
-
-function pullRequestSection(pullRequest) {
-  if (!pullRequest) return "";
-  return `<pull-request-description title=${JSON.stringify(pullRequest.title)}>\n${pullRequest.body}\n</pull-request-description>`;
-}
 
 function concernsFromInput(input) {
   const concerns = input && input.concerns;

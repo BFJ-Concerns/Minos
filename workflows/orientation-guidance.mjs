@@ -36,3 +36,31 @@ export function guidanceFromOrientation(orientation) {
     };
   });
 }
+
+// A workflow's check of the guidance its input builder attached from
+// guidanceFromOrientation: the entries, or null when any is malformed.
+export function projectGuidanceFromInput(input) {
+  const guidance = input && input.guidance;
+  if (!Array.isArray(guidance) || guidance.length === 0) return null;
+  for (const entry of guidance) {
+    if (
+      !entry ||
+      typeof entry.path !== "string" ||
+      entry.path === "" ||
+      (entry.repository !== null && (typeof entry.repository !== "string" || entry.repository === "")) ||
+      (entry.origin !== "configured" && entry.origin !== "checked-in") ||
+      typeof entry.content !== "string" ||
+      entry.content.trim() === ""
+    ) return null;
+  }
+  return guidance;
+}
+
+// One block per guidance document, in the configured order: the reviewed
+// project's declared intent, as the repository owner names it.
+export function projectGuidanceSection(guidance) {
+  return guidance.map((entry) =>
+    `<project-guidance origin="${entry.origin}"${entry.repository === null ? "" : ` repository="${entry.repository}"`} path="${entry.path}">\n` +
+    `${entry.content}\n</project-guidance>`
+  ).join("\n\n");
+}
