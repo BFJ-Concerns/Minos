@@ -2,10 +2,10 @@
 
 Minos is a pull-request review service. An authenticated webhook or the
 periodic sweep starts a run. The shipped `run-body.env` sets
-`MINOS_RUN_DRIVER`, so `run-body` starts the scripted driver. When the
-setting is absent or either companion judgement module is missing,
-`run-body` starts a resident lead on Claude Code by default or on Codex
-(`MINOS_LEAD_ENGINE`).
+`MINOS_RUN_DRIVER`, so `run-body` starts the scripted driver, and stops
+with a recorded failure when one of the driver's judgement modules is
+missing. When the setting is absent, `run-body` starts a resident lead on
+Claude Code by default or on Codex (`MINOS_LEAD_ENGINE`).
 
 ## Layout
 

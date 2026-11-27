@@ -312,7 +312,11 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    lead's session lives in the private home, so its output does not count;
    a Codex lead's output is written to `codex-lead.jsonl` and
    `codex-lead.stderr` in the run directory, so its output does. Keep the lifecycle's fallback wake shorter
-   than this value.
+   than this value. Under the scripted driver the same silence stops the
+   stage the driver is waiting on, leaving the driver to end the run
+   incomplete through its closing duties; a driver still running one more
+   timeout later is stopped whole. Stopping the driver, by this backstop
+   or when the run body exits, stops every process it started.
 
    Choose one Claude authentication mode in `run-body.env`:
 
@@ -540,10 +544,13 @@ attempts to append the failure to `runs.failure-log`; when the log path is
 unset or unwritable, stderr carries the evidence instead. The run exits after
 recording the failure. A run whose lead ends with a failing exit and no
 terminal marker is appended to the same log as a `lead-supervision` failure.
-When workspace
-setup cannot fetch the admitted target SHA because the forge no longer
-advertises it (typically because the base branch moved), the failure cause
-carries that refusal; the next sweep pass re-derives from current forge state.
+When the forge
+no longer advertises the admitted target SHA (typically because the base
+branch moved), workspace setup re-pins to the target's current tip from its
+own snapshot, and the run reviews against and guards its writes with that
+commit. Only when the current tip is the refused SHA, or is refused too,
+does setup fail; the failure cause carries the refusal, and the next sweep
+pass re-derives from current forge state.
 Workspace setup resolves clone URLs and credentials through the forge-neutral
 `minos forge repository-metadata OWNER REPO` and
 `minos forge clone-credential OWNER REPO` operations. Git reads the

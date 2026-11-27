@@ -49,12 +49,59 @@ func TestArchiveRunSummaryKeepsSkipEvidence(t *testing.T) {
 	if summary["outcome"] != "clean" || summary["review_skipped"] != true || summary["report_excerpt"] != "Only the target changed." {
 		t.Fatalf("legacy lead skip evidence: %#v", summary)
 	}
+	writeTestFile(t, filepath.Join(root, "push-inspection-args.json"), "{}")
 	writeTestFile(t, filepath.Join(root, "judgements", "push-inspection.json"), `{"answer":{"outcome":"no-review","reason":"Generated content only."}}`)
 	writeTestFile(t, filepath.Join(root, "review-args.json"), "{}")
 	summary = runArchiveSummary(t, root, false)
 	if summary["review_skipped"] != true || summary["skip_reason"] != "Generated content only." {
 		t.Fatalf("scripted skip evidence: %#v", summary)
 	}
+}
+
+func TestArchiveRunSummaryReadsTheSuccessorsOwnPushInspection(t *testing.T) {
+	predecessor := func(t *testing.T) string {
+		t.Helper()
+		root := t.TempDir()
+		t.Setenv("MINOS_RUN_STARTED_AT", "")
+		writeTestFile(t, filepath.Join(root, "lead-complete"), "clean\n")
+		writeTestFile(t, filepath.Join(root, "push-inspection-args.json"), "{}")
+		writeTestFile(t, filepath.Join(root, "judgements", "push-inspection.json"), `{"answer":{"outcome":"no-review","reason":"Only the lockfile changed."}}`)
+		return root
+	}
+
+	t.Run("a successor that reviewed in full", func(t *testing.T) {
+		root := predecessor(t)
+		for _, attempt := range []string{"push-inspection@2", "push-inspection@10"} {
+			writeTestFile(t, filepath.Join(root, attempt+"-args.json"), "{}")
+		}
+		writeTestFile(t, filepath.Join(root, "judgements", "push-inspection@2.json"), `{"answer":{"outcome":"no-review","reason":"A stale answer."}}`)
+		writeTestFile(t, filepath.Join(root, "judgements", "push-inspection@10.json"), `{"answer":{"outcome":"full","reason":"The source changed."}}`)
+		writeTestFile(t, filepath.Join(root, "review@2-args.json"), "{}")
+		summary := runArchiveSummary(t, root, false)
+		if summary["review_skipped"] != false || summary["skip_reason"] != nil {
+			t.Fatalf("successor's full review listed as skipped: %#v", summary)
+		}
+	})
+
+	t.Run("a successor whose inspection answered nothing", func(t *testing.T) {
+		root := predecessor(t)
+		writeTestFile(t, filepath.Join(root, "push-inspection@2-args.json"), "{}")
+		writeTestFile(t, filepath.Join(root, "review@2-args.json"), "{}")
+		summary := runArchiveSummary(t, root, false)
+		if summary["skip_reason"] != nil {
+			t.Fatalf("predecessor's reason stood in for the successor's: %#v", summary)
+		}
+	})
+
+	t.Run("a successor that also chose no review", func(t *testing.T) {
+		root := predecessor(t)
+		writeTestFile(t, filepath.Join(root, "push-inspection@2-args.json"), "{}")
+		writeTestFile(t, filepath.Join(root, "judgements", "push-inspection@2.json"), `{"answer":{"outcome":"no-review","reason":"Still only the lockfile."}}`)
+		summary := runArchiveSummary(t, root, false)
+		if summary["review_skipped"] != true || summary["skip_reason"] != "Still only the lockfile." {
+			t.Fatalf("successor's own skip: %#v", summary)
+		}
+	})
 }
 
 func TestArchiveRunSummaryReportsSalvageWithoutInventingADuration(t *testing.T) {

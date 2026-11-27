@@ -101,7 +101,7 @@ fi
 (
   cd "$run_dir" || exit 1
   find . -type f \( \
-    -path './report.md' -o -path './failure.log' -o -path './failures.log' -o \
+    -path './report.md' -o -regex '\./[^/]*\.log' -o -path './stage-stopped' -o \
     -path './home/.claude/projects/*' -o -path './home/.codex/sessions/*.jsonl' -o \
     -path './ensemble-records/*' -o -path './judgements/*' -o \
     -regex '\./[^/]*-args\.json' -o -regex '\./[^/]*-input\.json' -o \
