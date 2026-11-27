@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -113,6 +114,35 @@ func (a *Adapter) RepositoryMetadata(ctx context.Context, repository Repository)
 		return RepositoryMetadata{}, fmt.Errorf("repository metadata for %s/%s omitted its clone URL or default branch", repository.Owner, repository.Name)
 	}
 	return metadata.RepositoryMetadata, nil
+}
+
+// fullObjectName is a commit's full object name, SHA-1 or SHA-256.
+var fullObjectName = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// DefaultBranchTip reads the commit a repository's default branch stands at
+// now. An empty repository answers with no commit and no error.
+func (a *Adapter) DefaultBranchTip(ctx context.Context, repository Repository) (BranchTip, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "default-branch-tip", Arguments: []string{repository.Owner, repository.Name}})
+	if err != nil {
+		return BranchTip{}, err
+	}
+	var tip struct {
+		DefaultBranch string  `json:"default_branch"`
+		Commit        *string `json:"commit"`
+	}
+	if err := json.Unmarshal(out, &tip); err != nil {
+		return BranchTip{}, fmt.Errorf("decode default branch tip: %w", err)
+	}
+	if tip.DefaultBranch == "" {
+		return BranchTip{}, fmt.Errorf("default branch tip for %s/%s named no branch", repository.Owner, repository.Name)
+	}
+	if tip.Commit == nil {
+		return BranchTip{DefaultBranch: tip.DefaultBranch}, nil
+	}
+	if !fullObjectName.MatchString(*tip.Commit) {
+		return BranchTip{}, fmt.Errorf("default branch tip for %s/%s is not a full commit name: %q", repository.Owner, repository.Name, *tip.Commit)
+	}
+	return BranchTip{DefaultBranch: tip.DefaultBranch, Commit: *tip.Commit}, nil
 }
 
 // RepositoryLookupError is the forge's own answer to a repository lookup
