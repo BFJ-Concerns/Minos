@@ -162,13 +162,14 @@ function git(cwd, ...args) {
 // orientation naming one guidance document, a forge holding one earlier
 // thread and one review with a folded finding, and a stage that answers as
 // told.
-function fixtureRun(t, { answer, filing = { kind: "file", path: "ISSUES.md" }, otherReviews = [] } = {}) {
+function fixtureRun(t, { answer, filing = { kind: "file", path: "ISSUES.md" }, otherReviews = [], issues } = {}) {
   const root = operationRoot(t, "minos-classify-");
   const workspace = join(root, "workspace");
   mkdirSync(workspace, { recursive: true });
   git(workspace, "init", "-q");
   writeFileSync(join(workspace, "README.md"), "A library.\n");
   writeFileSync(join(workspace, "ISSUES.md"), "- Use the shared parser.\n");
+  writeFileSync(join(workspace, "EMPTY.md"), "");
   git(workspace, "add", ".");
   git(workspace, "commit", "-q", "-m", "default");
   git(workspace, "branch", "-m", "default");
@@ -176,6 +177,14 @@ function fixtureRun(t, { answer, filing = { kind: "file", path: "ISSUES.md" }, o
   writeFileSync(join(workspace, "ISSUES.md"), "- This advice is on the pull request target alone.\n");
   git(workspace, "commit", "-qam", "target");
   const targetCommit = git(workspace, "rev-parse", "HEAD");
+  const plans = join(root, "plans");
+  if (filing.repository && filing.kind === "file") {
+    mkdirSync(plans);
+    git(plans, "init", "-qb", "default");
+    writeFileSync(join(plans, "ISSUES.md"), "- Use the public decoder.\n");
+    git(plans, "add", ".");
+    git(plans, "commit", "-qm", "Plans");
+  }
   const orientation = join(root, "orientation.json");
   writeFileSync(orientation, JSON.stringify({
     repository: workspace,
@@ -210,9 +219,14 @@ function fixtureRun(t, { answer, filing = { kind: "file", path: "ISSUES.md" }, o
       forge: async (command, ...args) => {
         if (command === "repository-metadata" || command === "clone-credential")
           assert.deepEqual(args, ["owner", filing.repository ? "plans" : "repo"]);
+        if (command === "filed-issues") {
+          assert.deepEqual(args, [filing.repository]);
+          if (issues === undefined) throw new Error("issue tracker unavailable");
+          return issues;
+        }
         return {
           snapshot, threads,
-          "repository-metadata": { clone_url: workspace, default_branch: "default" },
+          "repository-metadata": { clone_url: filing.repository ? plans : workspace, default_branch: "default" },
           "clone-credential": { username: "fixture", password: "fixture" },
         }[command];
       },
@@ -259,18 +273,34 @@ test("a run with no review classifies nothing, and one with no confirmed finding
 
 test("an unread filing destination is distinguished from an empty or missing filing file", async (t) => {
   const { run, snapshot } = fixtureRun(t);
-  assert.match(await filedEntries(run, { kind: "issue", repository: "owner/plans" }, snapshot), /could not be read/);
   assert.match(await filedEntries(run, { kind: "pull-request-comment" }, snapshot), /filed no entries/);
   assert.match(await filedEntries(run, { kind: "none" }, snapshot), /files nothing/);
   assert.match(await filedEntries(run, { kind: "file", path: "MISSING.md" }, snapshot), /does not exist on the default branch/);
+  assert.match(await filedEntries(run, { kind: "file", path: "EMPTY.md" }, snapshot), /EMPTY.md is empty/);
   const offline = { ...run, forge: async () => { throw new Error("network unavailable"); } };
   assert.match(await filedEntries(offline, { kind: "file", path: "ISSUES.md" }, snapshot), /could not be read/);
+  assert.match(await filedEntries(offline, { kind: "issue", repository: "owner/plans" }, snapshot), /could not be read/);
 });
 
 test("an external file destination is read on its repository's default branch", async (t) => {
   const filing = { kind: "file", repository: "owner/plans", path: "ISSUES.md" };
   const { run, snapshot } = fixtureRun(t, { filing });
-  assert.equal(await filedEntries(run, filing, snapshot), "- Use the shared parser.\n");
+  assert.equal(await filedEntries(run, filing, snapshot), "- Use the public decoder.\n");
+});
+
+test("classification sees open issues from the configured tracker", async (t) => {
+  const filing = { kind: "issue", repository: "owner/plans" };
+  const issues = [{ title: "Use the shared parser", body: "At src/parse.go line 9, the parser duplicates the shared code." }];
+  const answer = {
+    main: { verdict: "clean", basis: "Already on file.", findings: [disposition({ key: "logic-1", gating: false, class: "already-raised" })] },
+  };
+  const { run, asked } = fixtureRun(t, { filing, issues, answer });
+  await classify(run, { review: verdict });
+  assert.match(asked[0].given.filedEntries, /Use the shared parser\n\nAt src\/parse.go line 9/);
+  const empty = { ...run, forge: async () => [] };
+  assert.match(await filedEntries(empty, filing), /no open issues on owner\/plans/);
+  const malformed = { ...run, forge: async () => null };
+  assert.match(await filedEntries(malformed, filing), /could not be read/);
 });
 
 test("classification receives marked filing comments from Minos, including on older heads", async (t) => {

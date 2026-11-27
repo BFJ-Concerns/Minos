@@ -2853,23 +2853,28 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-		issues := []map[string]any{}
-		if page == 1 {
-			filter := r.URL.Query().Get("state")
-			if filter == "" {
-				filter = "open"
-			}
-			for _, stored := range s.filedIssues {
-				if filter != "all" && stored["state"] != filter {
-					continue
-				}
-				issue := mapsClone(stored)
-				if s.filedIssueReadBackLogin != "" {
-					issue["user"] = map[string]any{"login": s.filedIssueReadBackLogin}
-				}
-				issues = append(issues, issue)
-			}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if page < 1 || limit < 1 {
+			http.Error(w, "invalid issue page", http.StatusBadRequest)
+			return
 		}
+		filter := r.URL.Query().Get("state")
+		if filter == "" {
+			filter = "open"
+		}
+		issues := []map[string]any{}
+		for _, stored := range s.filedIssues {
+			if filter != "all" && stored["state"] != filter {
+				continue
+			}
+			issue := mapsClone(stored)
+			if s.filedIssueReadBackLogin != "" {
+				issue["user"] = map[string]any{"login": s.filedIssueReadBackLogin}
+			}
+			issues = append(issues, issue)
+		}
+		start := min((page-1)*limit, len(issues))
+		issues = issues[start:min(start+limit, len(issues))]
 		writeFixtureArray(s.t, w, issues)
 	case path == "/api/v1/repos/minos-e2e-owner/subject-plans/issues" && r.Method == http.MethodPost:
 		if account == nil {
