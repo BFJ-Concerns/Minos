@@ -2,7 +2,6 @@ package shell
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -123,7 +122,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		TargetSHA:   snapshot.TargetSHA,
 	}
 	if pullRequestClosed(snapshot) {
-		return ReconcileResult{Decision: ReconcileNothing}, errors.Join(removeReviewedChange(cfg, facts.Forge, guard), removeCommandRecord(cfg, facts.Forge, guard))
+		return ReconcileResult{Decision: ReconcileNothing}, removePullRequestRecords(cfg, facts.Forge, guard)
 	}
 	if snapshot.State != "open" {
 		return ReconcileResult{Decision: ReconcileNothing}, nil

@@ -176,6 +176,31 @@ const judgementSamples = {
     input: { commit: "1111111111111111111111111111111111111111", earlier: null },
     answer: { description: "A parsing library.\n\n## Layout\n\n- `src/`: the parser." },
   }],
+  walkthrough: [
+    {
+      input: { files: ["src/parser.js"], diagrams: false },
+      answer: { overview: "Parses a quoted field.", groups: [{ title: "Read quoted fields", summary: "`parse` keeps a quoted comma.", files: ["src/parser.js"] }] },
+    },
+    {
+      input: { files: ["src/parser.js"], diagrams: true },
+      answer: {
+        overview: "Parses a quoted field.",
+        groups: [{ title: "Read quoted fields", summary: "`parse` keeps a quoted comma.", files: ["src/parser.js"] }],
+        flows: [{ title: "Reading a record", trace: "From `read` in `src/reader.js` to `parse` in `src/parser.js`." }],
+      },
+    },
+  ],
+  "walkthrough-diagrams": [{
+    input: { flows: [{ title: "Reading a record", trace: "From `read` to `parse`." }] },
+    answer: {
+      diagrams: [{
+        flow: "Reading a record",
+        participants: ["reader", "parser"],
+        steps: [{ from: "reader", to: "parser", message: "parse(line)", reply: false }],
+        undrawn: "",
+      }],
+    },
+  }],
 };
 
 function assertPinnedRuntimeUnchanged(t) {

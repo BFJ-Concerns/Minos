@@ -2,7 +2,6 @@ package shell
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,6 +28,8 @@ func TestReconcilePrunesOnlyRetiredReviewedChanges(t *testing.T) {
 			guard := forge.Guard{Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo}, PullRequest: 1}
 			path := reviewedChangePath(cfg, facts.Forge, guard)
 			writeTestFile(t, path, "{}\n")
+			walkthrough := walkthroughRecordPath(cfg, facts.Forge, guard)
+			writeTestFile(t, walkthrough, "{}\n")
 			guard.PullRequest = 2
 			other := reviewedChangePath(cfg, facts.Forge, guard)
 			writeTestFile(t, other, "{}\n")
@@ -40,6 +41,9 @@ func TestReconcilePrunesOnlyRetiredReviewedChanges(t *testing.T) {
 			}
 			if _, err := os.Stat(path); (test.wantPruned && !os.IsNotExist(err)) || (!test.wantPruned && err != nil) {
 				t.Fatalf("stat reviewed record: %v, want pruned = %t", err, test.wantPruned)
+			}
+			if _, err := os.Stat(walkthrough); (test.wantPruned && !os.IsNotExist(err)) || (!test.wantPruned && err != nil) {
+				t.Fatalf("stat walkthrough record: %v, want pruned = %t", err, test.wantPruned)
 			}
 			if _, err := os.Stat(other); err != nil {
 				t.Fatalf("another pull request lost its record: %v", err)
@@ -67,17 +71,22 @@ func TestPruneReviewedChangeChecksTheForgeWhenMissingFromOpenList(t *testing.T) 
 }
 
 // A close the service missed leaves the pull request's records behind; the
-// sweep's retirement check removes each of them, a command record kept
-// without a reviewed change included.
+// sweep's retirement check removes each of them, a command record or a
+// walkthrough kept alone included.
 func TestSweepPrunesPullRequestRecordsAfterMissedCloseDelivery(t *testing.T) {
-	for _, withReviewed := range []bool{true, false} {
-		t.Run(fmt.Sprintf("reviewed=%t", withReviewed), func(t *testing.T) {
+	type recordPath func(ServiceConfig, string, forge.Guard) string
+	for name, kept := range map[string][]recordPath{
+		"all":         {reviewedChangePath, commandRecordPath, walkthroughRecordPath},
+		"command":     {commandRecordPath},
+		"walkthrough": {walkthroughRecordPath},
+	} {
+		t.Run(name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
 			cfg := writeSweepFixtureConfig(t, state)
 			guard := forge.Guard{Repository: forge.Repository{Owner: "minos-e2e-owner", Name: "subject"}, PullRequest: 1}
-			paths := []string{commandRecordPath(cfg, "forgejo", guard)}
-			if withReviewed {
-				paths = append(paths, reviewedChangePath(cfg, "forgejo", guard))
+			var paths []string
+			for _, path := range kept {
+				paths = append(paths, path(cfg, "forgejo", guard))
 			}
 			for _, path := range paths {
 				writeTestFile(t, path, "{}\n")

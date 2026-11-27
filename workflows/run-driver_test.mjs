@@ -108,11 +108,13 @@ test("a judgement writes the stage's arguments, dispatches the one judgement wor
     dispatch: async (...args) => {
       dispatched.push(args);
       assert.equal(JSON.parse(readFileSync(join(runDir, "push-inspection-args.json"), "utf8")).stage, "push-inspection");
-      return { stage: "push-inspection", answer };
+      return { stage: "push-inspection", answer, answeredBy: "claude-opus-5-5-served" };
     },
+    judgementModels: new Map(),
   };
 
   assert.deepEqual(await judge(run, pushInspection, inspectionInput), answer);
+  assert.equal(run.judgementModels.get("push-inspection"), "claude-opus-5-5-served");
 
   assert.deepEqual(dispatched, [["push-inspection", "judgement.js", "run-judgement"]]);
   assert.deepEqual(JSON.parse(readFileSync(join(runDir, "judgements", "push-inspection.json"), "utf8")), {
@@ -121,7 +123,21 @@ test("a judgement writes the stage's arguments, dispatches the one judgement wor
     input: inspectionInput,
     answer,
     routing: { engine: "claude", model: "claude-opus-5-5", effort: "medium" },
+    answeredBy: "claude-opus-5-5-served",
   });
+});
+
+test("a judgement whose result names no answering model credits the routed one", async (t) => {
+  const runDir = operationRoot(t, "minos-judge-");
+  const run = {
+    env: { MINOS_PROVISIONED_ENGINES: "claude" },
+    runDir,
+    dispatch: async () => ({ stage: "push-inspection", answer: { outcome: "full", reason: "The push adds a parser." } }),
+    judgementModels: new Map(),
+  };
+
+  await judge(run, pushInspection, inspectionInput);
+  assert.equal(run.judgementModels.get("push-inspection"), "claude-opus-5-5");
 });
 
 test("a judgement whose answer the stage refuses throws and keeps no record", async (t) => {

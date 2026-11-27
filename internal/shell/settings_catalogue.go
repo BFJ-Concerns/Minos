@@ -152,12 +152,14 @@ func settingsCatalogue() []Setting {
 		repositorySetting("review.file-safeguard-requests", "Whether confirmed requests for a safeguard against a failure nobody has observed go to the filing destination, each marked as a safeguard request; they never block.", "false", BoolForm).choosing("false", "true"),
 		repositorySetting("push-inspection.outcomes", "What a run may decide to review after a push: no-review, increment or full; full is always among them.", `["no-review", "increment", "full"]`, TOMLForm),
 		repositorySetting("description.enabled", "Whether Minos keeps a description of the repository's structure, written again when its default branch moves and handed to its reviewers beside the guidance sources.", "false", BoolForm).choosing("false", "true"),
+		repositorySetting("walkthrough.enabled", "Whether each reviewed head's summary comment carries a walkthrough: an overview of the pull request's change, grouped by what changed with the files each group touched, written once the head is finished.", "false", BoolForm).choosing("false", "true"),
+		repositorySetting("walkthrough.diagrams", "Whether the walkthrough carries sequence diagrams of the flows the change touches; it applies only where the walkthrough is on.", "false", BoolForm).choosing("false", "true"),
 		repositorySetting("guidance-sources", "The ordered documents that carry the project's declared intent, each a path and, for another repository on the same forge, its owner/name.", "The repository's own guidance: the first present of AGENTS.md, CLAUDE.md and README.md.", TOMLForm),
 		repositorySetting("filing-destination", "Where confirmed findings that do not block go: kind file (with path, and repository for another), issue (with repository), pull-request-comment or none.", `{kind = "pull-request-comment"}`, TOMLForm),
 		repositorySetting("markers", "The marks Minos sets on a pull request (in-flight, clean, attention), each a reaction or a label.", `👀 in flight, 👍 clean and no attention marker.`, TOMLForm),
 	}
 	for _, role := range routingRoles {
-		settings = append(settings, repositorySetting("routing."+role, "The engine, model and effort the "+role+" role runs on, as {engine, model, effort}; the whole role is one setting.", "The shipped pairing: proposing and planning roles on Codex, the verifier, judgement and description on Claude, where both engines are provisioned; the one provisioned engine otherwise.", TOMLForm))
+		settings = append(settings, repositorySetting("routing."+role, "The engine, model and effort the "+role+" role runs on, as {engine, model, effort}; the whole role is one setting.", "The shipped pairing: proposing and planning roles and the walkthrough's diagrams on Codex, the verifier, judgement, description and walkthrough on Claude, where both engines are provisioned; the one provisioned engine otherwise.", TOMLForm))
 	}
 	for _, concern := range specialistConcerns {
 		settings = append(settings, repositorySetting("routing.concerns."+concern, "The engine, model and effort the "+concern+" specialist proposes on, as {engine, model, effort}.", "The proposer's routing.", TOMLForm))

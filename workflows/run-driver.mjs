@@ -36,7 +36,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { JUDGEMENT_RUNNER, JUDGEMENT_WORKFLOW, answerFrom, judgementArgs, judgementRecord } from "./judgement-stage.mjs";
+import { JUDGEMENT_RUNNER, JUDGEMENT_WORKFLOW, answerFrom, answeringModel, judgementArgs, judgementRecord } from "./judgement-stage.mjs";
 import { CHANGES_REQUESTED, CLEAN, CONTINUATION, INCOMPLETE, SUPERSEDED, spendsHead } from "./run-endings.mjs";
 import { prepareStage } from "./run-process.mjs";
 import { claim } from "./run-steps/claim.mjs";
@@ -54,9 +54,13 @@ import { settleEarlierFindings } from "./run-steps/settle-earlier-findings.mjs";
 import { showReviewing } from "./run-steps/show-reviewing.mjs";
 import { withdraw } from "./run-steps/withdraw.mjs";
 import { writeReport } from "./run-steps/write-report.mjs";
+import { writeWalkthrough } from "./run-steps/write-walkthrough.mjs";
 
 export const COURSE = [claim, markWorking, inspectPush, showReviewing, review, reviewBriefs, classify, settleEarlierFindings, publish, conclude];
-export const CLOSING = [recordFailure, withdraw, writeReport];
+// The walkthrough is written after `withdraw`, once nothing of the head's
+// result waits on it, and before the report, which lists what went wrong
+// with it.
+export const CLOSING = [recordFailure, withdraw, writeWalkthrough, writeReport];
 
 const pressureBoundaries = new Map([
   [claim, "claim"], [inspectPush, "push-inspection"], [review, "review"],
@@ -192,16 +196,21 @@ function supervisorStop(run) {
 
 // Puts one input to a judgement stage and returns its answer, keeping the
 // record of the judgement in the run directory. A stage is judged once in
-// a run, under its own name.
+// a run, under its own name. `run.judgementModels` keeps, under the same
+// name, the model that answered: the routed one where the runtime named
+// none.
 export async function judge(run, stage, input) {
   const args = judgementArgs(stage, input, { env: run.env });
   const attempt = prepareStage(run, stage.name, `${JSON.stringify(args)}\n`);
   writeFileSync(join(run.runDir, `${attempt}-input.json`), `${JSON.stringify(input)}\n`);
-  const answer = answerFrom(stage, input, await run.dispatch(attempt, JUDGEMENT_WORKFLOW, JUDGEMENT_RUNNER));
+  const result = await run.dispatch(attempt, JUDGEMENT_WORKFLOW, JUDGEMENT_RUNNER);
+  const answer = answerFrom(stage, input, result);
+  const answeredBy = answeringModel(result, args.routing);
   const records = join(run.runDir, "judgements");
   mkdirSync(records, { recursive: true });
-  writeFileSync(join(records, `${attempt}.json`), `${JSON.stringify(judgementRecord(stage, input, answer, args.routing), null, 2)}\n`);
+  writeFileSync(join(records, `${attempt}.json`), `${JSON.stringify(judgementRecord(stage, input, answer, args.routing, answeredBy), null, 2)}\n`);
   run.judgementAnswers?.set(stage.name, answer);
+  run.judgementModels?.set(stage.name, answeredBy);
   return answer;
 }
 
@@ -221,6 +230,7 @@ export function openRun(env = process.env) {
     workspace: need("MINOS_WORKSPACE"),
     orientation: need("MINOS_ORIENTATION"),
     judgementAnswers: new Map(),
+    judgementModels: new Map(),
     forgeNotes: [],
     forge: (...args) => forge(run, args),
     dispatch: (name, workflow, runner) => dispatch(run, name, workflow, runner),
