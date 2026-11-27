@@ -954,6 +954,40 @@ push URL is disabled. A configured source that is missing or empty is recorded
 as a misconfiguration and reported to the lead, never silently skipped; when
 every configured source fails, setup stops the run.
 
+### Repository descriptions
+
+With `description.enabled = true`, under `[repositories.description]` in
+`service.toml` or `[description]` in a repository's own file, Minos keeps
+a description of the repository: an account of its layout, its
+components and how they connect, written by a model from the default
+branch. Every review of the repository shows it to the review legs, push
+inspection and verdict classification beside the guidance sources, as a
+map of the code made from another commit and never as the project's
+intent. It is off until enabled.
+
+Each sweep pass reads the commit each enabled repository's default branch
+stands at (the adaptation's `default-branch-tip` operation) and, when the
+description kept was made from another commit or none is kept, starts a
+`minos-describe-<forge>-<owner>-<repo>` unit. The unit runs `minos
+describe`, which runs `describe-body` from the directory of the
+repository's `adaptation.run-body`: it clones the default branch at that
+commit, provisions the engines `run-body.env` names as a run does, and asks
+the `repository-description` stage (routing role `description`) to revise
+the kept description against the change. A description unit is not a run:
+it takes no place under `runs.max-concurrent`, runs at most once per
+repository at a time, and shares the runs slice, memory ceiling and
+duration ceiling of a run. A failed description is reported in the unit's
+journal with the end of the stage's log, and the same commit is not tried
+again for an hour; a default branch that has moved is described at once.
+
+The description is kept as one record per repository under
+`<runs.dir>/.descriptions/`, with the commit it was made from. A run copies
+it into its own directory at setup, so every leg of one run is shown the
+same description. The record is a cache: removing it costs one new
+description. The sweep removes the record of a repository whose
+description is switched off or that is no longer enrolled, and a run of
+such a repository is shown none.
+
 ## Filing deduplication
 
 Each filed entry — whether to a file, an issue, or a pull-request comment —

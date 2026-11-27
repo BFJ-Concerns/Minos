@@ -151,6 +151,13 @@ type RepositoryMetadata struct {
 	DefaultBranch string `json:"default_branch"`
 }
 
+// BranchTip is the commit a repository's default branch stands at. Commit
+// is empty for a repository whose default branch holds no commit yet.
+type BranchTip struct {
+	DefaultBranch string `json:"default_branch"`
+	Commit        string `json:"commit"`
+}
+
 // CloneCredential is the HTTPS git credential the forge's adaptation derives
 // for a repository. Public repositories may allow anonymous clones. Callers
 // keep passwords out of process arguments and logs.

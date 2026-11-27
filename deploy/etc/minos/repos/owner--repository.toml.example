@@ -29,6 +29,8 @@ repo = "REPLACE_WITH_FORGEJO_REPOSITORY"
 # kind = "file"
 # repository = "REPLACE_WITH_OWNER/REPLACE_WITH_PLANNING_REPOSITORY"
 # path = "ISSUES.md"
+# [description]
+# enabled = true
 # [markers]
 # in-flight = {label = "REPLACE_WITH_IN_FLIGHT_LABEL"}
 # clean = {reaction = "+1"}

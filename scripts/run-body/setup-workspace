@@ -32,40 +32,8 @@ workspace_is_git_repository() {
   git -C "$MINOS_WORKSPACE" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
-# The forge's adaptation answers every forge question, so nothing here names
-# a forge's routes or reads its credential file.
-# clone_url prints the clone URL the forge reports for owner/name.
-clone_url() {
-  "$MINOS_BIN" forge repository-metadata "${1%%/*}" "${1#*/}" | jq -er '.clone_url'
-}
-
-# Each network operation uses the credential for its own repository. An
-# owner-only temporary config gives Git the header without putting it in argv.
-authenticated_git() (
-  git_repository="$1"
-  shift
-  if ! clone_credential="$("$MINOS_BIN" forge clone-credential "${git_repository%%/*}" "${git_repository#*/}")"; then
-    echo "setup-workspace: the forge supplied no clone credential for $git_repository" >&2
-    exit 1
-  fi
-  if ! git_authorisation="$(printf '%s' "$clone_credential" | jq -er '
-    if .anonymous == true then ""
-    elif (.username | type) == "string" and .username != "" and (.password | type) == "string" and .password != ""
-    then "Authorization: Basic " + ((.username + ":" + .password) | @base64)
-    else error("malformed") end' 2>/dev/null)"; then
-    echo "setup-workspace: the forge's clone credential for $git_repository is malformed" >&2
-    exit 1
-  fi
-  export GIT_TERMINAL_PROMPT=0
-  if [ -z "$git_authorisation" ]; then
-    git "$@"
-  else
-    git_config="$(mktemp "$MINOS_RUN_DIR/.git-auth.XXXXXX")" || exit 1
-    trap 'rm -f "$git_config"' 0
-    printf '[http]\n\textraHeader = %s\n' "$git_authorisation" >"$git_config" || exit 1
-    git -c "include.path=$git_config" "$@"
-  fi
-)
+# shellcheck source=scripts/run-body/forge-git.sh
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/forge-git.sh"
 
 if ! "$MINOS_BIN" forge snapshot >"$snapshot_file"; then
   echo "setup-workspace: pull request snapshot failed" >&2
@@ -308,6 +276,24 @@ elif [ "$guidance_entries" = '[]' ]; then
   exit 1
 fi
 
+# The repository description the service keeps travels as a copy in the
+# run directory, so every leg of the run is shown the one description
+# whatever the service keeps by the time the leg starts. It is grounding,
+# never required: a record that cannot be copied leaves the run without
+# one, and the review goes on.
+repository_description=""
+if [ -n "${MINOS_REPOSITORY_DESCRIPTION:-}" ]; then
+  description_copy="$MINOS_RUN_DIR/repository-description.json"
+  if cp "$MINOS_REPOSITORY_DESCRIPTION" "$description_copy.next" 2>/dev/null &&
+    jq -e '.kind == "minos-repository-description-v1"' "$description_copy.next" >/dev/null 2>&1 &&
+    mv "$description_copy.next" "$description_copy"; then
+    repository_description="$description_copy"
+  else
+    rm -f "$description_copy.next"
+    echo "setup-workspace: the repository description at $MINOS_REPOSITORY_DESCRIPTION could not be copied; the run goes on without it" >&2
+  fi
+fi
+
 printf '%s\n%s\n' "$guidance_entries" "$misconfigurations" | jq -s \
   --arg repository "$MINOS_WORKSPACE" \
   --arg head "$checked_out_head" \
@@ -316,5 +302,7 @@ printf '%s\n%s\n' "$guidance_entries" "$misconfigurations" | jq -s \
   --arg repo "$MINOS_REPO_NAME" \
   --arg pr "$MINOS_PR" \
   --arg date "$run_date" \
-  '{repository: $repository, head: $head, guidance: .[0], misconfigurations: .[1], pullRequest: $pull_request, source: {owner: $owner, repo: $repo, pr: $pr, date: $date}}' \
+  --arg repository_description "$repository_description" \
+  '{repository: $repository, head: $head, guidance: .[0], misconfigurations: .[1], pullRequest: $pull_request, source: {owner: $owner, repo: $repo, pr: $pr, date: $date}}
+    + (if $repository_description == "" then {} else {repositoryDescription: $repository_description} end)' \
   >"$MINOS_ORIENTATION"

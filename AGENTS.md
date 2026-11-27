@@ -128,6 +128,13 @@ Claude Code by default or on Codex (`MINOS_LEAD_ENGINE`).
   requested or incomplete — and carries the last head a run finished on
   while a later one is in hand. The command writes the record; a run names
   a state and composes the text below it.
+- A repository with `description.enabled` on has a description kept of
+  it, written by the `repository-description` stage from its default
+  branch. The sweep asks of current forge state whether one is due
+  (`internal/shell/describe.go`) and starts a `minos-describe-` unit,
+  which is no run and takes no run place; a run is handed a copy of the
+  kept record, which its legs are shown beside the guidance and never as
+  the project's intent.
 - Webhooks and the sweep both reconcile current forge state. The
   completion marker is head-bound — the summary record saying clean or
   changes requested of the current head, or, on a head finished by a run
