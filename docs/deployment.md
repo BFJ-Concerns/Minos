@@ -39,9 +39,32 @@ may sit on another forge or be more widely readable than the repository
 reviewed (see *How runs and the sweep behave* below). Enrol a private repository only where
 its owner accepts all three.
 
+## Check the release binary
+
+In the directory containing the downloaded `minos-linux-amd64`, set `tag`
+to the release's exact tag and run the check below. It compares the local
+file with the SHA-256 digest GitHub records for that release asset. Install
+the file only if the command prints `minos-linux-amd64: OK`.
+
+```sh
+tag=vX.Y.Z
+digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/tags/$tag" |
+  jq -er '.assets[] | select(.name == "minos-linux-amd64")
+    | .digest | strings | select(test("^sha256:[0-9a-f]{64}$"))') &&
+  printf '%s  minos-linux-amd64\n' "${digest#sha256:}" | sha256sum --check --strict
+```
+
+[releases]: https://github.com/BFJ-Concerns/Minos/releases
+
 ## Install and configure
 
-1. Build and install `cmd/minos` as `/usr/local/bin/minos`.
+1. On Linux amd64, download `minos-linux-amd64` from the
+   [GitHub releases page][releases]. [Check its SHA-256 digest](#check-the-release-binary)
+   and install it with `sudo install -m 0755 minos-linux-amd64 /usr/local/bin/minos`.
+   Use the source files for the same tag for the remaining steps. For a
+   release without a binary asset or for another architecture,
+   [build from source](../README.md#building-from-source) and install the
+   resulting `minos` as `/usr/local/bin/minos`.
 2. Install the whole of `scripts/adaptations/` under
    `/opt/minos/adaptations` — one directory per forge (`forgejo`, `github`),
    each keeping its basenames and modes; install the whole of `scripts/run-body/`

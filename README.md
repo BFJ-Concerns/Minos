@@ -105,8 +105,8 @@ the code the change does carry can still block.
   as a transient user unit. In a container, that means an image that runs
   systemd as its init.
 - Claude Code or the Codex CLI (one is enough), Node.js, Git, Bash, curl, jq,
-  openssl, the OpenSSH client tools, tar, zstd, sha256sum and GNU find, plus
-  Go to build the service binary.
+  openssl, the OpenSSH client tools, tar, zstd, sha256sum and GNU find.
+  Building the service binary from source also requires Go.
   [`scripts/expected-tool-versions`](scripts/expected-tool-versions) records
   recommended minimum version ranges. The installer accepts newer stable
   versions. For tools with a recommended minimum, older or unrecognised
@@ -148,12 +148,17 @@ reviewed. Enrol a private repository only where its owner accepts all three.
 ## Installation
 
 The [deployment guide](docs/deployment.md) covers every step in detail,
-including the forge credentials and the archive host. In outline:
+including the forge credentials and the archive host. On Linux amd64,
+download `minos-linux-amd64` from the [GitHub releases page][releases] and
+[check its SHA-256 digest](docs/deployment.md#check-the-release-binary) before
+installing it. Use the source files for the same tag to install the runtime
+and configuration. If the release has no binary asset or you use a
+different architecture, [build from source](#building-from-source).
+
+[releases]: https://github.com/BFJ-Concerns/Minos/releases
 
 ```sh
-# Build and install the service binary.
-go build -o minos ./cmd/minos
-sudo install -m 0755 minos /usr/local/bin/minos
+sudo install -m 0755 minos-linux-amd64 /usr/local/bin/minos
 
 # Install the forge adaptations, per-run scripts and lead prompt under
 # /opt/minos (see the guide for the exact layout), then the review runtime.

@@ -2,37 +2,48 @@ name: Release
 
 on:
   push:
-    tags: ['v[0-9]*.[0-9]*.[0-9]*']
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
 
 jobs:
-  publish:
+  verify:
     if: ${{ !github.event.deleted }}
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       TAG: ${{ github.ref_name }}
+    outputs:
+      tag-object: ${{ steps.tag.outputs.object }}
+      digest: ${{ steps.binary.outputs.digest }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Check release tag
+        id: tag
         shell: bash
         run: |
           if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "Expected a release tag of the form vMAJOR.MINOR.PATCH, got $TAG" >&2
             exit 1
           fi
-          git rev-parse --verify "refs/tags/$TAG^{tag}"
+          tag_object=$(git rev-parse --verify "refs/tags/$TAG^{tag}")
+          echo "object=$tag_object" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build Linux amd64 binary
+        id: binary
         shell: bash
         env:
           CGO_ENABLED: '0'
@@ -48,27 +59,74 @@ jobs:
             echo "Binary reports version $version, expected ${TAG#v}" >&2
             exit 1
           fi
-      - name: Publish release and verify asset digest
+          digest=$(sha256sum dist/minos-linux-amd64)
+          echo "digest=sha256:${digest%% *}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        id: upload
+        with:
+          name: minos-linux-amd64-${{ github.run_attempt }}
+          path: dist/minos-linux-amd64
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: dist
+      - name: Verify draft asset and publish release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          TAG_OBJECT: ${{ needs.build.outputs.tag-object }}
+          EXPECTED_DIGEST: ${{ needs.build.outputs.digest }}
         run: |
-          tag_object=$(git rev-parse "refs/tags/$TAG")
-          remote_tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')
-          if [[ "$tag_object" != "$remote_tag_object" ]]; then
-            echo "Release tag $TAG changed after checkout" >&2
-            exit 1
-          fi
+          repo="repos/$GITHUB_REPOSITORY"
+          check_tag() {
+            local remote_tag_object
+            remote_tag_object=$(gh api "$repo/git/ref/tags/$TAG" --jq '.object.sha')
+            if [[ "$remote_tag_object" != "$TAG_OBJECT" ]]; then
+              echo "Release tag $TAG changed after checkout" >&2
+              exit 1
+            fi
+          }
 
-          asset=dist/minos-linux-amd64
+          name=minos-linux-amd64
+          asset="dist/$name"
           digest=$(sha256sum "$asset")
-          expected="sha256:${digest%% *}"
-          gh release create "$TAG" "$asset" --verify-tag --notes-from-tag --title "$TAG"
-
-          published=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
-            --jq '.assets[] | select(.name == "minos-linux-amd64" and .state == "uploaded") | .digest')
-          if [[ "$published" != "$expected" ]]; then
-            echo "Release asset digest mismatch: expected $expected, got $published" >&2
+          if [[ "sha256:${digest%% *}" != "$EXPECTED_DIGEST" ]]; then
+            echo "Downloaded build artefact does not match $EXPECTED_DIGEST" >&2
             exit 1
           fi
-          echo "Verified minos-linux-amd64: $published"
+
+          check_tag
+          notes=$(gh api "$repo/git/tags/$TAG_OBJECT" --jq '.message')
+          draft=$(gh api --method POST "$repo/releases" \
+            -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
+            -f name="$TAG" -f body="$notes" -F draft=true)
+          release_id=$(jq -er '.id' <<< "$draft")
+          echo "Created draft release $release_id for $TAG"
+
+          upload_url=$(jq -er '.upload_url' <<< "$draft")
+          curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Content-Type: application/octet-stream' \
+            --data-binary "@$asset" "${upload_url%%\{*}?name=$name" > /dev/null
+
+          release="$repo/releases/$release_id"
+          uploaded=$(gh api "$release" \
+            --jq 'select(.draft) | .assets[] | select(.name == "minos-linux-amd64" and .state == "uploaded") | .digest')
+          if [[ "$uploaded" != "$EXPECTED_DIGEST" ]]; then
+            echo "Draft asset digest mismatch: expected $EXPECTED_DIGEST, got $uploaded" >&2
+            exit 1
+          fi
+          echo "Verified $name: $uploaded"
+
+          check_tag
+          gh api --method PATCH "$release" -F draft=false --jq '.html_url'
