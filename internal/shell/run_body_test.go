@@ -873,6 +873,35 @@ printf '%s\n' "${alive:-none}" >"$1/alive-at-archive"
 	assertProcessesGone(t, append(pids, recordedPIDs(t, filepath.Join(fixture.runDir, "helper-pid"))...))
 }
 
+func TestRunBodyStopsARunsStrayWorkersWhenTheDriverEndsByItself(t *testing.T) {
+	for _, ending := range []struct{ name, body string }{
+		{"failing", "process.exit(1);"},
+		{"completing", `writeFileSync(join(process.env.MINOS_RUN_DIR, "lead-complete"), "clean\n");`},
+	} {
+		t.Run(ending.name, func(t *testing.T) {
+			fixture := scriptedDriverFixture(t, `
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+const worker = execFileSync("sh", ["-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!"], { encoding: "utf8" }).trim();
+writeFileSync(join(process.env.MINOS_RUN_DIR, "driver-pids"), worker + "\n");
+`+ending.body+"\n")
+			archive := filepath.Join(fixture.root, "archive-run")
+			writeScript(t, archive, `#!/usr/bin/env sh
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  pid="$(cat "$1/driver-pids")"
+  kill -0 "$pid" 2>/dev/null || { echo none >"$1/alive-at-archive"; exit 0; }
+  sleep 0.1
+done
+echo "$pid" >"$1/alive-at-archive"
+`)
+			// The exit status each ending gives is other tests' concern.
+			_, _ = fixture.execute(map[string]string{"MINOS_ARCHIVE_RUN": archive})
+			assertContainsFile(t, filepath.Join(fixture.runDir, "alive-at-archive"), "none")
+		})
+	}
+}
+
 func TestRunBodyCarriesARepinnedTargetIntoTheRun(t *testing.T) {
 	repinned := strings.Repeat("c", 40)
 	fixture := scriptedDriverFixture(t, `

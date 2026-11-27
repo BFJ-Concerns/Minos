@@ -135,7 +135,8 @@ run_processes() {
 }
 
 # stop_process_tree ROOT [descendants] kills ROOT and the run's processes
-# around it (run_processes), or all of those but ROOT. They are frozen
+# around it (run_processes), or all of those but ROOT. A ROOT of "none"
+# takes only the processes carrying the run's environment. They are frozen
 # first and re-read until no new
 # process appears, so nothing forks past the kill, and is then killed
 # outright: what it was doing is abandoned with the run.
@@ -658,6 +659,11 @@ if [ -n "${MINOS_RUN_DRIVER:-}" ]; then
       driver_status=75
     fi
   fi
+  # The driver has ended, so what is left of the run is a stray: a worker
+  # re-parented when its launcher exited. Stop it before the archive reads
+  # and removes the run directory. "none" names no process, so only those
+  # carrying the run's environment are found.
+  stop_process_tree none
   exit "$driver_status"
 fi
 
