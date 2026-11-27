@@ -673,7 +673,7 @@ case "$1" in
   earlier) printf '%s\n' '{"head":"old-sha","outcome":"clean","ancestor":true,"changed_paths":[]}' ;;
   threads) printf '%s\n' '[]' ;;
   approve) printf '%s\n' '{"outcome":"not-needed"}' ;;
-  claim|status|marker) printf '%s\n' '{"outcome":"applied"}' ;;
+  claim|status|marker|summary) printf '%s\n' '{"outcome":"applied"}' ;;
   *) exit 2 ;;
 esac
 `)
@@ -694,6 +694,9 @@ esac
 	}
 	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "clean")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "report.md"), "No file changed.")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "summary head-sha target-sha inspecting")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "summary head-sha target-sha clean")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "summary-comment.md"), "no blocking findings")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "status head-sha target-sha clean")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "marker head-sha target-sha clean add")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "marker head-sha target-sha in-flight remove")

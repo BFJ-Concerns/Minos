@@ -3,12 +3,11 @@
 [![CI](https://github.com/BFJ-Concerns/Minos/actions/workflows/ci.yml/badge.svg)](https://github.com/BFJ-Concerns/Minos/actions/workflows/ci.yml)
 
 Minos is a self-hosted pull-request review service for GitHub and Forgejo.
-When a pull request opens or its head changes, Minos starts an AI lead
-(Claude Code by default) to review it. A panel of model
-reviewers examines the whole diff, and a verifier, by default from a
-different model family, checks every finding they raise. The lead then
-reports the result on the pull request with a commit status, a reaction or
-label, and, where there are findings, a review.
+When a pull request opens or its head changes, Minos inspects the change
+and decides what to review. A panel of model reviewers examines the
+selected diff, and a verifier, by default from a different model family,
+checks every finding they raise. Minos reports the result on the pull
+request.
 
 Minos only reviews. It never builds or tests the change, never pushes to the
 pull-request branch and never merges. Fixing and landing stay with the
@@ -20,12 +19,12 @@ author, and the forge's own CI remains the build evidence.
    pull request that Minos has not yet finished reviewing at its current
    head. Pull requests on a work-in-progress branch, or on Forgejo blocked
    by an unresolved dependency, wait.
-2. The run clones the pull request at its head. The lead marks it as in
+2. The run clones the pull request at its head. Minos marks it as in
    progress (on Forgejo it also requests a review from the bot account) and
    reads the project's guidance (the configured sources, or else the first
    non-empty file among `AGENTS.md`, `CLAUDE.md` and `README.md`) along with
    the pull request's title and description.
-3. The lead decides how much review this head needs. A pull request's
+3. Minos decides how much review this head needs. A pull request's
    first head is reviewed in full, unless nothing in it gives a reviewer
    anything to judge. A later head is usually reviewed only for what the
    author changed since the head Minos last finished on, or not at all when
@@ -43,7 +42,7 @@ author, and the forge's own CI remains the build evidence.
    unsettled one is filed as an open question where the filing destination
    is a file or an issue, and goes nowhere otherwise. The repository's own
    [review briefs](#review-briefs) then run the same way.
-5. The lead classifies the verdict, guided by the repository's severity
+5. Minos classifies the verdict, guided by the repository's severity
    threshold, and publishes the result. A finding Minos has already posted
    on the pull request is not posted again while the code it cites is
    unchanged. An earlier blocking finding still counts on a later head
@@ -75,16 +74,37 @@ other than the one that proposed it.
 
 ## What the author sees
 
-Minos reports through a commit status (`Minos` by default), a reaction or
-label on the pull request, and, where there are findings, a review.
+On a scripted installation, Minos posts one summary comment when it first
+claims the pull request and edits it in place for subsequent updates and
+heads. The comment names the head and target, and shows whether Minos is
+inspecting, reviewing, finished clean, requesting changes or incomplete.
+For an incomplete run it tells you which part of the run stopped.
+
+The table gives one row for each dispatched specialist concern and each
+repository review brief. A completed section counts the confirmed findings
+it contributed, including advisory findings. If several write-ups merge
+into one finding, it counts once per section that contributed a write-up.
+Skipped sections give the reason they were skipped. If inspection finishes
+the head without sending it to review, there is no section table.
+
+The comment lists earlier blocking findings that still stand, with their
+original locations, heads and any titles from the earlier review. Those
+findings can keep the result at changes requested even when inspection
+called for no new review. A request-changes review carries the round's new
+blocking findings.
+
+Minos also reports through a commit status (`Minos` by default), a reaction
+or label on the pull request, and a review when it has new blocking
+findings or needs to supersede a previous request for changes. Installations
+using the resident lead report through these surfaces.
 
 | Outcome | Status | On the pull request |
 |---------|--------|---------------------|
 | Under review | `pending` — Reviewing changes | The in-flight marker (an `eyes` reaction by default) |
 | Continuing | `pending` — Review continuing in a fresh run | The in-flight marker stays while a fresh run carries on the review |
-| Changes needed | `failure` — Changes need attention | A request-changes review carrying the blocking findings, inline where they can be anchored to the diff and in the review body otherwise, plus the attention marker if one is configured |
+| Changes needed | `failure` — Changes need attention | New blockers go in a request-changes review, inline where they can be anchored to the diff and in the review body otherwise. Minos adds the attention marker if one is configured |
 | Clean | `success` — Changes approved | The clean marker (a `+1` reaction by default), and an approving review where Minos's latest verdict on the pull request had requested changes |
-| Incomplete | `error` — Review incomplete | No review; the head is retried on a later sweep pass. A run that fails before the lead starts writes no status |
+| Incomplete | `error` — Review incomplete | The next sweep can retry an eligible head. A run that fails during setup writes no status |
 
 Each finding comment opens with **Blocking** and its severity, and closes
 with the models that proposed and verified it (for example, *Proposed by

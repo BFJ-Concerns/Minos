@@ -1,20 +1,20 @@
 import { CHANGES_REQUESTED, CLEAN } from "../run-endings.mjs";
-import { applied, movedHead, setStatus } from "./forge-writes.mjs";
+import { applied, movedHead, setStatus, writeSummary } from "./forge-writes.mjs";
+import { summaryFacts } from "./summary-facts.mjs";
 
-export async function conclude(run, { publication, outstanding }) {
+export async function conclude(run, settled) {
+  const { publication, outstanding } = settled;
   if (!Array.isArray(outstanding)) throw new Error("earlier findings have no settlement result");
   const currentBlock = publication?.plan.verdict === "request-changes";
   const blocked = currentBlock || outstanding.length > 0;
-  const approval = blocked ? null : await applied(run, "approve", [run.head, run.target], ["applied", "not-needed"]);
+  if (!blocked) await applied(run, "approve", [run.head, run.target], ["applied", "not-needed"]);
+  const outcome = blocked ? CHANGES_REQUESTED : CLEAN;
+  await writeSummary(run, outcome, summaryFacts(settled));
+
   const status = blocked ? "attention" : "clean";
   const terminalStatusProblem = await setStatus(run, status);
-  // A current-head verdict can spend the head even when the informational
-  // status fails. With neither durable write, the sweep still sees it as eligible.
-  if (terminalStatusProblem && !currentBlock && approval?.outcome !== "applied") {
-    throw new Error(terminalStatusProblem);
-  }
-  // A confirmed status or review already records the verdict. The reaction
-  // or label is an additional signal and can fail independently.
+  // The summary records the verdict. The reaction or label is an
+  // additional signal and can fail independently.
   let terminalMarkerProblem;
   try {
     await applied(run, "marker", [run.head, run.target, status, "add"]);
@@ -26,7 +26,7 @@ export async function conclude(run, { publication, outstanding }) {
     ? "this run published blocking findings"
     : "blocking findings from an earlier review remain outstanding";
   return {
-    outcome: blocked ? CHANGES_REQUESTED : CLEAN,
+    outcome,
     ...(blocked ? { terminalCause: cause } : {}),
     terminalStatusProblem, terminalMarkerProblem,
   };

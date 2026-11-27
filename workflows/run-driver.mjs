@@ -51,10 +51,11 @@ import { recordFailure } from "./run-steps/record-failure.mjs";
 import { review } from "./run-steps/review.mjs";
 import { reviewBriefs } from "./run-steps/review-briefs.mjs";
 import { settleEarlierFindings } from "./run-steps/settle-earlier-findings.mjs";
+import { showReviewing } from "./run-steps/show-reviewing.mjs";
 import { withdraw } from "./run-steps/withdraw.mjs";
 import { writeReport } from "./run-steps/write-report.mjs";
 
-export const COURSE = [claim, markWorking, inspectPush, review, reviewBriefs, classify, settleEarlierFindings, publish, conclude];
+export const COURSE = [claim, markWorking, inspectPush, showReviewing, review, reviewBriefs, classify, settleEarlierFindings, publish, conclude];
 export const CLOSING = [recordFailure, withdraw, writeReport];
 
 const pressureBoundaries = new Map([
