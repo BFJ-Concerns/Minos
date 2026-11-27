@@ -671,9 +671,10 @@ again; a list or table is typed as the file would hold it after the key's
 equals sign.
 
 - A change is written to the same file you would edit by hand, `service.toml`
-  or the repository's file under `repos/`, with your comments and layout left
-  as they were. The receiver needs write access to the configuration
-  directory and `repos/` for this; without it a change is refused and says so.
+  or the repository's file under `repos/`. The surrounding comments and
+  layout stay where they are. Replacing or removing a multiline value can
+  discard comments inside it. The receiver needs write access to the
+  configuration directory and `repos/` and reports a refusal if it lacks access.
 - A change the service's own loader would refuse is refused before anything
   is written, with the loader's reason above the setting.
 - A change takes effect from the next run, since the sweep, each webhook

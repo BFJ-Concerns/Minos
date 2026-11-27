@@ -49,35 +49,53 @@ func tomlKeys(t reflect.Type, prefix string) []string {
 }
 
 func TestSettingsCatalogueDescribesEveryKeyTheLoaderAccepts(t *testing.T) {
-	want := map[string]bool{}
-	for _, key := range tomlKeys(reflect.TypeFor[ServiceConfig](), "") {
-		// The service-wide value of a per-repository setting is the
-		// repository setting's own entry.
-		key = strings.TrimPrefix(key, "repositories.")
-		if key == "routing.concerns.*" {
-			for _, concern := range specialistConcerns {
-				want["routing.concerns."+concern] = true
-			}
-			continue
-		}
-		want[key] = true
-	}
+	serviceKeys := tomlKeys(reflect.TypeFor[ServiceConfig](), "")
+	var repoKeys []string
 	for _, key := range tomlKeys(reflect.TypeFor[RepoConfig](), "") {
 		switch key {
 		case "forge", "owner", "repo":
-			// The repository's identity names its page; it is not edited.
-		case "routing.concerns.*":
+			// Repository identity names the page and is edited by hand.
 		default:
-			want[key] = true
+			repoKeys = append(repoKeys, key)
 		}
 	}
-	var wanted []string
-	for key := range want {
-		wanted = append(wanted, key)
+	var serviceCatalogue, repoCatalogue []string
+	for _, setting := range settingsCatalogue() {
+		switch setting.Scope {
+		case ServiceScope:
+			serviceCatalogue = append(serviceCatalogue, setting.Name())
+		case RepositoryScope:
+			serviceCatalogue = append(serviceCatalogue, dottedTOMLKey(ServiceWideKey(setting.Key)))
+			repoCatalogue = append(repoCatalogue, setting.Name())
+		case RepositoryFileScope:
+			repoCatalogue = append(repoCatalogue, setting.Name())
+		}
 	}
-	sort.Strings(wanted)
-	if got := catalogueKeys(); !slices.Equal(got, wanted) {
-		t.Errorf("the catalogue and the configuration disagree\ncatalogue: %v\nloader:    %v", got, wanted)
+	for _, setting := range forgeSettings {
+		serviceCatalogue = append(serviceCatalogue, "forges.*."+setting.Name())
+	}
+	for _, file := range []struct {
+		name      string
+		got, keys []string
+	}{
+		{"service.toml", serviceCatalogue, serviceKeys},
+		{"repository file", repoCatalogue, repoKeys},
+	} {
+		var want []string
+		for _, key := range file.keys {
+			if key == "routing.concerns.*" {
+				for _, concern := range specialistConcerns {
+					want = append(want, "routing.concerns."+concern)
+				}
+			} else {
+				want = append(want, key)
+			}
+		}
+		sort.Strings(file.got)
+		sort.Strings(want)
+		if !slices.Equal(file.got, want) {
+			t.Errorf("%s catalogue and loader disagree\ncatalogue: %v\nloader:    %v", file.name, file.got, want)
+		}
 	}
 }
 

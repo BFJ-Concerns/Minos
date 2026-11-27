@@ -495,23 +495,34 @@ func loadServiceConfigFile(root, path string) (ServiceConfig, error) {
 // root and resolves its knobs against the service-level values, so a
 // returned RepoConfig carries the values a run will honour.
 func LoadRepoConfigs(cfg ServiceConfig) ([]RepoConfig, error) {
-	dir := filepath.Join(cfg.Root, "repos")
-	entries, err := os.ReadDir(dir)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("read repository enrolment: %w", err)
+	paths, err := repoConfigPaths(cfg.Root)
+	if err != nil {
+		return nil, err
 	}
-	repos := make([]RepoConfig, 0, len(entries))
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".toml") {
-			continue
-		}
-		repo, err := loadRepoConfigFile(cfg, filepath.Join(dir, entry.Name()))
+	repos := make([]RepoConfig, 0, len(paths))
+	for _, path := range paths {
+		repo, err := loadRepoConfigFile(cfg, path)
 		if err != nil {
 			return nil, err
 		}
 		repos = append(repos, repo)
 	}
 	return repos, nil
+}
+
+func repoConfigPaths(root string) ([]string, error) {
+	dir := filepath.Join(root, "repos")
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read repository enrolment: %w", err)
+	}
+	var paths []string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".toml") {
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return paths, nil
 }
 
 // loadRepoConfigFile loads one repository file, an enrolled one or a

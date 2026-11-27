@@ -37,7 +37,8 @@ type StateReader struct {
 	recent *recentRunsCache
 }
 
-func newStateReader(root string) *StateReader {
+// NewStateReader reads state from the given configuration root.
+func NewStateReader(root string) *StateReader {
 	return &StateReader{root: root, recent: newRecentRunsCache()}
 }
 
@@ -52,6 +53,33 @@ func (reader *StateReader) Configuration() (ServiceConfig, []RepoConfig, error) 
 	}
 	repos, err := LoadRepoConfigs(cfg)
 	return cfg, repos, err
+}
+
+// SettingsRepositories lists the identities needed for settings links.
+// Repository settings can be repaired even when the run loader rejects them.
+func (reader *StateReader) SettingsRepositories() ([]RepoConfig, []string, error) {
+	paths, err := repoConfigPaths(reader.root)
+	if err != nil {
+		return nil, nil, err
+	}
+	var repos []RepoConfig
+	var unavailable []string
+	for _, path := range paths {
+		values, err := decodeTOMLFile(path)
+		if err != nil {
+			unavailable = append(unavailable, err.Error())
+			continue
+		}
+		forgeName, _ := values["forge"].(string)
+		owner, _ := values["owner"].(string)
+		repo, _ := values["repo"].(string)
+		if forgeName == "" || owner == "" || repo == "" {
+			unavailable = append(unavailable, path+" must name a forge, owner and repository.")
+			continue
+		}
+		repos = append(repos, RepoConfig{Path: path, Forge: forgeName, Owner: owner, Repo: repo})
+	}
+	return repos, unavailable, nil
 }
 
 // ServiceSettings reads every setting of service.toml, as it stands on disk

@@ -15,7 +15,8 @@ import (
 // the deployer would have edited: service.toml, or the repository's own file
 // under repos/. There is no second store, so the next run reads the change
 // the way it reads a hand edit, and the deployer who opens the file finds
-// their comments and layout as they left them with the one key changed.
+// the surrounding comments and layout where they left them. Comments
+// inside a replaced or removed multiline value can be lost.
 //
 // A setting is named by its key path in the file it is written to. A
 // per-repository setting has the same key in a repository's file and, for
@@ -49,7 +50,7 @@ func WriteServiceSetting(root string, key []string, value any) error {
 }
 
 // WriteRepositorySetting sets or removes one key of an enrolled repository's
-// own file. repo is as LoadRepoConfigs returned it.
+// own file. repo identifies the file under this root's repos directory.
 func WriteRepositorySetting(root string, repo RepoConfig, key []string, value any) error {
 	if filepath.Dir(repo.Path) != filepath.Join(root, "repos") {
 		return fmt.Errorf("%s is not a repository file of %s", repo.Path, root)
@@ -85,7 +86,7 @@ func writeSetting(path string, key []string, value any, loads func(candidate str
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	if edited == string(original) {
-		return nil
+		return loads(path)
 	}
 	candidate, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.candidate")
 	if err != nil {

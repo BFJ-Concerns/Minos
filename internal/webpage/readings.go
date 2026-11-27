@@ -37,6 +37,8 @@ type Readings struct {
 	RecentRuns func(ctx context.Context, hours, limit int) ([]shell.RecentRun, time.Time, error)
 	// FindingHistoryPullRequests lists a page of pull requests in every state.
 	FindingHistoryPullRequests func(ctx context.Context, repo shell.RepoConfig, page int) ([]shell.FindingHistoryPullRequest, bool, error)
+	// SettingsRepositories reads enrolment identities and reports unreadable files.
+	SettingsRepositories func() ([]shell.RepoConfig, []string, error)
 	// ServiceSettings is every setting service.toml holds, the service-wide
 	// value of each per-repository setting among them, and where each
 	// value comes from.
@@ -57,6 +59,7 @@ func readingsFrom(state *shell.StateReader) Readings {
 		RecentRuns:                 state.RecentRuns,
 		FindingHistoryPullRequests: state.FindingHistoryPullRequests,
 		ReviewThreads:              state.ReviewThreads,
+		SettingsRepositories:       state.SettingsRepositories,
 		ServiceSettings:            state.ServiceSettings,
 		RepositorySettings:         state.RepositorySettings,
 	}

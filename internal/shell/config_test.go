@@ -91,15 +91,25 @@ func TestLoadServiceConfigRequiresPositiveEnsembleConcurrency(t *testing.T) {
 }
 
 func TestLoadServiceConfigDefaultsEachUnsetEngineConcurrency(t *testing.T) {
-	root := t.TempDir()
-	contents := strings.Replace(testServiceConfig,
-		"concurrency-claude = 10\nconcurrency-codex = 6\n", "concurrency-claude = 3\n", 1)
-	if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadServiceConfig(root)
-	if err != nil || cfg.Ensemble.ConcurrencyClaude != 3 || cfg.Ensemble.ConcurrencyCodex != 2 {
-		t.Fatalf("concurrency = %d/%d (%v), want Claude's 3 and Codex's default 2", cfg.Ensemble.ConcurrencyClaude, cfg.Ensemble.ConcurrencyCodex, err)
+	for _, test := range []struct {
+		engine        string
+		claude, codex int
+	}{
+		{"claude", 3, 2},
+		{"codex", 2, 3},
+	} {
+		t.Run(test.engine, func(t *testing.T) {
+			root := t.TempDir()
+			contents := strings.Replace(testServiceConfig,
+				"concurrency-claude = 10\nconcurrency-codex = 6\n", "concurrency-"+test.engine+" = 3\n", 1)
+			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadServiceConfig(root)
+			if err != nil || cfg.Ensemble.ConcurrencyClaude != test.claude || cfg.Ensemble.ConcurrencyCodex != test.codex {
+				t.Fatalf("concurrency = %d/%d (%v), want %d/%d", cfg.Ensemble.ConcurrencyClaude, cfg.Ensemble.ConcurrencyCodex, err, test.claude, test.codex)
+			}
+		})
 	}
 }
 
