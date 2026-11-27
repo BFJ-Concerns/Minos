@@ -51,3 +51,11 @@ test("a concern file needs exactly a summary in its front matter and a body", ()
   assert.throws(() => parseConcern("x", "---\nsummary: s\nowner: me\n---\nBody."), /exactly a non-empty summary/);
   assert.throws(() => parseConcern("x", "---\nsummary: s\n---\n"), /has no body/);
 });
+
+test("the repository prompt keeps a whole-scope brief's older defects in findings, not observations", () => {
+  const { prompts } = reviewPrompts(repositoryRoot);
+  const observationLine = prompts.repository.split("\n").find((line) => line.startsWith("- `outOfScopeObservations`:"));
+  assert.ok(observationLine, "the repository prompt says what an observation is");
+  assert.match(observationLine, /the change did not introduce, other than those an assignment of a whole part puts in `findings`/);
+  assert.match(prompts.repository, /whether the change introduced a fault does not decide where you report it: it goes in `findings` either way/);
+});
