@@ -18,8 +18,7 @@ head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
 statuses="$(commit_statuses "$owner" "$repo" "$head_sha")"
 reviews="$(collect "/repos/${owner}/${repo}/pulls/${pr}/reviews")"
 
-# head_branch is the source branch's name wherever it lives — the run
-# contract requires it, and a fork's branch is still the head's name.
+# Use the source branch name, including when it belongs to a fork.
 head_branch="$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
 case "$head_branch" in
   refs/pull/*/head) head_branch="" ;;
