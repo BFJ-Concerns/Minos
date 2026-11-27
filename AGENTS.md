@@ -66,10 +66,11 @@ nothing else.
   (`lifecycle/lifecycle.md`, step 2). That earlier head is known by the
   content of the pull request's files, not by its commits (`minos forge
   earlier`), from a record kept under the runs directory. The record is a
-  cache: without it, `minos forge earlier` looks for Minos's result among
-  the pull request's recent commits, and a full review follows only when
-  the earlier head has left the history. The lifecycle dispatches no scope
-  workflow; `workflows/review-scope.js` ships unused.
+  cache: without it, `minos forge earlier` looks among the newest 20 of
+  the pull request's commits for one Minos marked clean by status or
+  requested changes on by review, and a full review follows when none
+  qualifies. The lifecycle dispatches no scope workflow;
+  `workflows/review-scope.js` ships unused.
 - The pull request carries only what blocks it. A confirmed finding that
   neither blocks nor takes a class is advisory and goes to the configured
   filing destination, as do unverified observations from outside the

@@ -88,8 +88,8 @@ needs; it is not required.
    In `run-body.env`:
 
    - set `MINOS_CLAUDE` to the absolute path of the installed Claude
-     executable — install Claude Code natively, not as an npm package,
-     whose shim a lead can migrate away from mid-run. The lead uses this
+     executable — install Claude Code natively, not as an npm package.
+     The lead uses this
      path directly; Ensemble workers resolve `claude` and `codex` by
      command name through the inherited PATH (the `environment.d` file
      from step 2), so both the absolute variable and PATH must be correct;
@@ -221,7 +221,10 @@ needs; it is not required.
    the leg that merges findings one fix would resolve before they are
    verified. A finding a verifier raises while checking another is
    verified on the `proposer`'s routing when that runs on the other engine,
-   so it too is checked by the family that did not raise it. A configured role overrides only the fields it sets.
+   so it too is checked by the family that did not raise it. A configured
+   role overrides only the fields it sets, and a role that sets `model` must
+   also set `engine`, the model's family: a model alone stops the
+   configuration from loading.
 
    Size every capacity decision — this cap, the slice envelope, the box
    itself — by **anonymous memory plus swap peak, never the journal's cgroup
@@ -232,7 +235,10 @@ needs; it is not required.
    metric the run's pressure watch reads.
 
    `MINOS_LEAD_SILENCE_TIMEOUT` optionally overrides the supervisor's
-   3600-second no-output backstop. Keep the lifecycle's fallback wake shorter
+   3600-second backstop. The timer measures changes to files in the run
+   directory outside the run's private home, not the lead's output: a run
+   whose files have not changed for that long is stopped as a supervision
+   failure, however much the lead prints. Keep the lifecycle's fallback wake shorter
    than this value.
 
    Choose one Claude authentication mode in `run-body.env`:
@@ -405,8 +411,14 @@ second digest. Without an archive command, the sweep removes the directory
 after recording the digest.
 With `runs.failures-repo` configured, the sweep appends to the checkout's
 existing regular `FAILURES.md` and attempts to commit and push it.
-`provision-failure-checkout` clones the repository and configures Git, so
-`FAILURES.md` must already exist in the repository. Without
+`FAILURES.md` must already exist in the repository. Create the checkout with
+`provision-failure-checkout HTTPS_CLONE_URL DESTINATION CREDENTIAL_FILE`: it
+clones the repository and checks with a dry-run push that it can push to
+`main`. Its credential file is a plain access token on the first line, sent as
+`Authorization: token …`. That is the Forgejo token file as it stands; a
+GitHub App credential file does not work here, so give it a token that can
+clone and push the ledger repository. Later pushes authenticate through the
+forge adaptation as described below. Without
 `runs.failures-repo`, the sweep appends to `runs.failure-log` and limits access to the file's owner
 because a digest can contain transcript excerpts. Both destinations must be outside
 `runs.dir`. A failed append or archive leaves the run directory for retry.
@@ -438,17 +450,18 @@ When a run sets a `clean` or `attention` status on a head, Minos records
 which files the pull request changed and how, in `.reviewed/` under
 `runs.dir`, one file per pull request. A later run compares the new head with
 that record to decide how much to review again. The record is a cache.
-Without it, Minos looks among the last 20 commits of the pull request's
-current history for one carrying its own clean or attention result,
-and compares against that; when the earlier head is no longer in that
-history, as after a rebase, the next head is reviewed in full. The sweep deletes the
-record of a pull request that has closed, merged or gone from the forge, and
+Without it, Minos looks among the newest 20 commits of the pull request's
+current history, other than the head, for one that carries Minos's `clean`
+status or a Minos request-changes review, and compares against the first it
+finds. When none of those commits qualifies, because the earlier head was
+rewritten away or lies further back, the next head is reviewed in full. The
+sweep deletes the record of a pull request that has closed, merged or gone from the forge, and
 the records of a repository that no longer has a file under `repos/`.
 
 ## Reading run liveness
 
-The obvious liveness signals invert during a correct yield, so a *correctly
-behaving* lead is the case most likely to be misread as dead. While the lead
+The obvious liveness signals invert during a correct yield, so a correctly
+behaving lead can look dead. While the lead
 waits on a background workflow it has ended its turn: the run tree's scratch
 mtimes go stale, no lead processes are doing visible work, and the journal
 prints nothing — exactly the picture a dead run would show. Do not judge
@@ -463,7 +476,8 @@ systemctl --user list-units 'minos-run-*'
 ls -d /var/lib/minos/runs/minos-run-forgejo-owner-repo-pr1-*   # runs.dir as shipped
 ```
 
-A unit that is no longer `active` is not a live run, whatever its files say.
+A unit that is neither `activating` nor `active` is not a live run,
+whatever its files say; Minos itself counts both states as live.
 
 For a **Claude lead**, the run body asks Claude Code itself: it runs
 `claude agents --json --all` with the run's private home and reads the
@@ -670,7 +684,10 @@ a `[[guidance-sources]]` array in the repository's TOML file, each entry
 naming a `path` and an optional `repository` (owner/name on the same forge).
 When no sources are configured, the fallback reads the first non-empty file
 from `AGENTS.md`, `CLAUDE.md`, `README.md` in the reviewed repository — the
-first hit wins and later candidates are not combined. A configured source in a
+first hit wins and later candidates are not combined. Each guidance document
+must be at most 256 KiB (262,144 bytes): a larger one passes setup but stops
+the review workflows' input from being built, so the run cannot review. A
+configured source in a
 secondary repository is cloned read-only beside the workspace; the clone's
 push URL is disabled. A configured source that is missing or empty is recorded
 as a misconfiguration and reported to the lead, never silently skipped; when
