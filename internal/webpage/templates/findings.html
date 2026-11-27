@@ -1,0 +1,32 @@
+{{define "content"}}
+<p><a href="/">Repositories</a></p>
+<h1>Finding responses for {{.Repository.Owner}}/{{.Repository.Repo}}</h1>
+<p class="muted">{{.Repository.Forge}} · Inline findings on open, closed and merged pull requests.</p>
+{{if .Pulls}}
+<table class="finding-counts">
+<thead><tr><th scope="col">Pull request</th><th scope="col" class="numeric">Fixed</th><th scope="col" class="numeric">Rejected</th><th scope="col" class="numeric">Outstanding</th></tr></thead>
+<tbody>
+{{range .Pulls}}
+<tr>
+<th scope="row">{{if .URL}}<a href="{{.URL}}">#{{.Number}}</a>{{else}}#{{.Number}}{{end}}</th>
+{{if .Unavailable}}
+<td colspan="3" class="muted">Thread state unavailable</td>
+{{else}}
+<td class="numeric">{{.Fixed}}</td><td class="numeric">{{.Rejected}}</td><td class="numeric">{{.Outstanding}}</td>
+{{end}}
+</tr>
+{{end}}
+</tbody>
+</table>
+<p class="muted">A resolved thread counts as fixed unless the pull request author explicitly rejected it. A reply beginning with <q>Rejected</q> or <q>I reject this finding</q> on its own line, or followed by a colon and reason, records a rejection.</p>
+{{else}}
+<p class="empty">There are no pull requests on this page.</p>
+{{end}}
+{{if or .Previous .Next}}
+<nav class="pagination" aria-label="Pull request history">
+{{if .Previous}}<a href="?page={{.Previous}}">Newer pull requests</a>{{end}}
+<span>Page {{.Page}}</span>
+{{if .Next}}<a href="?page={{.Next}}">Older pull requests</a>{{end}}
+</nav>
+{{end}}
+{{end}}

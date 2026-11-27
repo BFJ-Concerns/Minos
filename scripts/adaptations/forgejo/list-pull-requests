@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+pulls="$(api GET "/api/v1/repos/$1/$2/pulls?state=all&sort=newest&limit=$4&page=$3")"
+printf '%s' "$pulls" | jq -ec '
+  if type != "array" then error("expected a pull request array") else
+    map({number: (.number // .index), author: (.user.login // .user.username // ""), url: (.html_url // "")})
+  end'

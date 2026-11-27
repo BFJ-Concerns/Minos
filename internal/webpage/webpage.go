@@ -57,6 +57,10 @@ type Page struct {
 // is one line here.
 var pages = []Page{
 	overviewPage,
+	queuePage,
+	livePage,
+	recentPage,
+	findingsPage,
 }
 
 // ErrNotFound, wrapped by a Show or Change, answers 404: the path names a

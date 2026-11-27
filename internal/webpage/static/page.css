@@ -311,3 +311,60 @@ button.quiet {
   max-width: 22rem;
   margin: 12vh auto 0;
 }
+
+.monitoring-list {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 0.5rem 1rem;
+  overflow-wrap: anywhere;
+}
+
+.run {
+  border-top: 1px solid var(--rule);
+  padding-bottom: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.run > h2 {
+  margin-top: 1rem;
+}
+
+.activity {
+  padding-inline-start: 1.25rem;
+}
+
+.activity li {
+  margin-bottom: 0.4rem;
+}
+
+.finding-counts th,
+.finding-counts td {
+  white-space: normal;
+}
+
+.pagination {
+  align-items: center;
+}
+
+@media (max-width: 34rem) {
+  body > header {
+    justify-content: space-between;
+  }
+
+  body > header > nav {
+    flex: 0 0 100%;
+    order: 1;
+  }
+
+  .monitoring-list {
+    display: block;
+  }
+
+  .monitoring-list dd {
+    margin-bottom: 0.75rem;
+  }
+
+  .finding-counts th,
+  .finding-counts td {
+    padding-inline: 0.25rem;
+  }
+}

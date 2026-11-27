@@ -35,6 +35,8 @@ type Readings struct {
 	// RecentRuns is the timing records archived in the last hours, at most
 	// limit, and when the archive host was last listed for them.
 	RecentRuns func(ctx context.Context, hours, limit int) ([]shell.RecentRun, time.Time, error)
+	// FindingHistoryPullRequests lists a page of pull requests in every state.
+	FindingHistoryPullRequests func(ctx context.Context, repo shell.RepoConfig, page int) ([]shell.FindingHistoryPullRequest, bool, error)
 	// ReviewThreads is the threads Minos opened on one pull request, as the
 	// forge holds them now. Each call reaches the forge.
 	ReviewThreads func(ctx context.Context, repo shell.RepoConfig, pullRequest int64) ([]forge.ReviewThread, error)
@@ -42,11 +44,12 @@ type Readings struct {
 
 func readingsFrom(state *shell.StateReader) Readings {
 	return Readings{
-		Configuration: state.Configuration,
-		Status:        state.Status,
-		Sweep:         state.Sweep,
-		RecentRuns:    state.RecentRuns,
-		ReviewThreads: state.ReviewThreads,
+		Configuration:              state.Configuration,
+		Status:                     state.Status,
+		Sweep:                      state.Sweep,
+		RecentRuns:                 state.RecentRuns,
+		FindingHistoryPullRequests: state.FindingHistoryPullRequests,
+		ReviewThreads:              state.ReviewThreads,
 	}
 }
 

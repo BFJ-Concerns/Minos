@@ -10,7 +10,7 @@
 </thead>
 <tbody>
 {{- range .Repositories}}
-<tr><td>{{.Owner}}/{{.Repo}}</td><td>{{.Forge}}</td><td>{{.Review.Threshold}}</td></tr>
+<tr><td><a href="/repositories/{{.Forge}}/{{.Owner}}/{{.Repo}}/findings">{{.Owner}}/{{.Repo}}</a></td><td>{{.Forge}}</td><td>{{.Review.Threshold}}</td></tr>
 {{- end}}
 </tbody>
 </table>

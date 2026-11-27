@@ -108,7 +108,7 @@ type ReconcileResult struct {
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (ReconcileResult, error) {
 	adapter, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
 	if err != nil {
-		return ReconcileResult{}, err
+		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "pull request snapshot unavailable"}, err
 	}
 	return reconcilePullRequestSnapshot(ctx, cfg, repo, facts, adapter, snapshot)
 }

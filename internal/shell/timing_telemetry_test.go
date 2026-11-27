@@ -1072,6 +1072,7 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "cgroup-death-evidence"), []byte("[memory.events]\noom_kill 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	writeTestFile(t, filepath.Join(runDir, "failure.log"), "review process stopped unexpectedly\n")
 	// Add a deterministic agent result under the nested layout the timing and
 	// archive scripts consume without talking to a model provider.
 	records := map[string]string{}
@@ -1156,9 +1157,18 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	if err != nil {
 		t.Fatalf("timing sidecar missing beside the tarball: %v", err)
 	}
-	var record timingRecord
+	var record struct {
+		timingRecord
+		Summary struct {
+			Outcome string
+			Reason  string `json:"failure_reason"`
+		} `json:"run_summary"`
+	}
 	if err := json.Unmarshal(content, &record); err != nil {
 		t.Fatalf("sidecar does not parse: %v\n%s", err, content)
+	}
+	if record.Summary.Outcome != "failed" || record.Summary.Reason != "review process stopped unexpectedly" {
+		t.Fatalf("timing sidecar lost the run's recorded failure: %#v", record.Summary)
 	}
 	if record.Kind != "minos-timing-record-v1" {
 		t.Fatalf("sidecar kind = %q", record.Kind)

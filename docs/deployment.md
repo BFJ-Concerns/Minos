@@ -626,6 +626,23 @@ The credential is the whole gate, so keep it as you would the forge token.
   the listener from the internet, have the proxy forward `/hooks/` alone
   unless you mean the sign-in page to be public too.
 
+**Queue** shows the last completed sweep's own timestamp, pull requests
+waiting for a run slot, and the reasons the sweep deferred or could not
+read the others. **Live runs** shows what the service can currently read
+about active pull requests, stages and dispatched workers.
+
+**Recent runs** uses the same archive listing as `/runs/recent`. The
+shipped archive command includes the outcome, elapsed time and available
+skip or failure evidence in its timing sidecars. Sidecars written without
+those details still appear with the recorded timing span where available.
+The operator page and the authenticated recent-runs endpoint both have
+access to that evidence.
+
+Open a repository from **Overview** to see its inline finding responses
+per pull request, including closed and merged requests. The page reads the
+forge on demand and shows when a pull request's thread state is
+unavailable.
+
 Without the key the receiver serves no page, and its root answers 404.
 
 ## Serving run status to an operator surface
