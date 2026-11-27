@@ -245,16 +245,27 @@ function shownToVerifier(subject) {
 }
 
 // Verifies every subject, then each finding the verifiers raised, in
-// rounds, each finding by a leg other than the one that raised it. What the
-// last round raises is returned unchecked.
-async function verifySubjects(subjects, labelPrefix, phaseName) {
+// rounds: what one round raises is merged like any proposed findings and
+// verified by legs of the next, never by the leg that raised it. What the
+// last round raises has no verdict, which leaves the run incomplete; it is
+// returned unchecked for the record. Null means a merge failed, which has
+// already left the run incomplete.
+async function verifySubjects(subjects, labelPrefix, mergeLabel, phaseName) {
   const verified = [];
   let pending = subjects;
   for (let round = 1; round <= contracts.verificationRounds && pending.length > 0; round += 1) {
     const raised = await verificationRound(pending, round === 1 ? labelPrefix : `${labelPrefix}-round-${round}`, phaseName);
     verified.push(...pending);
-    pending = raised;
+    if (raised.length === 0 || round === contracts.verificationRounds) {
+      pending = raised;
+      break;
+    }
+    const groups = await mergeProposed(raised, `${mergeLabel}-round-${round + 1}`, phaseName);
+    if (!groups) return { verified, unchecked: raised };
+    pending = groups.map(subjectOf);
   }
+  if (pending.length > 0)
+    incomplete.push(`verification stopped after ${contracts.verificationRounds} rounds with ${pending.length} finding(s) raised and not verified`);
   return { verified, unchecked: pending };
 }
 
@@ -298,6 +309,8 @@ async function verificationRound(subjects, labelPrefix, phaseName) {
         id: `${batch.label}:raised:${findingIndex + 1}`,
         finding,
         source: "verification",
+        reportedBy: "verification",
+        outsideConcern: false,
         proposingLabel: batch.label,
         members: [],
       });
@@ -585,7 +598,7 @@ const groups = await mergeProposed(proposed, "merge", "Merge");
 if (!groups) return envelope({ exploration, briefs, dispatches, reviewers: reviewerStates });
 
 phase("Verify");
-const { verified, unchecked } = await verifySubjects(groups.map(subjectOf), "verify", "Verify");
+const { verified, unchecked } = await verifySubjects(groups.map(subjectOf), "verify", "merge", "Verify");
 
 return envelope({
   exploration,

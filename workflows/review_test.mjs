@@ -150,7 +150,7 @@ function separateGroups(prompt) {
 function responder({ exploration = explorationFixture(), specialist, merge, verify } = {}) {
   return (label, prompt, opts) => {
     if (label === "exploration") return typeof exploration === "function" ? exploration(label, prompt, opts) : exploration;
-    if (label === "merge") return merge ? merge(label, prompt, opts) : separateGroups(prompt);
+    if (label === "merge" || label.startsWith("merge-round-")) return merge ? merge(label, prompt, opts) : separateGroups(prompt);
     if (label.startsWith("verify-"))
       return verify ? verify(label, prompt, opts) : verifierResult(prompt);
     if (specialist) return specialist(label, prompt, opts);
@@ -924,7 +924,7 @@ test("a problem a specialist meets outside its concern is verified like any find
   assert.equal(result.briefs[0].skipKind, "inapplicable");
 });
 
-test("a finding a verifier raises is verified by a later leg, and the last round's are returned unchecked", async (t) => {
+test("a finding a verifier raises is verified by a later leg, and one the last round raises leaves the run incomplete", async (t) => {
   let raisedCount = 0;
   const { result, calls } = await runScript(ARGS, responder({
     verify: (label, prompt) => ({
@@ -943,10 +943,51 @@ test("a finding a verifier raises is verified by a later leg, and the last round
   assert.deepEqual(result.uncheckedFindings.map(({ id, source }) => ({ id, source })), [
     { id: "verify-round-3-1-claude:raised:1", source: "verification" },
   ]);
+  assert.ok(result.incomplete.includes("verification stopped after 3 rounds with 1 finding(s) raised and not verified"));
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "incomplete");
+  assert.ok(verdict.incomplete.includes(
+    `finding "raised by verify-round-3-1-claude" has no complete verdict (raised in the last round of verification and never verified)`,
+  ));
+  assert.deepEqual(verdict.confirmedFindings, []);
+  assert.deepEqual(verdict.unsettledFindings, []);
+});
+
+test("findings verifiers raise in one round are merged before the next round verifies them", async (t) => {
+  const plan = [unit("logic", "logic"), unit("failure", "failure")];
+  const merges = [];
+  const { result, calls } = await runScript(ARGS, responder({
+    exploration: explorationFixture({ plan }),
+    specialist: (label) => specialistResult(Array.from({ length: label.includes("logic") ? 4 : 3 }, (_, index) =>
+      finding({ title: `${label} ${index}`, line: index + 1 }))),
+    merge: (label, prompt) => {
+      merges.push(label);
+      const ids = findingsFromVerifierPrompt(prompt).map((entry) => entry.id);
+      return label === "merge"
+        ? separateGroups(prompt)
+        : { groups: [{ findingIds: ids, primary: ids[0], sharedCause: "One fix." }] };
+    },
+    verify: (label, prompt) => ({
+      ...verifierResult(prompt),
+      newFindings: label.startsWith("verify-round-") ? [] : [finding({ title: "same defect both batches traced", line: 90 })],
+    }),
+  }));
+  assert.deepEqual(merges, ["merge", "merge-round-2"]);
+  const merged = calls.find((call) => call.opts.label === "merge-round-2");
+  assert.deepEqual(findingsFromVerifierPrompt(merged.prompt).map(({ id, reportedBy }) => ({ id, reportedBy })), [
+    { id: "verify-1-claude:raised:1", reportedBy: "verification" },
+    { id: "verify-2-claude:raised:1", reportedBy: "verification" },
+  ]);
+  const secondRound = calls.filter((call) => call.opts.label?.startsWith("verify-round-2-"));
+  assert.equal(secondRound.length, 1);
+  assert.equal(findingsFromVerifierPrompt(secondRound[0].prompt).length, 1);
+  const raised = result.proposedFindings.filter((entry) => entry.source === "verification");
+  assert.equal(raised.length, 1);
+  assert.deepEqual(raised[0].mergedFrom.map(({ id }) => id), ["verify-2-claude:raised:1"]);
+  assert.ok(result.requiredModelEvidence.some((leg) => leg.label === "merge-round-2" && leg.role === "merge"));
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
-  assert.equal(verdict.confirmedFindings.length, 3);
-  assert.deepEqual(verdict.unsettledFindings.map(({ id }) => id), ["verify-round-3-1-claude:raised:1"]);
+  assert.equal(verdict.confirmedFindings.length, 8);
 });
 
 test("an unsettled verdict reaches the verdict as an open question, never as a confirmed finding", async (t) => {

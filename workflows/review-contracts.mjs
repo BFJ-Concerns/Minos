@@ -9,8 +9,8 @@ export const VERIFIER_BATCH_SIZE = 6;
 
 // How many rounds of verification a workflow runs. The first checks the
 // proposed findings; each later one checks the findings verifiers raised in
-// the round before. A finding raised in the last round is never checked:
-// it is returned unchecked, and filed as an unsettled finding is.
+// the round before, merged first. A finding raised in the last round has no
+// verdict, so a run that reaches the limit with one is incomplete.
 export const VERIFICATION_ROUNDS = 3;
 
 export const SEVERITIES = ["Critical", "High", "Medium", "Low"];

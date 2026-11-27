@@ -246,7 +246,7 @@ test("a verdict outside confirmed, refuted and unsettled is no usable verdict an
   assert.deepEqual(adapterVerdict.unsettledFindings, []);
 });
 
-test("a finding raised in the last verification round stands as unsettled, unchecked", async (t) => {
+test("a finding raised in the last verification round has no verdict and withholds the run", async (t) => {
   const withUnchecked = {
     ...envelope,
     uncheckedFindings: [{
@@ -263,14 +263,8 @@ test("a finding raised in the last verification round stands as unsettled, unche
     }],
   };
   const adapterVerdict = await adjudicate({ envelope: withUnchecked, recordDir: fixtureArchive(t) });
-
-  assert.equal(adapterVerdict.status, "complete", adapterVerdict.incomplete.join("\n"));
-  assert.equal(adapterVerdict.confirmedFindings.length, 1);
-  assert.deepEqual(
-    adapterVerdict.unsettledFindings.map(({ id, verdict, severity }) => ({ id, verdict, severity })),
-    [{ id: "verify-1:raised:1", verdict: "unsettled", severity: "Medium" }],
-  );
-  assert.match(adapterVerdict.unsettledFindings[0].verification, /not itself checked/);
+  assertWithheld(adapterVerdict, 'finding "Second defect the verifier traced" has no complete verdict (raised in the last round of verification and never verified)');
+  assert.deepEqual(adapterVerdict.unsettledFindings, []);
 
   const malformed = await adjudicate({
     envelope: { ...withUnchecked, uncheckedFindings: [{ id: "verify-1:raised:1" }] },

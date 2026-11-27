@@ -104,7 +104,7 @@ function responder({ relevance, partition, specialist, merge, verify } = {}) {
       const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
       return { units: [{ id: "complete-scope", concern: "complete assigned scope", files }] };
     }
-    if (label === "brief-merge") return merge ? merge(label, prompt, opts) : separateGroups(prompt);
+    if (label === "brief-merge" || label.startsWith("brief-merge-round-")) return merge ? merge(label, prompt, opts) : separateGroups(prompt);
     if (label.startsWith("verify-")) {
       if (verify) return verify(label, prompt, opts);
       return {

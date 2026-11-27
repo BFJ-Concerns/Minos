@@ -374,23 +374,13 @@ export async function adjudicate({ envelope, recordDir }) {
   }).filter(Boolean);
 
   // A finding a verifier raised in the last round of verification was
-  // never checked; it stands beside the unsettled findings as one.
-  const unchecked = [];
+  // never verified: like any finding without a verdict, it leaves the run
+  // incomplete.
   if (envelope.uncheckedFindings !== undefined) {
     if (!Array.isArray(envelope.uncheckedFindings)) incomplete.push("envelope uncheckedFindings is unreadable");
     else envelope.uncheckedFindings.forEach((finding, index) => {
-      if (!validUncheckedFinding(finding)) {
-        incomplete.push(`unchecked finding ${index + 1} is malformed`);
-        return;
-      }
-      const { proposingLabel, ...rest } = finding;
-      unchecked.push({
-        ...rest,
-        verdict: UNSETTLED,
-        verification: "raised by a verifier in the last round of verification, and not itself checked",
-        outsideFact: "",
-        wouldSettle: "Checking the finding against the code at the head commit.",
-      });
+      if (!validUncheckedFinding(finding)) incomplete.push(`unchecked finding ${index + 1} is malformed`);
+      else incomplete.push(`finding "${finding.title}" has no complete verdict (raised in the last round of verification and never verified)`);
     });
   }
 
@@ -402,9 +392,7 @@ export async function adjudicate({ envelope, recordDir }) {
   );
   const complete = incomplete.length === 0;
   const confirmedFindings = complete ? adjudicated.filter((finding) => finding.verdict === CONFIRMED) : [];
-  const unsettledFindings = complete
-    ? [...adjudicated.filter((finding) => finding.verdict === UNSETTLED), ...unchecked]
-    : [];
+  const unsettledFindings = complete ? adjudicated.filter((finding) => finding.verdict === UNSETTLED) : [];
   const operatorAttention = confirmedFindings
     .filter((finding) => finding.operatorAttention)
     .map((finding) => ({

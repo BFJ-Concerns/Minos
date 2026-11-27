@@ -101,7 +101,7 @@ function respond(label, prompt) {
     const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
     return { units: [{ id: "complete-scope", concern: "complete assigned scope", files }] };
   }
-  if (label === "merge" || label === "brief-merge") {
+  if (label === "merge" || label === "brief-merge" || label.includes("merge-round-")) {
     return {
       groups: findingsFromVerifierPrompt(prompt).map((entry) => ({ findingIds: [entry.id], primary: entry.id, sharedCause: "" })),
     };
