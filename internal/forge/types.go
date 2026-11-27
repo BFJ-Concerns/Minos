@@ -88,9 +88,12 @@ type PullRequestComment struct {
 // whose body opens with a summary record (product.SummaryOpening). A pull
 // request has at most one in the ordinary course; were a second ever made,
 // the oldest is the one read and edited, so reader and writer agree.
+// UpdatedAt is the forge's time of the comment's last edit: two writes of
+// the same record are told apart by it.
 type SummaryComment struct {
-	ID   int64  `json:"id"`
-	Body string `json:"body"`
+	ID        int64  `json:"id"`
+	Body      string `json:"body"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 type Dependency struct {
@@ -124,6 +127,10 @@ type Snapshot struct {
 	// Summary is the service's summary comment, nil when the pull request
 	// has none.
 	Summary *SummaryComment `json:"summary,omitempty"`
+	// Comments are the pull request's conversation comments, oldest first,
+	// from the same listing the summary comment was found in, so admission
+	// reads its comment commands without listing them again.
+	Comments []PullRequestComment `json:"comments"`
 }
 
 // SummaryRecord reads the record the pull request's summary comment opens

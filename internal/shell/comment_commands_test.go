@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/BFJ-Concerns/Minos/internal/forge"
@@ -65,6 +67,11 @@ type commandJourney struct {
 	repo     RepoConfig
 	facts    Facts
 	launches [][]string
+	// live reports the pull request's own run unit as active.
+	live bool
+	// onLaunch, when set, runs as a run is launched, before admission reads
+	// anything back.
+	onLaunch func()
 }
 
 func newCommandJourney(t *testing.T) *commandJourney {
@@ -91,8 +98,14 @@ func newCommandJourney(t *testing.T) *commandJourney {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
 	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
-		if name == "systemd-run" {
+		switch {
+		case name == "systemd-run":
 			journey.launches = append(journey.launches, args)
+			if journey.onLaunch != nil {
+				journey.onLaunch()
+			}
+		case name == "systemctl" && slices.Contains(args, "list-units") && journey.live:
+			return []byte(UnitName(journey.facts) + ".service loaded active running Minos run\n"), nil
 		}
 		return nil, nil
 	}
@@ -114,6 +127,21 @@ func (j *commandJourney) comment(user, body string) int64 {
 func (j *commandJourney) status(t *testing.T, state product.State) {
 	t.Helper()
 	githubApplied(t, j.adapter.SetProductStatus(t.Context(), j.state.guard(), state))
+}
+
+// moveHead pushes a new head, the current head's statuses staying with
+// their commit.
+func (j *commandJourney) moveHead(head string) {
+	j.state.mu.Lock()
+	defer j.state.mu.Unlock()
+	current := j.state.pullRequest["head"].(map[string]any)["sha"].(string)
+	if j.state.statusesAt == nil {
+		j.state.statusesAt = map[string][]map[string]any{}
+	}
+	j.state.statusesAt[current] = j.state.statuses
+	j.state.statuses = j.state.statusesAt[head]
+	delete(j.state.statusesAt, head)
+	j.state.pullRequest["head"].(map[string]any)["sha"] = head
 }
 
 // finishClean writes what a clean run leaves: its working status, then its
@@ -265,9 +293,17 @@ func TestForgejoCommenterMayCommandReadsWriteAccess(t *testing.T) {
 					http.NotFound(w, r)
 				}
 			})
+			var logged bytes.Buffer
+			log.SetOutput(&logged)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
 			may, err := adapter.MayCommand(t.Context(), repository, tc.user)
 			if err != nil || may != tc.want {
 				t.Fatalf("MayCommand(%s) = %t, %v; want %t", tc.user, may, err, tc.want)
+			}
+			// The operator learns from the log why a collaborator's
+			// command was ignored.
+			if refusedCollaborator := tc.permission == 403 && !tc.want; refusedCollaborator != strings.Contains(logged.String(), "repository administrator") {
+				t.Fatalf("logged %q", logged.String())
 			}
 		})
 	}
@@ -349,11 +385,12 @@ func TestForgejoCommentOnAPlainIssueIsNoOccasion(t *testing.T) {
 
 // A clean run that changes nothing it had already approved leaves a status
 // alone, which is read only on its own head. A command answered there stays
-// answered after the author pushes, through the record of the head a run
-// last finished on.
+// answered after the author pushes, whether a pass saw the answer before
+// the push or first sees it after, reading the statuses of the head the
+// command's run was started on.
 func TestReviewCommandAnsweredOnAnEarlierHeadStaysAnswered(t *testing.T) {
-	for _, recorded := range []bool{true, false} {
-		t.Run(fmt.Sprintf("recorded=%t", recorded), func(t *testing.T) {
+	for _, seen := range []bool{true, false} {
+		t.Run(fmt.Sprintf("seen=%t", seen), func(t *testing.T) {
 			journey := newCommandJourney(t)
 			journey.comment("maintainer", "@minos-review review")
 			if result := journey.reconcile(t); result.Decision != SpawnStarted {
@@ -361,36 +398,17 @@ func TestReviewCommandAnsweredOnAnEarlierHeadStaysAnswered(t *testing.T) {
 			}
 			journey.status(t, product.Working())
 			journey.status(t, product.Clean())
-			if result := journey.reconcile(t); result.DeferralReason != "completed-marker" {
-				t.Fatalf("answered command reconciliation = %#v", result)
-			}
-			earlier := journey.state.guard()
-			if recorded {
-				path := reviewedChangePath(journey.cfg, "github", earlier)
-				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				record, _ := json.Marshal(reviewedChange{Head: earlier.HeadSHA, Target: earlier.TargetSHA, Outcome: "clean", Files: map[string]string{}})
-				if err := os.WriteFile(path, record, 0o600); err != nil {
-					t.Fatal(err)
+			if seen {
+				if result := journey.reconcile(t); result.DeferralReason != "completed-marker" {
+					t.Fatalf("answered command reconciliation = %#v", result)
 				}
 			}
-			journey.state.mu.Lock()
-			journey.state.statusesAt = map[string][]map[string]any{earlier.HeadSHA: journey.state.statuses}
-			journey.state.statuses = nil
-			journey.state.pullRequest["head"].(map[string]any)["sha"] = "c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff"
-			journey.state.mu.Unlock()
+			journey.moveHead("c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff")
 			if result := journey.reconcile(t); result.Decision != SpawnStarted {
 				t.Fatalf("new head reconciliation = %#v", result)
 			}
-			want := `["no-review","increment","full"]`
-			if !recorded {
-				// Without the record the command is taken as waiting, and
-				// the new head's run is kept from no-review once.
-				want = `["increment","full"]`
-			}
-			if got := journey.launchedOutcomes(t); got != want {
-				t.Fatalf("new head outcomes = %s, want %s", got, want)
+			if got := journey.launchedOutcomes(t); got != `["no-review","increment","full"]` {
+				t.Fatalf("new head outcomes = %s, want the configured outcomes", got)
 			}
 		})
 	}
@@ -498,5 +516,216 @@ func TestCommandSupersededAfterAnUnrelatedRunIsAcknowledged(t *testing.T) {
 	skip := journey.comment("maintainer", "@minos-review skip")
 	if result := journey.reconcile(t); result.DeferralReason != skippedByCommandReason || !journey.acknowledged(review) || !journey.acknowledged(skip) {
 		t.Fatalf("reconciliation = %#v, review acknowledged %t, skip acknowledged %t", result, journey.acknowledged(review), journey.acknowledged(skip))
+	}
+}
+
+// The predecessor live when a command is written was started before it and
+// never answers it: admission waits for that run to end, then starts the
+// review the command asked for, once.
+func TestReviewCommandWaitsOutALivePredecessor(t *testing.T) {
+	journey := newCommandJourney(t)
+	journey.live = true
+	id := journey.comment("maintainer", "@minos-review review")
+	if result := journey.reconcile(t); result.Decision != SpawnSuppressed || len(journey.launches) != 0 || !journey.acknowledged(id) {
+		t.Fatalf("reconciliation under a live predecessor = %#v after %d launches, acknowledged %t", result, len(journey.launches), journey.acknowledged(id))
+	}
+	journey.finishClean(t)
+	journey.live = false
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || len(journey.launches) != 1 {
+		t.Fatalf("reconciliation once the predecessor ended = %#v after %d launches, want one run", result, len(journey.launches))
+	}
+	if got := journey.launchedOutcomes(t); got != `["full"]` {
+		t.Fatalf("commanded run outcomes = %s, want full alone", got)
+	}
+	journey.live = true
+	if result := journey.reconcile(t); result.Decision != SpawnSuppressed || len(journey.launches) != 1 {
+		t.Fatalf("reconciliation under the commanded run = %#v after %d launches", result, len(journey.launches))
+	}
+	journey.finishClean(t)
+	journey.live = false
+	if result := journey.reconcile(t); result.DeferralReason != "completed-marker" || len(journey.launches) != 1 {
+		t.Fatalf("answered command reconciliation = %#v after %d launches", result, len(journey.launches))
+	}
+}
+
+// A predecessor that publishes after admission read the forge and before
+// the commanded run starts published before that run, and answers nothing.
+func TestReviewCommandIsNotAnsweredByAResultPublishedAsItsRunStarts(t *testing.T) {
+	journey := newCommandJourney(t)
+	journey.comment("maintainer", "@minos-review review")
+	journey.onLaunch = func() {
+		journey.onLaunch = nil
+		journey.finishClean(t)
+	}
+	if result := journey.reconcile(t); result.Decision != SpawnStarted {
+		t.Fatalf("commanded reconciliation = %#v", result)
+	}
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || len(journey.launches) != 2 {
+		t.Fatalf("reconciliation after the predecessor's result = %#v after %d launches, want the command still waiting", result, len(journey.launches))
+	}
+	journey.finishClean(t)
+	if result := journey.reconcile(t); result.DeferralReason != "completed-marker" || len(journey.launches) != 2 {
+		t.Fatalf("answered command reconciliation = %#v after %d launches", result, len(journey.launches))
+	}
+}
+
+// A head the author resets the branch to carries the result Minos left on
+// it before the command, which answers nothing: the reset head's marker is
+// spent and a run started there for the command.
+func TestReviewCommandIsNotAnsweredByAnOlderHeadsResult(t *testing.T) {
+	journey := newCommandJourney(t)
+	older := journey.state.guard().HeadSHA
+	journey.finishClean(t)
+	journey.moveHead("c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff")
+	journey.comment("maintainer", "@minos-review review")
+	if result := journey.reconcile(t); result.Decision != SpawnStarted {
+		t.Fatalf("commanded reconciliation = %#v", result)
+	}
+	journey.moveHead(older)
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || len(journey.launches) != 2 {
+		t.Fatalf("reconciliation on the reset head = %#v after %d launches, want a run for the command", result, len(journey.launches))
+	}
+	if got := journey.launchedOutcomes(t); got != `["full"]` {
+		t.Fatalf("reset head outcomes = %s, want full alone", got)
+	}
+	journey.finishClean(t)
+	if result := journey.reconcile(t); result.DeferralReason != "completed-marker" || len(journey.launches) != 2 {
+		t.Fatalf("answered command reconciliation = %#v after %d launches", result, len(journey.launches))
+	}
+}
+
+// A run that writes a review and no status answers a command by the review
+// alone; the older review the record knew from the start does not.
+func TestReviewAloneAnswersACommand(t *testing.T) {
+	for _, verdict := range []forge.ReviewVerdict{forge.ReviewApprove, forge.ReviewRequestChanges} {
+		t.Run(string(verdict), func(t *testing.T) {
+			journey := newCommandJourney(t)
+			journey.finishClean(t)
+			journey.comment("maintainer", "@minos-review review")
+			if result := journey.reconcile(t); result.Decision != SpawnStarted {
+				t.Fatalf("commanded reconciliation = %#v", result)
+			}
+			githubApplied(t, journey.adapter.PostReview(t.Context(), journey.state.guard(), verdict, "Reviewed again.", nil))
+			if result := journey.reconcile(t); result.DeferralReason != "completed-marker" || len(journey.launches) != 1 {
+				t.Fatalf("reconciliation after the review = %#v after %d launches, want the command answered", result, len(journey.launches))
+			}
+		})
+	}
+}
+
+// The summary comment is one comment edited in place: a later run's write of
+// the same head and state as the one the record knew still answers.
+func TestSummaryCommentAnswersACommand(t *testing.T) {
+	journey := newCommandJourney(t)
+	summary := func(state product.SummaryState) {
+		t.Helper()
+		result, err := writeSummary(t.Context(), journey.adapter, journey.state.guard(), state, "Summary.")
+		if err != nil {
+			t.Fatal(err)
+		}
+		githubApplied(t, result)
+	}
+	summary(product.SummaryClean)
+	if result := journey.reconcile(t); result.DeferralReason != "completed-marker" || len(journey.launches) != 0 {
+		t.Fatalf("summary-finished head reconciliation = %#v", result)
+	}
+	journey.comment("maintainer", "@minos-review review")
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || journey.launchedOutcomes(t) != `["full"]` {
+		t.Fatalf("commanded reconciliation = %#v", result)
+	}
+	summary(product.SummaryInspecting)
+	summary(product.SummaryClean)
+	if result := journey.reconcile(t); result.DeferralReason != "completed-marker" || len(journey.launches) != 1 {
+		t.Fatalf("reconciliation after the rewritten summary = %#v after %d launches", result, len(journey.launches))
+	}
+	// The answer stands once the summary moves on to a later head.
+	journey.moveHead("c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff")
+	summary(product.SummaryInspecting)
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || journey.launchedOutcomes(t) != `["no-review","increment","full"]` {
+		t.Fatalf("later head reconciliation = %#v", result)
+	}
+}
+
+func TestUnreadableCommandsDeferThePullRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, reason string
+	}{
+		{"comments", "/repos/acme/widgets/issues/7/comments", "pull request snapshot unavailable"},
+		{"permission", "/repos/acme/widgets/collaborators/maintainer/permission", "comment commands unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			journey := newCommandJourney(t)
+			journey.comment("maintainer", "@minos-review review")
+			journey.state.mu.Lock()
+			journey.state.unreadablePath = tc.path
+			journey.state.mu.Unlock()
+			result, err := reconcilePullRequest(t.Context(), journey.cfg, journey.repo, journey.facts)
+			if err == nil || result.DeferralReason != tc.reason || len(journey.launches) != 0 {
+				t.Fatalf("reconciliation = %#v, %v after %d launches; want %q and no run", result, err, len(journey.launches), tc.reason)
+			}
+		})
+	}
+}
+
+func TestSkipCommandHoldsAcrossAHeadMove(t *testing.T) {
+	journey := newCommandJourney(t)
+	journey.comment("maintainer", "@minos-review skip")
+	if result := journey.reconcile(t); result.DeferralReason != skippedByCommandReason {
+		t.Fatalf("skip reconciliation = %#v", result)
+	}
+	journey.moveHead("c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff")
+	if result := journey.reconcile(t); result.DeferralReason != skippedByCommandReason || len(journey.launches) != 0 {
+		t.Fatalf("reconciliation after the head moved = %#v after %d launches, want the skip still in effect", result, len(journey.launches))
+	}
+}
+
+// A reaction the forge refused is written on the next pass, also on a
+// command a newer one has by then superseded.
+func TestRefusedAcknowledgementIsTriedAgain(t *testing.T) {
+	for _, superseded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("superseded=%t", superseded), func(t *testing.T) {
+			journey := newCommandJourney(t)
+			review := journey.comment("maintainer", "@minos-review review")
+			journey.state.mu.Lock()
+			journey.state.refuseMutation = true
+			journey.state.mu.Unlock()
+			journey.reconcile(t)
+			if journey.acknowledged(review) {
+				t.Fatal("a refused reaction was recorded")
+			}
+			journey.state.mu.Lock()
+			journey.state.refuseMutation = false
+			journey.state.mu.Unlock()
+			skip := int64(0)
+			if superseded {
+				skip = journey.comment("maintainer", "@minos-review skip")
+			}
+			result := journey.reconcile(t)
+			if !journey.acknowledged(review) || (superseded && (!journey.acknowledged(skip) || result.DeferralReason != skippedByCommandReason)) {
+				t.Fatalf("next pass = %#v, review acknowledged %t", result, journey.acknowledged(review))
+			}
+		})
+	}
+}
+
+// Two passes over one pull request that each change the command record
+// keep both changes.
+func TestCommandRecordUpdatesDoNotLoseEachOther(t *testing.T) {
+	cfg := ServiceConfig{}
+	cfg.Runs.Dir = t.TempDir()
+	guard := forge.Guard{Repository: forge.Repository{Owner: "acme", Name: "widgets"}, PullRequest: 7}
+	var wg sync.WaitGroup
+	for id := range int64(16) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			updateCommandRecord(cfg, "github", guard, func(record *commandRecord) {
+				record.Acknowledged = append(record.Acknowledged, id)
+			})
+		}()
+	}
+	wg.Wait()
+	if got := readCommandRecord(cfg, "github", guard).Acknowledged; len(got) != 16 {
+		t.Fatalf("acknowledged after concurrent updates = %v, want all 16", got)
 	}
 }

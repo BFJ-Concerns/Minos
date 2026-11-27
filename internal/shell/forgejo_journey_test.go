@@ -3007,6 +3007,20 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		s.issueComments = append(s.issueComments, comment)
 		writeFixtureJSON(s.t, w, comment)
+	case r.Method == http.MethodPatch && strings.HasPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/issues/comments/"):
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			s.t.Error(err)
+		}
+		id := strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/issues/comments/")
+		for _, comment := range s.issueComments {
+			if fmt.Sprint(comment["id"]) == id {
+				comment["body"] = payload["body"]
+				writeFixtureJSON(s.t, w, comment)
+				return
+			}
+		}
+		http.NotFound(w, r)
 	case r.Method == http.MethodGet && strings.Contains(path, "/branches/") && s.branchHead(path) != "":
 		writeFixtureJSON(s.t, w, map[string]any{
 			"commit": map[string]any{"id": s.branchHead(path)},

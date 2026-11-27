@@ -10,10 +10,5 @@ owner="$1"
 repo="$2"
 pr="$3"
 
-comments="$(conversation_comments "$owner" "$repo" "$pr")"
-printf '%s' "$comments" | jq -c 'sort_by((.created_at // ""), (.id // 0)) | map({
-  id: (.id // 0),
-  user: (.user.login // .user.username // ""),
-  body: (.body // ""),
-  created_at: (.created_at // "")
-})'
+listing="$(conversation_comments "$owner" "$repo" "$pr")"
+conversation_comment_records "$listing"

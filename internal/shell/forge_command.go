@@ -164,7 +164,13 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return emitForgeResult(stdout, "summary", result)
+		if err := emitForgeResult(stdout, "summary", result); err != nil {
+			return err
+		}
+		if completion, finished := state.Completion(); finished {
+			recordReviewedChange(ctx, guard, completion.Name())
+		}
+		return nil
 	case "earlier":
 		if len(args) != 3 || args[1] == "" || args[2] == "" {
 			return fmt.Errorf("usage: minos forge earlier HEAD TARGET")

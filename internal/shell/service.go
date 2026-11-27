@@ -163,27 +163,32 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		}
 	}
 	botLogin := cfg.BotLogin(facts.Forge)
-	commands, err := readIssuedCommands(ctx, adapter, guard.Repository, snapshot.PullRequest, botLogin)
+	commands, err := readIssuedCommands(ctx, adapter, guard.Repository, snapshot.Comments, botLogin)
 	if err != nil {
 		return ReconcileResult{
 			Decision: ReconcileNothing, DeferralReason: "comment commands unavailable",
 			DeferralReasons: append([]string{"comment commands unavailable"}, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
 		}, fmt.Errorf("read comment commands: %w", err)
 	}
-	lastFinished := func() (headStatuses, error) {
-		return lastFinishedHeadStatuses(ctx, cfg, facts.Forge, adapter, guard)
-	}
 	record := readCommandRecord(cfg, facts.Forge, guard)
-	effect, err := commandsInForce(commands, snapshot, lastFinished, record, botLogin, cfg.Service.StatusContext)
-	if err != nil {
-		return ReconcileResult{
-			Decision: ReconcileNothing, DeferralReason: "comment commands unavailable",
-			DeferralReasons: append([]string{"comment commands unavailable"}, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
-		}, fmt.Errorf("work out comment commands: %w", err)
+	readStatuses := func(head string) ([]forge.Status, error) {
+		return adapter.CommitStatuses(ctx, guard.Repository, head)
 	}
-	if acknowledged := acknowledgeCommands(ctx, adapter, guard, effect.unacknowledged); len(acknowledged) > 0 {
-		record.Acknowledged = append(record.Acknowledged, acknowledged...)
-		writeCommandRecord(cfg, facts.Forge, guard, record)
+	effect := commandsInForce(commands, snapshot, record, readStatuses, botLogin, cfg.Service.StatusContext)
+	acknowledged := acknowledgeCommands(ctx, adapter, guard, effect.unacknowledged)
+	if len(acknowledged) > 0 || len(effect.answered) > 0 {
+		updateCommandRecord(cfg, facts.Forge, guard, func(record *commandRecord) {
+			for _, id := range acknowledged {
+				if !slices.Contains(record.Acknowledged, id) {
+					record.Acknowledged = append(record.Acknowledged, id)
+				}
+			}
+			for _, id := range effect.answered {
+				if !slices.Contains(record.Answered, id) {
+					record.Answered = append(record.Answered, id)
+				}
+			}
+		})
 	}
 	if effect.skipped {
 		return ReconcileResult{
@@ -216,16 +221,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		return ReconcileResult{}, err
 	}
 	if outcome.Outcome == SpawnStarted || outcome.Outcome == SpawnContinued {
-		startedFor := false
-		for _, comment := range effect.waiting {
-			if _, started := record.Started[comment.ID]; !started {
-				record.Started[comment.ID] = effect.results
-				startedFor = true
-			}
-		}
-		if startedFor {
-			writeCommandRecord(cfg, facts.Forge, guard, record)
-		}
+		recordCommandedRun(ctx, cfg, facts.Forge, adapter, guard, effect.waiting)
 	}
 	return ReconcileResult{
 		Decision:     outcome.Outcome,
