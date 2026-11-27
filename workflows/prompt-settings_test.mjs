@@ -73,8 +73,10 @@ test("the exploration leg, the specialists and the general reviewer read the dep
         }
       }
     }
-    for (const stage of ["repository", "briefRelevance", "briefPartition", "scope", "merge", "verifier"])
-      assert.equal(under[depth][stage], under.standard[stage], `${stage} reads the same under ${depth}`);
+    for (const stage of ["repository", "briefRelevance", "briefPartition", "assignment", "generalAssignment", "merge", "verifier"]) {
+      assert.ok(under[depth][stage] !== undefined, `the prompts carry ${stage}`);
+      assert.deepEqual(under[depth][stage], under.standard[stage], `${stage} reads the same under ${depth}`);
+    }
   }
 });
 
