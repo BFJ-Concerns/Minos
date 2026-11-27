@@ -17,6 +17,7 @@ const { contractsFromInput } = await import("./review-contracts.mjs");
 const { routingFromInput } = await import("./role-routing.mjs");
 const { concernRoutingFromInput } = await import("./concern-routing.mjs");
 const { projectGuidanceFromInput, projectGuidanceSection } = await import("./orientation-guidance.mjs");
+const { repositoryDescriptionFromInput, repositoryDescriptionSection } = await import("./repository-description.mjs");
 const { pullRequestFromInput, pullRequestSection } = await import("./pull-request-description.mjs");
 const { promptFits, fillPrompt, concernsFromInput, concernLine } = await import("./review-prompts.mjs");
 const { reviewStages, proposalsOf, subjectOf, proposedFindingOf, uncheckedFindingOf } = await import("./review-stages.mjs");
@@ -82,6 +83,7 @@ const reviewedChangeValues = {
   target,
   head,
   "project-documents": projectGuidanceSection(projectGuidance),
+  "repository-description": repositoryDescriptionSection(repositoryDescriptionFromInput(input)),
   "pull-request": pullRequestSection(pullRequestFromInput(input)),
 };
 

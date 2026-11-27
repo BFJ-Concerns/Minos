@@ -10,6 +10,7 @@
 
 import { projectGuidanceFromInput, projectGuidanceSection } from "../orientation-guidance.mjs";
 import { pullRequestFromInput, pullRequestSection } from "../pull-request-description.mjs";
+import { repositoryDescriptionFromInput, repositoryDescriptionSection } from "../repository-description.mjs";
 import { REVIEWED_CHANGE_SLOTS } from "../review-prompts.mjs";
 import { DECISION_KIND, DIGEST_KIND, NEVER_GATING_CLASSES, SEVERITY, validateVerdictDecision } from "../verdict-classification.mjs";
 
@@ -117,7 +118,8 @@ export const stage = {
 
   // {
   //   target, head            the commits bounding the pull request
-  //   guidance, pullRequest   as a review's input builder attaches them
+  //   guidance, pullRequest,  as a review's input builder attaches them
+  //   repositoryDescription
   //   threshold               the repository's severity threshold
   //   findings                { main, brief? }: each verdict's confirmed
   //                           findings as { key, severity,
@@ -145,6 +147,7 @@ export const stage = {
       target: input.target,
       head: input.head,
       "project-documents": projectGuidanceSection(projectGuidanceFromInput(input)),
+      "repository-description": repositoryDescriptionSection(repositoryDescriptionFromInput(input)),
       "pull-request": pullRequestSection(pullRequestFromInput(input)),
       threshold: input.threshold,
       findings: JSON.stringify(findings, null, 2),

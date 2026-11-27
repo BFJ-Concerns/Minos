@@ -10,6 +10,7 @@ import { briefRecords } from "./brief-dispositions.mjs";
 import { changedPaths } from "./changed-paths.mjs";
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
 import { pullRequestFromOrientation } from "./pull-request-description.mjs";
+import { descriptionFromOrientation } from "./repository-description.mjs";
 import { reviewContracts } from "./review-contracts.mjs";
 import { promptSettingsFromEnvironment } from "./prompt-settings.mjs";
 import { reviewPrompts } from "./review-prompts.mjs";
@@ -51,6 +52,7 @@ if (argumentError) {
   }
 
   const pullRequest = pullRequestFromOrientation(orientation);
+  const repositoryDescription = descriptionFromOrientation(orientation);
   const { concerns, prompts } = reviewPrompts(workflowRoot, promptSettingsFromEnvironment());
 
   const workflowInput = {
@@ -64,6 +66,7 @@ if (argumentError) {
     guidance,
     routing,
     ...(pullRequest === undefined ? {} : { pullRequest }),
+    ...(repositoryDescription === undefined ? {} : { repositoryDescription }),
     prompts: {
       repository: prompts.repository,
       briefRelevance: prompts.briefRelevance,

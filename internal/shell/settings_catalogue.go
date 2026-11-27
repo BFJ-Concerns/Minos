@@ -156,7 +156,7 @@ func settingsCatalogue() []Setting {
 		repositorySetting("markers", "The marks Minos sets on a pull request (in-flight, clean, attention), each a reaction or a label.", `👀 in flight, 👍 clean and no attention marker.`, TOMLForm),
 	}
 	for _, role := range routingRoles {
-		settings = append(settings, repositorySetting("routing."+role, "The engine, model and effort the "+role+" role runs on, as {engine, model, effort}; the whole role is one setting.", "The shipped pairing: proposing and planning roles on Codex, the verifier and judgement on Claude, where both engines are provisioned; the one provisioned engine otherwise.", TOMLForm))
+		settings = append(settings, repositorySetting("routing."+role, "The engine, model and effort the "+role+" role runs on, as {engine, model, effort}; the whole role is one setting.", "The shipped pairing: proposing and planning roles on Codex, the verifier, judgement and description on Claude, where both engines are provisioned; the one provisioned engine otherwise.", TOMLForm))
 	}
 	for _, concern := range specialistConcerns {
 		settings = append(settings, repositorySetting("routing.concerns."+concern, "The engine, model and effort the "+concern+" specialist proposes on, as {engine, model, effort}.", "The proposer's routing.", TOMLForm))

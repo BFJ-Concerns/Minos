@@ -172,6 +172,10 @@ const judgementSamples = {
     input: { findings: [{ key: "thread-1" }] },
     answer: { findings: [{ key: "thread-1", outcome: "stands", reason: "The parser still drops the record." }] },
   }],
+  "repository-description": [{
+    input: { commit: "1111111111111111111111111111111111111111", earlier: null },
+    answer: { description: "A parsing library.\n\n## Layout\n\n- `src/`: the parser." },
+  }],
 };
 
 function assertPinnedRuntimeUnchanged(t) {
