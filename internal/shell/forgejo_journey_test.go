@@ -2440,6 +2440,7 @@ type forgejoFixtureState struct {
 	stackedChildren          []map[string]any
 	statusWrites             int
 	statusPostRequests       []statusPostRequest
+	reviewPosts              int
 	reviewWrites             int
 	reviewPayloads           []map[string]any
 	reviewComments           map[int64][]map[string]any
@@ -2616,6 +2617,12 @@ func (s *forgejoFixtureState) setPositionRewrite(path string, requested, stored 
 		s.positionRewrites[path] = make(map[int64]int64)
 	}
 	s.positionRewrites[path][requested] = stored
+}
+
+func (s *forgejoFixtureState) reviewPostCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reviewPosts
 }
 
 func (s *forgejoFixtureState) reviewWriteFacts() (int, map[string]any) {
@@ -2972,6 +2979,7 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		writeFixtureArray(s.t, w, s.reviews)
 	case r.Method == http.MethodPost && path == pullPath+"/reviews":
+		s.reviewPosts++
 		if s.dropReviewWrites > 0 {
 			s.dropReviewWrites--
 			http.Error(w, "review write fixture failure", http.StatusBadGateway)
