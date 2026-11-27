@@ -1,8 +1,7 @@
-import { applied, checkHead } from "./forge-writes.mjs";
+import { applied, currentSnapshot } from "./forge-writes.mjs";
 
 export async function claim(run) {
-  const snapshot = await run.forge("snapshot");
-  checkHead(run, snapshot);
+  const snapshot = await currentSnapshot(run);
   await applied(run, "claim", []);
   return { snapshot };
 }

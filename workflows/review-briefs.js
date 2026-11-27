@@ -29,8 +29,8 @@ const { reviewStages, proposalsOf, subjectOf, proposedFindingOf, uncheckedFindin
 // The deterministic brief pass arrives computed: the input builder parsed
 // each brief's frontmatter, named it and settled its path-scope and
 // occasion triggers through workflows/brief-dispositions.mjs, the one
-// source the scope workflow's engagement reads too. This workflow adds the
-// judged legs and re-derives nothing; a brief missing any of it fails the
+// source push inspection uses to decide whether briefs engage. This workflow
+// adds the judged legs and re-derives nothing; a brief missing any of it fails the
 // workflow before dispatch.
 function briefsFromInput(input) {
   const briefs = input && input.briefs;

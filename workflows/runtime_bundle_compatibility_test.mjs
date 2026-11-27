@@ -112,6 +112,7 @@ export {
   );
   const module = await import(`${pathToFileURL(probeRuntime).href}?probe=${Date.now()}`);
   return {
+    root,
     compile: module.minosAssertCompilableSchema,
     forCodex: module.minosNormaliseForCodexOutputSchema,
     validate: (value, schema) => module.minosValidateJsonSchema(value, schema).ok,
@@ -145,6 +146,32 @@ const schemaSamples = {
     newFindings: [sampleFinding],
     outOfScopeObservations: [],
   },
+};
+
+const cleanDecision = { verdict: "clean", basis: "No finding gates.", findings: [] };
+const judgementSamples = {
+  "push-inspection": [{
+    input: { outcomes: ["no-review", "increment", "full"] },
+    answer: { outcome: "increment", reason: "Only the parser changed." },
+  }],
+  "verdict-classification": [
+    { input: { findings: { main: [] } }, answer: { main: cleanDecision } },
+    {
+      input: { findings: { main: [], brief: [{ key: "parser" }] } },
+      answer: {
+        main: cleanDecision,
+        brief: {
+          verdict: "request-changes",
+          basis: "The parser drops a valid record.",
+          findings: [{ key: "parser", gating: true, class: "", defect: "", undergrade: "" }],
+        },
+      },
+    },
+  ],
+  "earlier-findings": [{
+    input: { findings: [{ key: "thread-1" }] },
+    answer: { findings: [{ key: "thread-1", outcome: "stands", reason: "The parser still drops the record." }] },
+  }],
 };
 
 function assertPinnedRuntimeUnchanged(t) {
@@ -244,16 +271,26 @@ test("the installed runtime accepts the free identifiers in every shipped workfl
 });
 
 test("the installed runtime compiles every shipped stage schema and accepts a well-formed answer to it", async (t) => {
-  const { compile, forCodex, validate } = await installedSchemaValidator(t);
+  const { root, compile, forCodex, validate } = await installedSchemaValidator(t);
   const contracts = shippedContracts();
-  for (const [name, sample] of Object.entries(schemaSamples)) {
-    const schema = contracts[name];
+  const { loadStage } = await import(pathToFileURL(join(root, "workflows", "judgement-stage.mjs")));
+  const directory = join(root, "workflows", "judgements");
+  const stages = readdirSync(directory).filter((entry) => entry.endsWith(".mjs")).map((entry) => entry.slice(0, -4));
+  assert.deepEqual(stages.sort(), Object.keys(judgementSamples).sort(), "each installed judgement needs a sample");
+  for (const [name, sample] of Object.entries(schemaSamples)) assertSchema(name, contracts[name], sample);
+  for (const name of stages) {
+    const stage = await loadStage(name);
+    for (const { input, answer } of judgementSamples[name]) assertSchema(name, stage.answerSchema(input), answer);
+  }
+
+  function assertSchema(name, schema, sample) {
     assert.doesNotThrow(() => compile(schema), `${name} compiles under the installed runtime`);
     const codexSchema = forCodex(schema);
     assert.doesNotThrow(() => compile(codexSchema), `${name} compiles as a Codex output schema`);
     assert.ok(validate(sample, schema), `${name} accepts a well-formed answer`);
     assert.ok(validate(sample, codexSchema), `${name} accepts a well-formed answer as a Codex output schema`);
   }
+
   assert.ok(!validate({ ...schemaSamples.verifierSchema, verdicts: [{ ...schemaSamples.verifierSchema.verdicts[0], verdict: "upheld" }] }, contracts.verifierSchema),
     "a verdict outside the three is refused");
 });

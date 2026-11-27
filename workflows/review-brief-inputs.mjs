@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { reviewBriefsFromWorkspace } from "./review-brief-files.mjs";
 import { briefRecords } from "./brief-dispositions.mjs";
+import { changedPaths } from "./changed-paths.mjs";
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
 import { pullRequestFromOrientation } from "./pull-request-description.mjs";
 import { reviewContracts } from "./review-contracts.mjs";
@@ -40,10 +41,7 @@ if (argumentError) {
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: Infinity,
   }).split("\0").filter(Boolean);
-  // Without rename detection a moved file lists both its old and its new
-  // path, so a file moved out of a brief's directory still engages the
-  // brief. Push inspection counts both paths for the same reason.
-  const changedPaths = gitLines("diff", "--no-renames", "--name-only", "-z", target, head);
+  const paths = changedPaths(workspace, target, head);
   const trackedPaths = gitLines("ls-files", "-z");
   const trackedFiles = [];
   for (const path of trackedPaths) {
@@ -60,9 +58,9 @@ if (argumentError) {
     head,
     occasion,
     hasReviewDirectory,
-    changedPaths,
+    changedPaths: paths,
     trackedFiles,
-    briefs: briefRecords(briefs, occasion, changedPaths),
+    briefs: briefRecords(briefs, occasion, paths),
     guidance,
     routing,
     ...(pullRequest === undefined ? {} : { pullRequest }),

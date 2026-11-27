@@ -15,7 +15,9 @@ const foldedBody =
   "**Minos: changes need attention.**\n\n---\n\nFindings that could not be anchored inline:\n\n" +
   "These have no thread to resolve. The pull request's author can reject one with a comment on the pull request that names it by its title or by its path and line.\n" +
   "\n#### `docs/a.md` line 3\n\n**Blocking · High: Stale claim**\n\nThe page says otherwise.\n" +
-  "\n#### `src/b.go` lines 10-14\n\n**Advisory · Low: Long function**\n";
+  "\n#### `src/b.go` lines 10-14\n\n**Advisory · Low: Long function**\n" +
+  "\nReviewed by: `claude-opus-5-5`.\n\n" +
+  `<!-- Minos: head=${earlierHead} target=${head} -->\n`;
 
 test("a review body's folded entries are read with the path, line and text each heading gives", () => {
   assert.deepEqual(foldedEntries(foldedBody), [
@@ -26,7 +28,7 @@ test("a review body's folded entries are read with the path, line and text each 
 });
 
 function snapshotWith(reviews) {
-  return { authenticated_user: "minos", author: "alice", reviews };
+  return { head_sha: head, authenticated_user: "minos", author: "alice", reviews };
 }
 
 const minosReview = { id: 7, user: "minos", commit_id: earlierHead, submitted_at: "2026-11-20T10:00:00Z", body: foldedBody };
@@ -107,6 +109,14 @@ test("an answer must settle every finding once, each with a reason", () => {
   assert.match(stage.inputProblem({ head, findings: [{ ...input.findings[0], where: "email" }] }), /thread or a review body/);
 });
 
+test("a same-head finding can stand or be rejected by the author, but cannot have changed", () => {
+  const input = { head, findings: findingsToRead({ snapshot: snapshotWith([]), threads: [sameHeadThread], comments: [] }) };
+  const answer = (outcome) => ({ findings: [{ key: "thread-1", outcome, reason: "There has been no change since the review." }] });
+  assert.equal(stage.answerProblem(answer(STANDS), input), null);
+  assert.equal(stage.answerProblem(answer(AUTHOR_REJECTED), input), null);
+  assert.match(stage.answerProblem(answer(DEFECT_GONE), input), /was raised on this head/);
+});
+
 function fixtureRun({ reviews = [minosReview], forgeThreads = threads, answer } = {}) {
   const asked = [];
   const read = [];
@@ -156,7 +166,8 @@ test("with nothing left to read the step asks no stage and reads no comments", a
 
 test("a review-body finding raised on this head still has the author's comments read", async () => {
   const { run, asked, read } = fixtureRun({
-    reviews: [{ ...minosReview, commit_id: head }],
+    reviews: [{ ...minosReview, commit_id: head,
+      body: foldedBody.replace(/\n#### `src\/b\.go`[\s\S]*?(?=\nReviewed by:)/, "") }],
     forgeThreads: [],
     answer: { findings: [{ key: "review-7-1", outcome: AUTHOR_REJECTED, reason: "The author named the Stale claim finding and rejected it." }] },
   });
@@ -164,6 +175,7 @@ test("a review-body finding raised on this head still has the author's comments 
   assert.deepEqual(await settleEarlierFindings(run, {}), { outstanding: [] });
   assert.deepEqual(read, ["snapshot", "threads", "comments"]);
   assert.deepEqual(asked[0].given.findings[0].comments, ["The Stale claim finding is wrong."]);
+  assert.equal(asked[0].given.findings[0].finding, "**Blocking · High: Stale claim**\n\nThe page says otherwise.");
 });
 
 test("a defect read as gone lifts its block", async () => {
