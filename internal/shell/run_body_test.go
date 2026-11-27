@@ -703,9 +703,10 @@ esac
 	}
 }
 
-func TestRunBodyKeepsTheLeadWhenAScriptedJudgementStageIsMissing(t *testing.T) {
-	for _, present := range []string{"verdict-classification.mjs", "earlier-findings.mjs"} {
-		t.Run(present, func(t *testing.T) {
+func TestRunBodyStopsWhenAScriptedJudgementStageIsMissing(t *testing.T) {
+	stages := []string{"push-inspection.mjs", "verdict-classification.mjs", "earlier-findings.mjs"}
+	for _, missing := range stages {
+		t.Run(missing, func(t *testing.T) {
 			fixture := newRunBodyFixture(t)
 			driver := filepath.Join(fixture.root, "run-driver.mjs")
 			if err := os.WriteFile(driver, []byte("throw new Error('driver started');\n"), 0o644); err != nil {
@@ -715,19 +716,28 @@ func TestRunBodyKeepsTheLeadWhenAScriptedJudgementStageIsMissing(t *testing.T) {
 			if err := os.Mkdir(judgements, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(judgements, present), nil, 0o644); err != nil {
-				t.Fatal(err)
+			for _, present := range stages {
+				if present == missing {
+					continue
+				}
+				if err := os.WriteFile(filepath.Join(judgements, present), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			fixture.appendConfig(t, map[string]string{"MINOS_RUN_DRIVER": driver})
 			output, err := fixture.execute(nil)
-			if err != nil {
-				t.Fatalf("resident lead exit = %v\n%s", err, output)
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+				t.Fatalf("run-body exit = %v, want 1\n%s", err, output)
 			}
-			if !strings.Contains(string(output), "scripted judgement stages are missing. Using the resident lead.") {
-				t.Fatalf("missing fallback diagnostic:\n%s", output)
+			cause := "scripted judgement stage " + filepath.Join(judgements, missing) + " is missing"
+			if !strings.Contains(string(output), cause) {
+				t.Fatalf("missing diagnostic %q:\n%s", cause, output)
 			}
-			assertContainsFile(t, fixture.record+".argv", "--bg")
-			assertFileEmpty(t, fixture.failureLog)
+			assertContainsFile(t, fixture.failureLog, "stage=configuration cause="+cause)
+			if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
+				t.Fatalf("resident lead was launched: %v", err)
+			}
 		})
 	}
 }
@@ -752,7 +762,7 @@ process.exitCode = 75;
 	if err := os.Mkdir(judgements, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"verdict-classification.mjs", "earlier-findings.mjs"} {
+	for _, name := range []string{"push-inspection.mjs", "verdict-classification.mjs", "earlier-findings.mjs"} {
 		if err := os.WriteFile(filepath.Join(judgements, name), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}

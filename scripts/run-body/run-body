@@ -241,15 +241,19 @@ failure_cause="could not load ${MINOS_CONFIG%/}/run-body.env"
 . "${MINOS_CONFIG%/}/run-body.env"
 set +a
 
-# Scripted mode needs both companion judgement stages. Keep serving reviews
-# with the lead if an installation has only the driver's mechanical course.
+# The scripted driver asks its judgement stages for every decision its
+# course turns on. An installation missing one is broken: it stops here,
+# naming the module, rather than taking the lead's course, which a scripted
+# installation is not provisioned for.
 if [ -n "${MINOS_RUN_DRIVER:-}" ]; then
   judgement_dir="$(dirname "$MINOS_RUN_DRIVER")/judgements"
-  if [ ! -r "$judgement_dir/verdict-classification.mjs" ] ||
-    [ ! -r "$judgement_dir/earlier-findings.mjs" ]; then
-    echo "run-body: scripted judgement stages are missing. Using the resident lead." >&2
-    unset MINOS_RUN_DRIVER
-  fi
+  for judgement_module in push-inspection.mjs verdict-classification.mjs earlier-findings.mjs; do
+    if [ ! -r "$judgement_dir/$judgement_module" ]; then
+      failure_cause="scripted judgement stage $judgement_dir/$judgement_module is missing"
+      echo "run-body: $failure_cause" >&2
+      exit 1
+    fi
+  done
 fi
 
 if [ -n "${MINOS_ANTHROPIC_CREDENTIAL_FILE:-}" ]; then
