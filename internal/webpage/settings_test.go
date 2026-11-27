@@ -281,6 +281,23 @@ func TestChoiceSetEmptyOpensOnTheDefaultItResolvesTo(t *testing.T) {
 	}
 }
 
+func TestSwitchSetOnThePageIsWrittenAsABoolean(t *testing.T) {
+	root, read, write := configurationRoot(t)
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	page := "/repositories/forgejo/bfj/estate/settings"
+	if row := settingRowHTML(t, visit(site, page, session).Body.String(), "review.file-safeguard-requests"); !strings.Contains(row, "<option selected>false</option>") {
+		t.Errorf("the switch at its default does not open on false:\n%s", row)
+	}
+	response := submit(site, page, url.Values{"setting": {"review.file-safeguard-requests"}, "value": {"true"}, "action": {"set"}}, session)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("turning the switch on answered %d:\n%s", response.Code, response.Body)
+	}
+	if got := fileText(t, filepath.Join(root, "repos", "estate.toml")); !strings.Contains(got, "file-safeguard-requests = true\n") {
+		t.Errorf("the repository file does not hold the switch as a boolean:\n%s", got)
+	}
+}
+
 func TestOneEngineConcurrencySetFromTheDefaultsIsSaved(t *testing.T) {
 	root, read, write := configurationRoot(t)
 	site, _ := testSite(t, read, write)

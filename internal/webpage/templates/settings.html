@@ -37,7 +37,7 @@
 <form method="post" action="#{{.Anchor}}">
 <input type="hidden" name="setting" value="{{.Name}}">
 <label for="value-{{.Name}}">{{if .Own}}Change it{{else}}Set it here{{end}}</label>
-{{- if eq .Form "choice"}}
+{{- if .Choices}}
 <select id="value-{{.Name}}" name="value">
 {{- $field := .Field}}
 {{- range .Choices}}

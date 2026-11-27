@@ -57,14 +57,14 @@ func (reader *StateReader) Configuration() (ServiceConfig, []RepoConfig, error) 
 // ServiceSettings reads every setting of service.toml, as it stands on disk
 // now, with where each value comes from (ServiceSettings).
 func (reader *StateReader) ServiceSettings() ([]SettingState, error) {
-	return ServiceSettings(reader.cfg.Root)
+	return ServiceSettings(reader.root)
 }
 
 // RepositorySettings reads every setting of one enrolled repository, as its
 // file and service.toml stand on disk now, with where each value comes from
 // (RepositorySettings).
 func (reader *StateReader) RepositorySettings(repo RepoConfig) ([]SettingState, error) {
-	return RepositorySettings(reader.cfg.Root, repo)
+	return RepositorySettings(reader.root, repo)
 }
 
 // Status reads what /status serves: every live run with the pull request and

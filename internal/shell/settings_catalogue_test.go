@@ -83,7 +83,7 @@ func TestSettingsCatalogueDescribesEveryKeyTheLoaderAccepts(t *testing.T) {
 
 func TestEveryChoiceDefaultIsOneOfItsChoices(t *testing.T) {
 	for _, setting := range settingsCatalogue() {
-		if setting.Form == ChoiceForm && !slices.Contains(setting.Choices, setting.Default) {
+		if len(setting.Choices) > 0 && !slices.Contains(setting.Choices, setting.Default) {
 			t.Errorf("%s defaults to %q, which is not among %v", setting.Name(), setting.Default, setting.Choices)
 		}
 	}
@@ -167,6 +167,8 @@ func TestTypedSettingValuesAreReadByTheirForm(t *testing.T) {
 		{"runs.max-concurrent", "four", nil, true},
 		{"review.threshold", "Medium", "Medium", false},
 		{"review.threshold", "Urgent", nil, true},
+		{"review.file-safeguard-requests", "true", true, false},
+		{"review.file-safeguard-requests", "yes please", nil, true},
 		{"work-in-progress-branch-prefixes", `["wip/", 'draft/']`, []any{"wip/", "draft/"}, false},
 		{"filing-destination", `{kind = "none"}`, map[string]any{"kind": "none"}, false},
 		{"guidance-sources", `[{path = "AGENTS.md"}]`, []any{map[string]any{"path": "AGENTS.md"}}, false},

@@ -44,6 +44,8 @@ const (
 	NumberForm SettingForm = "number"
 	// ChoiceForm: one of the setting's Choices.
 	ChoiceForm SettingForm = "choice"
+	// BoolForm: true or false.
+	BoolForm SettingForm = "bool"
 	// TOMLForm: any value, written as it would follow "key =" in the file:
 	// a quoted string, a list, an inline table, a list of inline tables.
 	TOMLForm SettingForm = "toml"
@@ -70,7 +72,7 @@ type Setting struct {
 	// loader requires.
 	Default string
 	Form    SettingForm
-	// Choices are the values a ChoiceForm setting takes.
+	// Choices are the values a ChoiceForm or BoolForm setting takes.
 	Choices []string
 	// TakesEffect, when set, says when a change applies where that is not
 	// the next run.
@@ -97,7 +99,10 @@ func (setting Setting) restartsWith(when string) Setting {
 }
 
 func (setting Setting) choosing(choices ...string) Setting {
-	setting.Form, setting.Choices = ChoiceForm, choices
+	if setting.Form != BoolForm {
+		setting.Form = ChoiceForm
+	}
+	setting.Choices = choices
 	return setting
 }
 
@@ -130,8 +135,8 @@ func settingsCatalogue() []Setting {
 		serviceSetting("runs.failures-credential-file", "The credential the failure ledger is published to its forge with.", "Unset: the ledger is kept in the local checkout and not published.", TextForm),
 		serviceSetting("runs.archive-command", "The command each terminal run is archived by before its directory is deleted.", "Unset: runs are deleted unarchived.", TextForm),
 		serviceSetting("runs.timings-command", "The command that assembles a run's timing record from what the run has written.", "Unset: no timing records.", TextForm),
-		serviceSetting("runs.recent-timings-command", "The command that lists the timing records archived since a cutoff, for recent runs.", "Unset: no recent runs are reported.", TextForm).restartsWith(whenReceiverStarts),
-		serviceSetting("runs.recent-timings-cache-seconds", "How long a listing of recent runs is served before the archive host is asked again.", strconv.Itoa(defaultRecentTimingsCacheSeconds), NumberForm).restartsWith(whenReceiverStarts),
+		serviceSetting("runs.recent-timings-command", "The command that lists the timing records archived since a cutoff, for recent runs.", "Unset: no recent runs are reported.", TextForm),
+		serviceSetting("runs.recent-timings-cache-seconds", "How long a listing of recent runs is served before the archive host is asked again.", strconv.Itoa(defaultRecentTimingsCacheSeconds), NumberForm),
 		serviceSetting("runs.max-concurrent", "How many runs may be live at once.", "1", NumberForm),
 		serviceSetting("runs.memory-envelope-gib", "The memory, in GiB, all runs share through the runs slice.", strconv.Itoa(defaultRunMemoryEnvelopeGiB), NumberForm).restartsWith(whenUnitsInstalled),
 		serviceSetting("runs.duration-ceiling", "How long a run may last before it is stopped, as a Go duration (12h, 90m).", defaultRunDurationCeiling, TextForm),
@@ -144,6 +149,7 @@ func settingsCatalogue() []Setting {
 		repositorySetting("admission", "Which pull requests are reviewed: by label (labels, exclude-labels), author (authors), base branch (base-branches), draft state (drafts: ready, any or only), title (title-pattern), touched paths (paths) and whether forks are admitted (allow-forks).", "Every pull request that is not a draft and not from a fork.", TOMLForm),
 		repositorySetting("work-in-progress-branch-prefixes", "Branch name prefixes whose pull requests are not reviewed.", "None.", TOMLForm),
 		repositorySetting("review.threshold", "The severity at and above which a confirmed finding blocks the pull request.", "High", ChoiceForm).choosing("Critical", "High", "Medium", "Low"),
+		repositorySetting("review.file-safeguard-requests", "Whether confirmed requests for a safeguard against a failure nobody has observed go to the filing destination, each marked as a safeguard request; they never block.", "false", BoolForm).choosing("false", "true"),
 		repositorySetting("push-inspection.outcomes", "What a run may decide to review after a push: no-review, increment or full; full is always among them.", `["no-review", "increment", "full"]`, TOMLForm),
 		repositorySetting("guidance-sources", "The ordered documents that carry the project's declared intent, each a path and, for another repository on the same forge, its owner/name.", "The repository's own guidance: the first present of AGENTS.md, CLAUDE.md and README.md.", TOMLForm),
 		repositorySetting("filing-destination", "Where confirmed findings that do not block go: kind file (with path, and repository for another), issue (with repository), pull-request-comment or none.", `{kind = "pull-request-comment"}`, TOMLForm),
@@ -170,6 +176,12 @@ func ParseSettingValue(setting Setting, typed string) (any, error) {
 			return nil, fmt.Errorf("%s takes a whole number", setting.Name())
 		}
 		return number, nil
+	case BoolForm:
+		value, err := strconv.ParseBool(typed)
+		if err != nil {
+			return nil, fmt.Errorf("%s takes true or false", setting.Name())
+		}
+		return value, nil
 	case ChoiceForm:
 		if !slices.Contains(setting.Choices, typed) {
 			return nil, fmt.Errorf("%s takes one of %s", setting.Name(), strings.Join(setting.Choices, ", "))
@@ -300,6 +312,11 @@ func readSetting(setting Setting, path string, key []string, decoded map[string]
 	case string:
 		if setting.Form != TOMLForm {
 			state.Typed = typed
+			return state
+		}
+	case bool:
+		if setting.Form == BoolForm {
+			state.Typed = strconv.FormatBool(typed)
 			return state
 		}
 	case int64:
