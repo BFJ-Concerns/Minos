@@ -435,7 +435,7 @@ func TestSweepRunResiduePreservesStructurallyValidHandoffWithoutCurrentFacts(t *
 	}
 }
 
-func TestSweepRunResidueRecordsCrashAndRemovesScratchWithoutArchiveCommand(t *testing.T) {
+func TestSweepRunResiduePreservesPendingArchiveWithoutArchiveCommand(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
@@ -449,13 +449,23 @@ func TestSweepRunResidueRecordsCrashAndRemovesScratchWithoutArchiveCommand(t *te
 	writeTestFile(t, filepath.Join(terminal, "report.md"), "already recorded\n")
 	writeTestFile(t, filepath.Join(terminal, archivePendingFile), "terminal label\n")
 
+	if err := sweepRunResidue(t.Context(), cfg, nil); err == nil || !strings.Contains(err.Error(), "runs.archive-command") {
+		t.Fatalf("sweep error = %v, want missing archive command diagnostic", err)
+	}
+	if _, err := os.Stat(crashed); !os.IsNotExist(err) {
+		t.Fatalf("unmarked crash directory remained without an archive command: %v", err)
+	}
+	pending, err := os.ReadFile(filepath.Join(terminal, archivePendingFile))
+	if err != nil || string(pending) != "terminal label\n" {
+		t.Fatalf("retained archive request = %q, %v", pending, err)
+	}
+
+	cfg.Runs.ArchiveCommand = "/bin/true"
 	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, runDir := range []string{crashed, terminal} {
-		if _, err := os.Stat(runDir); !os.IsNotExist(err) {
-			t.Fatalf("run directory %s remained without an archive command: %v", runDir, err)
-		}
+	if _, err := os.Stat(terminal); !os.IsNotExist(err) {
+		t.Fatalf("run directory remained after archive acceptance: %v", err)
 	}
 	content, err := os.ReadFile(cfg.Runs.FailureLog)
 	if err != nil || !strings.Contains(string(content), "crash evidence") || strings.Contains(string(content), "already recorded") {
@@ -775,7 +785,18 @@ func TestSalvageRejectsFailureDestinationsInsideRunScratch(t *testing.T) {
 }
 
 func TestConcurrentSalvageAppendsOneLocalFailureDigest(t *testing.T) {
+	t.Run("with archiving", func(t *testing.T) {
+		checkConcurrentSalvage(t, "/bin/true")
+	})
+	t.Run("without archiving", func(t *testing.T) {
+		checkConcurrentSalvage(t, "")
+	})
+}
+
+func checkConcurrentSalvage(t *testing.T, archiveCommand string) {
+	t.Helper()
 	cfg := scratchTestConfig(t)
+	cfg.Runs.ArchiveCommand = archiveCommand
 	cfg.Runs.FailuresRepo = ""
 	cfg.Runs.FailureLog = filepath.Join(t.TempDir(), "failures.log")
 	name := "minos-run-crashed-pr1"
