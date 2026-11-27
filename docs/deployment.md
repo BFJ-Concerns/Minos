@@ -24,6 +24,8 @@ and its host. Isolating the deployment — a dedicated container or VM — is
 recommended so that a misbehaving run can reach only what Minos itself
 needs; it is not required.
 
+## Install and configure
+
 1. Build and install `cmd/minos` as `/usr/local/bin/minos`.
 2. Install the whole of `scripts/adaptations/` under
    `/opt/minos/adaptations` — one directory per forge (`forgejo`, `github`),
@@ -123,7 +125,8 @@ needs; it is not required.
    the workspace at setup.
 
    The filing destination controls where confirmed advisory findings,
-   unverified observations from outside the change, and
+   unverified material — observations from outside the change and findings
+   a verifier left unsettled, filed as open questions — and
    configuration diagnostics — brief misconfigurations and unreadable guidance
    sources — are delivered: `kind` is one of `file`
    (path required; repository optional, defaulting to the reviewed
@@ -133,8 +136,10 @@ needs; it is not required.
    The `pull-request-comment` kind deduplicates against the service
    account's existing review bodies on the pull request, then posts one
    comment-review with the remaining advisory entries; when none remain,
-   nothing is posted — there is no all-clear comment. Observations are
-   about code outside the change, so this kind never posts them. A
+   nothing is posted — there is no all-clear comment. This kind never posts
+   unverified material: observations and unsettled findings reach no
+   surface on a repository whose destination is `pull-request-comment`.
+   The `none` kind discards everything it is given. A
    file-kind destination is a separate write path committed as
    `service.commit-author-name` (default: the bot login) and
    `service.commit-author-email` (default: the bot login at
@@ -167,9 +172,12 @@ needs; it is not required.
    The status is review information, not a merge gate: do not make this
    context a required status check in branch protection. It can be missing
    or stale on a head. A run that fails before the lead launches writes no
-   status, a status write the forge does not confirm leaves the previous
-   status in place, and a lead that dies can leave `pending` behind until a
-   later run replaces it.
+   status, a status write Minos cannot read back is reported as uncertain
+   and may or may not have replaced the previous status, and a lead that dies can leave `pending` behind until a
+   later run replaces it. When a continuation run makes no progress beyond
+   the run it continues, admission stops it instead of starting it again:
+   it writes `attention` on the head, removes the in-flight marker and
+   records the stall in `runs.failure-log`.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset; it must not exceed `runs.memory-envelope-gib`.
@@ -178,12 +186,13 @@ needs; it is not required.
    The shipped slice holds `MemoryHigh=6G` and `MemoryMax=8G`, so no run feels any pressure
    until the runs *together* approach the envelope — a lone run may use all
    of it — reclaim then pushes them back, and only combined demand the
-   envelope cannot hold kills, taking the biggest consumer. Each unit also
+   envelope cannot hold reaches the kernel's out-of-memory handling inside
+   the slice. Each unit also
    carries its own `MemoryMax` at the whole envelope as the backstop for a
    box missing the slice unit. Size the cap against the machine's memory
    and cores. `minos install-units` (step 5) renders the installed slice
    from this knob — `MemoryMax` at the envelope, `MemoryHigh` two GiB below
-   it — so after changing the envelope re-run it and reload the user
+   it but never under 1 GiB — so after changing the envelope re-run it and reload the user
    manager. At startup the receiver logs a warning when the installed
    slice's `MemoryMax` differs from the configured envelope.
    `runs.duration-ceiling` sets each run's hard
@@ -191,10 +200,8 @@ needs; it is not required.
    `runs.pressure-threshold-percent` sets the continuation threshold as a
    percentage of the run ceiling (1–100, default 85); the watch signals after
    two consecutive samples of anonymous memory plus swap at that threshold.
-   A review's unreclaimable footprint, its workers included, is typically
-   about 1 GiB and rarely above 5 GiB, so the default envelope holds a lone
-   run with room to spare; with a higher concurrency cap, raise it toward
-   the runs' combined peak. Each run paces `ensemble.concurrency-claude` and
+   With a higher concurrency cap, raise the envelope toward the runs'
+   combined peak, measured as below. Each run paces `ensemble.concurrency-claude` and
    `concurrency-codex` workers of its own (the loader defaults both to 2
    when neither is set; the shipped example comments both at 2).
    `ensemble.agent-ceiling` optionally caps a workflow's agents across
@@ -218,9 +225,9 @@ needs; it is not required.
 
    Size every capacity decision — this cap, the slice envelope, the box
    itself — by **anonymous memory plus swap peak, never the journal's cgroup
-   memory peak**. The journal's figure includes reclaimable page cache and
-   pegs at `MemoryMax`, so it overstates the real footprint by an order of
-   magnitude. Measure anonymous demand from the unit cgroup's
+   memory peak**. The journal's figure includes reclaimable page cache, so
+   it can sit at `MemoryMax` well above the memory the run actually needs.
+   Measure anonymous demand from the unit cgroup's
    `memory.stat` (`anon`) plus `memory.swap.current` at peak — the same
    metric the run's pressure watch reads.
 
@@ -258,8 +265,9 @@ needs; it is not required.
    from trusted as the run's only workspace — so any seed content in that
    file is not preserved; put seed configuration in other files within the
    seed directory. Each run also gets a private disk-backed `TMPDIR` beneath the
-   storage root's `tmp/` directory, alongside `runs/` (the shared tmpfs `/tmp`
-   cannot hold concurrent runs' artefacts). The lead and Ensemble workers
+   storage root's `tmp/` directory, alongside `runs/`, so workers' large
+   temporary files land on that disk rather than in `/tmp`, and are removed
+   with the run. The lead and Ensemble workers
    therefore inherit both
    engines' configured authentication without an interactive login. Gateway
    settings reach the Claude workers through the
@@ -323,6 +331,8 @@ needs; it is not required.
    GitHub App — using the matching secret. The path suffix after `/hooks/`
    must match the key used in `[forges.<key>]` in `service.toml`; a
    mismatch returns "unknown forge".
+
+## How runs and the sweep behave
 
 Run units, run directories and continuation handoffs include the configured
 forge key in their names (for example `minos-run-forgejo-owner-repo-pr1`), so
@@ -426,8 +436,11 @@ marker write with a reason naming the label and repository.
 When a run sets a `clean` or `attention` status on a head, Minos records
 which files the pull request changed and how, in `.reviewed/` under
 `runs.dir`, one file per pull request. A later run compares the new head with
-that record to decide how much to review again. The record is a cache:
-deleting it costs that pull request one full review. The sweep deletes the
+that record to decide how much to review again. The record is a cache.
+Without it, Minos looks among the last 20 commits of the pull request's
+current history for one carrying its own clean or attention result,
+and compares against that; when the earlier head is no longer in that
+history, as after a rebase, the next head is reviewed in full. The sweep deletes the
 record of a pull request that has closed, merged or gone from the forge, and
 the records of a repository that no longer has a file under `repos/`.
 
@@ -440,15 +453,31 @@ mtimes go stale, no lead processes are doing visible work, and the journal
 prints nothing — exactly the picture a dead run would show. Do not judge
 liveness from scratch mtime, process activity, or journal silence.
 
-For a **Claude lead**, the reliable discriminator is the lead session's own
-job state plus the unit: in the run's private home, the job directory's
-`state.json` (`$MINOS_RUN_DIR/home/.claude/jobs/<job>/state.json`) shows
-whether a wake is armed — a lead waiting on `session_cron` with
-`selfWake: true` is armed and healthy, and `inFlight` names any background
-task still owned — and the per-pull-request systemd unit must be `active`. An
-armed waiting lead with an active unit is a live run, however stale its
-scratch looks; a unit that has exited, or a job state with nothing in flight
-and no armed wake and no terminal marker, is the dead case.
+Find the run first. Its unit is named for the forge key, repository and pull
+request, and its directory under `runs.dir` is the unit name with a random
+suffix:
+
+```sh
+systemctl --user list-units 'minos-run-*'
+ls -d /var/lib/minos/runs/minos-run-forgejo-owner-repo-pr1-*   # runs.dir as shipped
+```
+
+A unit that is no longer `active` is not a live run, whatever its files say.
+
+For a **Claude lead**, the run body asks Claude Code itself: it runs
+`claude agents --json --all` with the run's private home and reads the
+`state` of the background session it launched (named
+`minos-<owner>-<repo>-pr<n>`). `running` and `blocked` keep the run going,
+except a lead blocked before its first change to the run tree; `failed` and
+`stopped` end it. An operator can read the same roster:
+
+```sh
+run=/var/lib/minos/runs/minos-run-forgejo-owner-repo-pr1-XXXXXXXX
+HOME="$run/home" CLAUDE_CONFIG_DIR="$run/home/.claude" claude agents --json --all
+```
+
+A lead session waiting on a background workflow between turns is live while
+its unit is active.
 
 For a **Codex lead**, the run body observes process liveness (`kill -0`) and
 exit status: a Codex lead that is still running is live; one that has exited
@@ -495,8 +524,8 @@ curl -H "Authorization: Bearer $(cat /etc/minos/status.token)" \
   http://localhost:8919/status | jq
 ```
 
-The token is the whole gate, and the projection names repositories, branches
-and heads — keep it to the LAN and treat it as a credential.
+The token is the whole gate, and the projection names repositories, pull
+requests and heads — keep it to the LAN and treat it as a credential.
 
 The projection's `sweep` field carries the sweep-deferral document. At the
 end of each completed pass the sweep writes `.sweep-deferrals.json` atomically
@@ -603,7 +632,12 @@ Recognised fields:
 - `extent` — `diff` (the default) or `full`. A full-extent brief grounds the
   review on all tracked files within the brief's directory scope, not just
   the changed files; it does not escape the scope to the whole tree.
-- `sweep` — `per-file` (the default) or `whole-tree`.
+- `sweep` — `per-file` (the default) or `whole-tree`. It matters only for a
+  full-extent brief. With `per-file`, a planning leg divides the files in
+  the brief's scope into review units and each unit gets its own reviewer;
+  with `whole-tree`, one reviewer reads the whole scope. `extent` decides
+  what is read, `sweep` how many reviewers share it. Choose `whole-tree`
+  when the brief's concern can only be judged across the scope at once.
 
 ### Engagement rules
 
@@ -612,7 +646,10 @@ deterministically skipped — it has no trigger to engage on. Add at least one
 of those to make it run.
 
 A brief engages when any of its triggers is satisfied: changed files within
-its path scope, a declared `relevance`, or a matched `occasion`. A scoped
+its path scope, a matched `occasion`, or a `relevance` the change matches.
+Declaring `relevance` is not enough on its own: when neither of the other
+triggers fires, a planning leg judges whether the change meets the
+relevance description, and the brief is skipped when it does not. A scoped
 brief whose scope is untouched still engages when its relevance or occasion
 matches — path scope limits the files the review reads, not whether the
 brief runs at all.
