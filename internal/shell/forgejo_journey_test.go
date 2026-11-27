@@ -2414,6 +2414,7 @@ type forgejoFixtureState struct {
 	dependencies     []map[string]any
 	dependencyPages  [][]map[string]any
 	dependencyCode   int
+	changedFilePages [][]map[string]any
 	// refuseReviewReads, when non-zero, is the HTTP status the fixture
 	// answers every review listing with, so a script's read-back sees an
 	// unreadable forge rather than an empty one.
@@ -2824,6 +2825,17 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		writeFixtureJSON(s.t, w, pulls)
+	case r.Method == http.MethodGet && path == pullPath+"/files":
+		if account == nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		var files []map[string]any
+		if page > 0 && page <= len(s.changedFilePages) {
+			files = s.changedFilePages[page-1]
+		}
+		writeFixtureArray(s.t, w, files)
 	case r.Method == http.MethodGet && path == pullPath:
 		s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])]++
 		pullRequest := maps.Clone(s.pullRequest)

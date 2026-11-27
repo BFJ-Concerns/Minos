@@ -61,12 +61,8 @@ func TestSweepRecordsDraftDeferrals(t *testing.T) {
 			}
 			state.mu.Lock()
 			defer state.mu.Unlock()
-			wantWrites := []string{"label-remove:minos/approved", "label-remove:minos/attention"}
-			if scenario == "draft with every reason" {
-				wantWrites = wantWrites[1:] // The clean marker still stands for the current head.
-			}
-			if !reflect.DeepEqual(state.writeSequence, wantWrites) {
-				t.Fatalf("draft marker writes = %v, want %v", state.writeSequence, wantWrites)
+			if len(state.writeSequence) != 0 {
+				t.Fatalf("draft marker writes = %v, want none", state.writeSequence)
 			}
 			if state.reviewRequestWrites != 0 || state.obsoleteAssignmentWrites != 0 || state.reactionWrites != 0 || state.reactionDeleteWrites != 0 || state.statusWrites != 0 || state.reviewWrites != 0 || len(state.issueCreateRequests) != 0 {
 				t.Fatalf("draft caused forge writes: sequence=%v reactions=%d/%d labels=%d statuses=%d reviews=%d requests=%d assignments=%d issues=%d", state.writeSequence, state.reactionWrites, state.reactionDeleteWrites, state.labelWrites, state.statusWrites, state.reviewWrites, state.reviewRequestWrites, state.obsoleteAssignmentWrites, len(state.issueCreateRequests))
@@ -75,7 +71,7 @@ func TestSweepRecordsDraftDeferrals(t *testing.T) {
 	}
 }
 
-func TestSweepRemovesStaleDefaultReactionAfterDraftHeadMoves(t *testing.T) {
+func TestSweepLeavesStaleDefaultReactionWhileDraftIsExcluded(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg := writeSweepFixtureConfig(t, state)
 	state.reactions = []string{"+1"}
@@ -105,8 +101,8 @@ func TestSweepRemovesStaleDefaultReactionAfterDraftHeadMoves(t *testing.T) {
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if len(state.reactions) != 0 || !reflect.DeepEqual(state.writeSequence, []string{"reaction-remove:+1"}) {
-		t.Fatalf("draft reactions = %v, forge writes = %v, want only stale approval removed", state.reactions, state.writeSequence)
+	if !reflect.DeepEqual(state.reactions, []string{"+1"}) || len(state.writeSequence) != 0 {
+		t.Fatalf("draft reactions = %v, forge writes = %v, want approval left in place and no forge writes", state.reactions, state.writeSequence)
 	}
 }
 

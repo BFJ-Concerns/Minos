@@ -129,7 +129,7 @@ its owner accepts all three.
    destination lives on the archive host, bound into the key's forced
    command below, so the box never names it.
 
-   Per-repository knobs — the review threshold, work-in-progress branch
+   Per-repository knobs — admission rules, review threshold, work-in-progress branch
    prefixes, the guidance sources a review is grounded on, the filing
    destination for advisory material and configuration diagnostics,
    and the markers Minos writes on a pull request — are set once under
@@ -358,6 +358,41 @@ its owner accepts all three.
    must match the key used in `[forges.<key>]` in `service.toml`; a
    mismatch returns "unknown forge".
 
+## Pull request admission
+
+Set fleet defaults in `[repositories.admission]` in `service.toml`. A
+repository's `[admission]` table replaces the entire fleet table. Use an
+empty table to restore the shipped defaults for one repository.
+
+| Key | Default | Rule |
+| --- | --- | --- |
+| `labels` | `[]` | If set, require at least one of these labels. |
+| `exclude-labels` | `[]` | Any of these labels excludes the pull request, even if an admission label matches. |
+| `authors` | `[]` | If set, require a listed forge login. |
+| `base-branches` | `[]` | If set, require an exact target branch name. |
+| `drafts` | `"ready"` | Review ready pull requests (`ready`), both ready and draft (`any`), or only drafts (`only`). Forgejo's `WIP:` titles count as drafts. |
+| `title-pattern` | `""` | If set, require a Go regular expression match anywhere in the title. Use anchors for a whole-title match. |
+| `paths` | `[]` | If set, require at least one touched path to match. |
+| `allow-forks` | `false` | Allow a source repository different from the enrolled repository. Minos always requires the source repository's identity. |
+
+Empty lists impose no filter. All configured filters must pass. Author
+logins are matched case-insensitively. Labels, branches and paths are
+case-sensitive. Use separate labels for admission and Minos markers so
+marker updates do not change admission.
+
+In `paths`, a trailing slash specifies a literal directory prefix, such
+as `internal/`, including nested files. Other entries use Go
+`path.Match` syntax. For example, `docs/*.md` matches Markdown files
+directly in `docs/`. A rename can match either its old or new path, and
+a deletion can match the deleted path. Minos reads the pull request's
+file list from the forge only when a path filter is needed. An incomplete
+or unavailable file list leaves the pull request unstarted.
+
+Webhook deliveries and the periodic sweep both use current forge facts.
+A pull request excluded by the rules gets no new run or forge write.
+A run admitted earlier can still be in flight when the rules or pull
+request change.
+
 ## How runs and the sweep behave
 
 Run units, run directories and continuation handoffs include the configured
@@ -456,16 +491,14 @@ for the repository in the ledger checkout's HTTP(S) push URL for `origin`.
 Git reads the authorisation header from an owner-only temporary
 configuration file.
 
-The receiver handles new events immediately. The sweep periodically starts any
-open, non-draft pull request whose current head carries no completion marker.
-Before reconciling a pull request, the sweep strips any stale Minos clean or
-attention marker — a reaction or a label, in the repository's configured
-form — left on a head the author has since replaced: reviews and statuses are
-SHA-bound evidence, but the PR-wide marker is not, so it is removed before
-another reconciliation decision is made. A label marker must already be
-defined (on the repository, or on Forgejo its organisation); a missing one
-refuses the
-marker write with a reason naming the label and repository.
+The receiver handles new events immediately. The sweep periodically starts
+eligible open pull requests whose current head carries no completion marker.
+Once the admission rules pass, reconciliation strips stale Minos clean or
+attention markers left on a head the author has replaced. Reviews and
+statuses identify the head they cover. Reactions and labels apply to the
+whole pull request. A label marker must already exist on the repository
+or, on Forgejo, its organisation. If the label is missing, Minos refuses
+the write and names the label and repository.
 
 When a run sets a `clean` or `attention` status on a head, Minos records
 which files the pull request changed and how, in `.reviewed/` under
@@ -568,9 +601,10 @@ end of each completed pass the sweep writes `.sweep-deferrals.json` atomically
 into the runs directory with a `completed_at` timestamp. The document records:
 
 - **`deferrals`** — pull requests the pass deliberately left unstarted, each
-  with a `reason` (the precedence-selected one) and `reasons` (every
-  applicable reason from that snapshot): draft, work-in-progress branch prefix,
-  completed review marker, or unresolved dependency.
+  with a `reason` (the precedence-selected one) and `reasons` (the
+  reasons observed on that pass), including admission rules,
+  work-in-progress branch prefixes, completed review markers and unresolved
+  dependencies. Path eligibility is checked when the metadata rules pass.
 - **`suppressed`** — pull requests eligible for a run but blocked by the
   concurrency cap or their own active unit, with the blocking unit and detail.
 - **`terminal`** — pull requests whose current head already carries a terminal

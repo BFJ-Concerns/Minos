@@ -53,6 +53,17 @@ signature-header = "X-Forgejo-Signature"
 # comment as its filing destination, and no work-in-progress prefixes.
 [repositories]
 # work-in-progress-branch-prefixes = ["structural/"]
+# Admission defaults to ready pull requests from the same repository.
+# A repository's [admission] table replaces this whole table.
+# [repositories.admission]
+# labels = ["Ready"]           # Any listed label admits, subject to the other rules.
+# exclude-labels = ["Blocked"] # Any listed label excludes.
+# authors = ["trusted-user"]
+# base-branches = ["main"]
+# drafts = "ready"             # ready, any or only
+# title-pattern = '^Release '
+# paths = ["internal/", "docs/*.md"]  # Directory prefix or Go path.Match pattern.
+# allow-forks = false
 # [repositories.review]
 # threshold = "High"
 # Guidance sources: the documents that carry each project's declared intent,

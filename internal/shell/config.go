@@ -220,10 +220,11 @@ func (cfg ServiceConfig) BotLogin(forgeName string) string {
 // service level under [repositories] and any repository overrides it in its
 // own file; the override replaces the whole value — a list never merges with
 // the service list — and a knob unset at both levels takes its shipped
-// default. Every knob is exported into the run by SpawnRun, so a run script
-// or input builder reads the resolved value and never reads configuration.
+// default. SpawnRun exports the resolved values needed by run scripts and
+// input builders.
 type RepositoryKnobs struct {
-	WorkInProgressBranchPrefixes []string `toml:"work-in-progress-branch-prefixes"`
+	Admission                    AdmissionRules `toml:"admission"`
+	WorkInProgressBranchPrefixes []string       `toml:"work-in-progress-branch-prefixes"`
 	Review                       struct {
 		Threshold string `toml:"threshold"`
 	} `toml:"review"`
@@ -432,6 +433,9 @@ func LoadRepoConfigs(cfg ServiceConfig) ([]RepoConfig, error) {
 // joins this function as one line per key, beside its struct field.
 func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...string) bool) RepositoryKnobs {
 	knobs := defaults
+	if defined("admission") {
+		knobs.Admission = own.Admission
+	}
 	if defined("work-in-progress-branch-prefixes") {
 		knobs.WorkInProgressBranchPrefixes = own.WorkInProgressBranchPrefixes
 	}
@@ -466,6 +470,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 // leave a knob unset, so a threshold or filing kind is checked only when
 // present; the resolved repository level always carries both.
 func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
+	if err := knobs.Admission.validate(); err != nil {
+		return fmt.Errorf("%s: admission.%w", where, err)
+	}
 	if knobs.Review.Threshold != "" && !validReviewThreshold(knobs.Review.Threshold) {
 		return fmt.Errorf("%s: review.threshold must be Critical, High, Medium or Low", where)
 	}

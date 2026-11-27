@@ -96,8 +96,8 @@ const (
 type ReconcileResult struct {
 	Decision ReconcileDecision
 	// DeferralReason is the precedence-selected reason for leaving an open
-	// pull request unstarted. DeferralReasons carries every applicable reason
-	// from that snapshot. Admission never reads the projection back.
+	// pull request unstarted. DeferralReasons carries the reasons observed
+	// on that pass. Admission never reads the projection back.
 	DeferralReason  string
 	DeferralReasons []string
 	TerminalOutcome string
@@ -126,7 +126,23 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	if snapshot.State != "open" {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
+	denials := repo.Admission.metadataDeferrals(snapshot)
+	if len(denials) == 0 && len(repo.Admission.Paths) > 0 {
+		paths, err := adapter.ChangedPaths(ctx, guard, snapshot.TargetBranch)
+		switch {
+		case err != nil:
+			return ReconcileResult{}, fmt.Errorf("read paths for admission: %w", err)
+		case !repo.Admission.matchesPaths(paths):
+			denials = append(denials, "admission paths did not match")
+		}
+	}
 	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
+	if len(denials) > 0 {
+		return ReconcileResult{
+			Decision: ReconcileNothing, DeferralReason: denials[0],
+			DeferralReasons: append(denials, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
+		}, nil
+	}
 	for _, terminal := range []struct {
 		role   string
 		marker *forge.Marker
@@ -141,9 +157,6 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		if result := adapter.RemoveMarker(ctx, guard, *terminal.marker); result.Outcome != forge.WriteApplied {
 			return ReconcileResult{}, fmt.Errorf("remove stale %s marker: %s: %s", terminal.role, result.Outcome, result.Reason)
 		}
-	}
-	if snapshot.Draft {
-		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "draft", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
 	}
 	facts.HeadSHA = snapshot.HeadSHA
 	facts.BaseSHA = snapshot.TargetSHA
@@ -204,9 +217,6 @@ type pullRequestAdmissionEligibility struct {
 
 func assessPullRequestAdmission(cfg ServiceConfig, repo RepoConfig, snapshot forge.Snapshot) pullRequestAdmissionEligibility {
 	eligibility := pullRequestAdmissionEligibility{}
-	if snapshot.Draft {
-		eligibility.reasons = append(eligibility.reasons, "draft")
-	}
 	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
 		eligibility.workInProgress = true
 		eligibility.reasons = append(eligibility.reasons, fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))

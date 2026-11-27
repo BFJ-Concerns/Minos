@@ -1,0 +1,29 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
+
+files="$(collect "/repos/$1/$2/pulls/$3/files")"
+# The files endpoint follows the PR's live refs. Recheck the coordinates
+# after pagination and compare the count because GitHub caps this list.
+guard_open_pull_request "$1" "$2" "$3" "$4" "$5" "$6" || {
+  echo "changed-paths: ${guard_reason:-pull request unavailable}" >&2
+  exit 1
+}
+branch="$(api GET "/repos/$1/$2/branches/$(urlencode "$7")")"
+printf '%s\n' "$files" "$guard_pr_json" "$branch" | jq -ces \
+  --arg target "$5" --arg ref "$7" '
+  . as [$files, $pr, $branch] |
+  if $pr.base.ref != $ref or $branch.commit.sha != $target then error("target moved")
+  elif ($pr.changed_files | type) != "number" or ($files | length) != $pr.changed_files
+    then error("incomplete changed-file list")
+  elif ([$files[].filename] | unique | length) != ($files | length)
+    then error("duplicate changed-file records")
+  else [$files[] |
+    if (.filename | type) != "string" or .filename == "" then error("missing filename")
+    elif .status == "renamed" and ((.previous_filename | type) != "string" or .previous_filename == "")
+      then error("missing previous filename")
+    else .filename, (.previous_filename // empty)
+    end] | unique
+  end'
