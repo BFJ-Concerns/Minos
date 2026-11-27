@@ -682,6 +682,52 @@ test("a whole-scope finding keeps its scope through the merge when a finding abo
   ]);
 });
 
+// A whole-scope brief's request whose fault lies in code the change never
+// touched is raised by its verifier, naming the request, and verified in
+// the next round as whole-scope; a raised finding outside the scope, or
+// naming nothing in the batch, is judged as a claim about the change.
+test("a finding a verifier raises while checking a whole-scope finding takes that scope only for a path within it", async () => {
+  const whole = brief(".review/pkg/errors.md", "---\nextent: full\n---\n# Errors\nJudge error paths.");
+  const { result, calls } = await run(args({
+    briefs: [whole],
+    trackedFiles: [{ path: "pkg/x.go" }, { path: "pkg/legacy.go" }],
+  }), responder({
+    specialist: () => specialistResult([finding({ title: "guard the retry" })]),
+    verify: (label, prompt) => {
+      const entries = findingsFromVerifierPrompt(prompt);
+      const firstRound = !label.includes("-round-");
+      return {
+        verdicts: entries.map((entry) => verdictFor(entry.id, firstRound
+          ? { verdict: "refuted", severity: "None", confidence: 92, reason: "the situation arises at pkg/legacy.go:11" }
+          : { confidence: 92, reason: "confirmed" })),
+        newFindings: firstRound ? [
+          finding({ title: "legacy retry fault", path: "pkg/legacy.go", line: 11, foundWhileChecking: entries[0].id }),
+          finding({ title: "command fault", path: "cmd/main.go", line: 3, foundWhileChecking: entries[0].id }),
+          finding({ title: "unnamed fault", path: "pkg/other.go", line: 5, foundWhileChecking: "nothing-in-the-batch" }),
+        ] : [],
+        outOfScopeObservations: [],
+      };
+    },
+  }));
+
+  const secondRound = calls.filter((call) => call.opts.label?.startsWith("verify-brief-round-2"));
+  assert.equal(secondRound.length, 1);
+  const shown = findingsFromVerifierPrompt(secondRound[0].prompt);
+  assert.deepEqual(shown.map(({ title, wholeScope }) => ({ title, wholeScope })), [
+    { title: "legacy retry fault", wholeScope: "pkg/" },
+    { title: "command fault", wholeScope: undefined },
+    { title: "unnamed fault", wholeScope: undefined },
+  ]);
+  assert.ok(shown.every((entry) => !("foundWhileChecking" in entry)), "the next verifier is not shown the provenance name");
+  const raised = result.proposedFindings.filter((entry) => entry.source === "verification");
+  assert.deepEqual(raised.map(({ title, wholeScope }) => ({ title, wholeScope })), [
+    { title: "legacy retry fault", wholeScope: "pkg/" },
+    { title: "command fault", wholeScope: undefined },
+    { title: "unnamed fault", wholeScope: undefined },
+  ]);
+  assert.ok(raised.every((entry) => !("foundWhileChecking" in entry)), "the run record carries no provenance name");
+});
+
 test("slug-colliding brief labels retain verdicts for their own findings", async () => {
   const first = brief(".review/pkg/check.one.md", "# First\nJudge the first concern.");
   const second = brief(".review/pkg/check-one.md", "# Second\nJudge the second concern.");
