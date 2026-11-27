@@ -62,9 +62,12 @@ status, and the sweep picks the pull request up again on a later pass.
 With both engines available, specialists propose findings on Codex
 (`gpt-6.2-astra`) and the verifier checks them on Claude (`claude-opus-5-5`),
 both at medium effort, so every finding is checked by the family that did
-not propose it; the planning roles run on Codex (`gpt-6.1-sol`). `[routing]` in
-`service.toml` moves any role to another engine, model or effort, and a box
-with only one engine runs every role on it.
+not propose it: a verifier from the proposer's own family measurably favours
+that family's findings. The planning roles run on Codex (`gpt-6.1-sol`).
+`[routing]` in `service.toml` moves any role to another engine, model or
+effort, and a box with only one engine runs every role on it. Such a box
+gives up the cross-family check: no finding there is checked by a family
+other than the one that proposed it.
 
 ## What the author sees
 
@@ -129,6 +132,18 @@ isolated — a dedicated container (Docker, for example) or VM — rather than o
 a machine whose other data and access you would not want a pull request's
 author to reach. This is a recommendation, not a requirement: Minos runs
 anywhere the requirements above hold.
+
+Every model provider the deployment provisions receives the source of the
+enrolled repositories. The lead and the review agents read the pull request's
+diff and the repository's files through their engine, so Anthropic (for
+Claude Code), OpenAI (for Codex) or the gateway in between sees that source.
+With an archive host configured, each run's archive carries it too: the
+agents' transcripts and run records hold the source they read. So does the
+failure record: the digest of a crashed run holds the tails of its
+transcripts, and the sweep appends it to `runs.failure-log` or, with
+`runs.failures-repo` set, commits it to that repository and pushes it, which
+may sit on another forge or be more widely readable than the repository
+reviewed. Enrol a private repository only where its owner accepts all three.
 
 ## Installation
 

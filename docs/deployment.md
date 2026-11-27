@@ -15,7 +15,8 @@ default routing uses both engines: `claude-opus-5-5` on Claude Code, and
 `gpt-6.2-astra` and `gpt-6.1-sol` on Codex. That takes a Claude Code
 subscription or gateway credential for the Claude engine, and a Codex
 (ChatGPT) account for the Codex engine. A host with only one engine
-provisioned runs every role on it. Reviews never build or test the
+provisioned runs every role on it, and so checks no finding with a family
+other than the one that proposed it. Reviews never build or test the
 reviewed repository, so no repository toolchains are needed.
 
 Minos adds no sandbox of its own: the lead holds the engine and forge
@@ -23,6 +24,20 @@ credentials and reads untrusted pull-request content with nothing between it
 and its host. Isolating the deployment — a dedicated container or VM — is
 recommended so that a misbehaving run can reach only what Minos itself
 needs; it is not required.
+
+Every model provider the deployment provisions receives the source of the
+enrolled repositories: the lead and the review agents read the diff and the
+repository's files through their engine, so Anthropic, OpenAI or a gateway
+in between sees that source. The run archives carry it too. Each archive
+holds the run's Claude transcripts, Codex rollouts and Ensemble records, and
+those hold the source the agents read, so the archive host and its
+destination keep copies for as long as the archives are kept. The failure
+record carries it as well: the digest the sweep records for a crashed run
+holds the tails of its transcripts, and goes to `runs.failure-log` or, with
+`runs.failures-repo` set, is committed to that repository and pushed, which
+may sit on another forge or be more widely readable than the repository
+reviewed (see *How runs and the sweep behave* below). Enrol a private repository only where
+its owner accepts all three.
 
 ## Install and configure
 
