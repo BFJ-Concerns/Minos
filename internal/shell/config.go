@@ -45,6 +45,12 @@ type ServiceConfig struct {
 		// unmounted, so a deployment gains the surface only once the
 		// operator has installed a token for it.
 		StatusTokenFile string `toml:"status-token-file"`
+		// PageCredentialFile holds the one operator credential that signs a
+		// browser in to the web page. Unset leaves the page unmounted. The
+		// file is read at each sign-in and each signed-in request, so
+		// replacing its content changes the credential, and ends every
+		// session signed in with the old one, without a restart.
+		PageCredentialFile string `toml:"page-credential-file"`
 	} `toml:"listener"`
 	Forges map[string]ForgeConfig `toml:"forges"`
 	// Repositories holds the service-level value of every per-repository
