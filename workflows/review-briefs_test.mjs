@@ -20,6 +20,7 @@ import { shippedBriefPrompts, shippedContracts } from "./shipped-prompts-fixture
 
 const scriptPath = fileURLToPath(new URL("./review-briefs.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-brief-inputs.mjs", import.meta.url));
+const scopeInputScriptPath = fileURLToPath(new URL("./review-scope-inputs.mjs", import.meta.url));
 const source = await readFile(scriptPath, "utf8");
 const body = source.replace(/^export const meta =/m, "const meta =");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -808,6 +809,45 @@ test("the enumerator reads a tracked-file listing larger than the default child-
   const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" };
   const enumerated = JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], { encoding: "utf8", env }));
   assert.deepEqual(enumerated.briefs, []);
+});
+
+test("a file moved out of a brief's directory engages the brief in the scope gate and the brief builder alike", (t) => {
+  const fixture = mkdtempSync(join(tmpdir(), "minos-brief-rename-"));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  const root = join(fixture, "workspace");
+  mkdirSync(join(root, "pkg"), { recursive: true });
+  mkdirSync(join(root, ".review", "pkg"), { recursive: true });
+  const git = (...gitArgs) => execFileSync("git", ["-C", root, ...gitArgs], { encoding: "utf8" });
+  git("init", "-q");
+  git("config", "user.name", "Fixture");
+  git("config", "user.email", "fixture@example.test");
+  writeFileSync(join(root, "AGENTS.md"), "guidance\n");
+  writeFileSync(join(root, "pkg", "moved.go"), "package pkg\n" + "// retained line\n".repeat(20));
+  writeFileSync(join(root, ".review", "pkg", "layout.md"), "# Layout\n\nJudge the package layout.\n");
+  git("add", ".");
+  git("commit", "-qm", "base");
+  const target = git("rev-parse", "HEAD").trim();
+  mkdirSync(join(root, "elsewhere"));
+  git("mv", "pkg/moved.go", "elsewhere/moved.go");
+  git("commit", "-qm", "head");
+  const head = git("rev-parse", "HEAD").trim();
+  const orientationPath = join(fixture, "orientation.json");
+  writeFileSync(orientationPath, JSON.stringify({
+    repository: root,
+    guidance: [{ source: { path: "AGENTS.md" }, location: join(root, "AGENTS.md"), origin: "checked-in" }],
+    misconfigurations: [],
+  }));
+  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" };
+  const built = (script) => JSON.parse(execFileSync(process.execPath, [script, target, head], { encoding: "utf8", env }));
+
+  const scope = built(scopeInputScriptPath);
+  const briefInput = built(inputScriptPath);
+  assert.deepEqual(scope.briefDispositions, [
+    { brief: ".review/pkg/layout.md", title: "Layout", engaged: true, via: "path-scope" },
+  ]);
+  assert.deepEqual(briefInput.changedPaths, ["elsewhere/moved.go", "pkg/moved.go"]);
+  assert.equal(briefInput.briefs.length, 1);
+  assert.equal(briefInput.briefs[0].disposition.triggered, true);
 });
 
 const workerInput = args({
