@@ -8,6 +8,7 @@ export async function writeReport(run, settled, ending, closingProblems = []) {
   const { inspection, decisions, outstanding, publication } = settled;
   const problems = [
     ...closingProblems,
+    settled.claimSummaryProblem, settled.reviewingSummaryProblem,
     settled.workingStatusProblem, settled.terminalStatusProblem, settled.terminalMarkerProblem,
     settled.reviewDispatchProblem, settled.briefDispatchProblem, publication?.filingRecordProblem,
     ...(publication?.filing.outcome === "unfiled" ? [publication.filing.reason] : []),

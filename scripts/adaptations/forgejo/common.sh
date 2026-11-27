@@ -137,6 +137,44 @@ pull_request_reviews() {
   printf '%s' "$reviews_all"
 }
 
+# conversation_comments prints the pull request's conversation comments as
+# the forge lists them, in one JSON array; returns 1 when the forge could
+# not be read or answered with something other than an array of objects.
+# Review comments are not among them: those are read thread by thread.
+# Pages until the empty page or a repeated one, so a forge that ignores
+# paging answers once and stops.
+conversation_comments() {
+  comments_all='[]'
+  comments_previous=''
+  comments_page=1
+  while :; do
+    comments_current="$(api GET "/api/v1/repos/$1/$2/issues/$3/comments?limit=50&page=${comments_page}")" || return 1
+    comments_count="$(printf '%s' "$comments_current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected an issue-comment array") end')" || return 1
+    ! repeats_previous_page "$comments_current" "$comments_previous" || break
+    [ "$comments_count" -gt 0 ] || break
+    comments_all="$(json_concat "$comments_all" "$comments_current")" || return 1
+    comments_previous="$comments_current"
+    comments_page=$((comments_page + 1))
+  done
+  printf '%s' "$comments_all"
+}
+
+# How the summary comment opens: the summary record's opening, which
+# internal/product names SummaryOpening.
+summary_opening='<!-- Minos summary:'
+
+# summary_comment prints the summary comment the login keeps on the pull
+# request as {id, body}, or null when it keeps none: the oldest of its
+# conversation comments whose body opens with the summary record. Returns 1
+# when the comments could not be read. This is the one place the comment is
+# found, for the snapshot that reads it and the guarded write that edits it.
+summary_comment() {
+  summary_listing="$(conversation_comments "$1" "$2" "$3")" || return 1
+  printf '%s' "$summary_listing" | jq -c --arg login "$4" --arg opening "$summary_opening" '
+    [.[] | select((.user.login // .user.username // "") == $login and ((.body // "") | startswith($opening)))] |
+    if length == 0 then null else min_by(.id) | {id, body} end'
+}
+
 # The page anchor of the newest review this login left on the given head,
 # as the forge itself reports it — the fragment of the review's `html_url`
 # (Forgejo anchors a review's timeline entry as `issuecomment-<comment id>`,

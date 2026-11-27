@@ -38,7 +38,7 @@ function fixture(t, {
   skip = false, outstanding = false, blocking = false, briefBlocks = false, advisory = false,
   refusedReview = false, refusedMarker = false, failedSettlement = false, incomplete = false,
   pressure = false, pressureOnPublish = false, moved = false, movedAtSnapshot, movedOnReview = false,
-  carry = false, killedFirstReview = false,
+  carry = false, killedFirstReview = false, refusedSummary, refusedStatus, movedOnSummary,
 } = {}) {
   const runDir = operationRoot(t, "minos-course-");
   const workspace = join(runDir, "workspace");
@@ -70,6 +70,7 @@ function fixture(t, {
   const failureLog = join(runDir, "failure-log");
   const calls = [];
   const drafts = [];
+  const summaries = [];
   let snapshots = 0;
   let headMoved = moved;
   const env = {
@@ -103,7 +104,7 @@ function fixture(t, {
       if (operation === "threads") {
         const earlierThreads = outstanding ? [{
           path: "lexer.go", line: 5,
-          comments: [{ commit_id: run.head, user: "minos", body: "**Blocking** The lexer drops an empty token." }],
+          comments: [{ commit_id: head, user: "minos", body: "**Blocking · High: The lexer drops an empty token**\n\nAn empty token is valid." }],
         }] : [];
         const postedThreads = drafts.flat().map(({ path, line, body }) => ({
           path, line, comments: [{ commit_id: run.head, user: "minos", body }],
@@ -111,6 +112,20 @@ function fixture(t, {
         return [...earlierThreads, ...postedThreads];
       }
       if (operation === "approve") return { outcome: "not-needed" };
+      if (operation === "summary") {
+        const [summaryHead, summaryTarget, state, text] = args;
+        assert.equal(summaryHead, run.head);
+        assert.equal(summaryTarget, run.target);
+        if (state === movedOnSummary) {
+          headMoved = true;
+          return { outcome: "rejected", reason: "head moved" };
+        }
+        if (state === refusedSummary)
+          return { outcome: "uncertain", reason: "summary write could not be discovered" };
+        summaries.push({ state, body: readFileSync(text, "utf8") });
+      }
+      if (operation === "status" && args[2] === refusedStatus)
+        return { outcome: "uncertain", reason: "status write could not be confirmed" };
       if (operation === "review") {
         if (movedOnReview) {
           headMoved = true;
@@ -147,7 +162,7 @@ function fixture(t, {
             break;
           case "earlier-findings":
             assert.deepEqual(args.input.findings.map(({ path, head, replies }) => [path, head, replies]),
-              [["lexer.go", run.head, []]]);
+              [["lexer.go", head, []]]);
             if (failedSettlement) throw new Error("Earlier findings did not finish.");
             answer = { findings: [{ key: "thread-1", outcome: "stands", reason: "Fixture defect still stands." }] };
             break;
@@ -167,6 +182,12 @@ function fixture(t, {
       const main = name.split("@")[0] === "review";
       const result = {
         ...verdict,
+        summarySections: main
+          ? [{ kind: "concern", name: "logic", findings: blocking || advisory ? 1 : 0 }]
+          : [
+            { kind: "brief", name: ".review/parser.md", findings: briefBlocks ? 1 : 0 },
+            { kind: "brief", name: ".review/lexer.md", skipped: "no lexing change" },
+          ],
         ...(main && (blocking || advisory) || !main && briefBlocks
         ? { confirmedFindings: [{ ...blockingFinding, severity: advisory ? "Low" : "High" }] } : {}),
         ...(main && incomplete ? { status: "incomplete", incomplete: ["The verifier did not finish."] } : {}),
@@ -180,7 +201,7 @@ function fixture(t, {
     ? { ...verdict, reviewed: { ...verdict.reviewed, target: run.head } }
     : verdict);
   return {
-    calls, drafts, run, json, failureLog, runDir,
+    calls, drafts, summaries, run, json, failureLog, runDir,
     drive: () => driveRun(run, { complete: true }),
     read: (name) => readFileSync(join(runDir, name), "utf8"),
   };
@@ -190,8 +211,8 @@ test("the course posts only the validated blocking review and records its non-cl
   const f = fixture(t, { blocking: true, outstanding: true });
   assert.deepEqual(await f.drive(), { outcome: "changes-requested" });
   assert.deepEqual(f.calls.map(([op, ...args]) => op === "status" ? args[2] : op),
-    ["snapshot", "claim", "working", "earlier", "judge", "dispatch", "dispatch", "snapshot", "threads",
-      "judge", "snapshot", "threads", "judge", "review", "attention", "marker", "marker"]);
+    ["snapshot", "claim", "summary", "working", "earlier", "judge", "summary", "dispatch", "dispatch", "snapshot", "threads",
+      "judge", "snapshot", "threads", "judge", "review", "summary", "attention", "marker", "marker"]);
   assert.deepEqual(f.calls.find(([op]) => op === "review").slice(1, 4), [f.run.head, target, "request-changes"]);
   assert.match(f.drafts[0][0].body, /Blocking/);
   assert.match(f.read("failure-log"), /cause=this run published blocking findings/);
@@ -200,13 +221,29 @@ test("the course posts only the validated blocking review and records its non-cl
   assert.equal(f.json("verdict-decision.json").verdict, "request-changes");
   assert.equal(f.json("triage-result.json").outcome, "nothing-to-file");
   assert.deepEqual(f.json("judgements/earlier-findings.json").input.findings.map(({ path, head }) => [path, head]),
-    [["lexer.go", f.run.head]]);
+    [["lexer.go", head]]);
+});
+
+test("the claim makes the summary comment say the head is being inspected", async (t) => {
+  const f = fixture(t, { skip: true });
+  assert.deepEqual(await f.drive(), { outcome: "clean" });
+  assert.deepEqual(f.calls.find(([op]) => op === "summary"),
+    ["summary", f.run.head, target, "inspecting", join(f.runDir, "summary-comment.md")]);
+  assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "clean"]);
+  assert.equal(f.summaries[0].body,
+    `**Minos: looking at what changed.**\n\nHead \`${f.run.head.slice(0, 7)}\` against target \`${target.slice(0, 7)}\`.\n`);
+});
+
+test("a summary comment the forge did not take at the claim is reported and the course goes on", async (t) => {
+  const f = fixture(t, { skip: true, refusedSummary: "inspecting" });
+  assert.deepEqual(await f.drive(), { outcome: "clean" });
+  assert.match(f.read("report.md"), /forge summary: summary write could not be discovered/);
 });
 
 test("a no-review run approves only a clean outcome and never restates earlier findings", async (t) => {
   const clean = fixture(t, { skip: true });
   assert.deepEqual(await clean.drive(), { outcome: "clean" });
-  assert.deepEqual(clean.calls.map(([op]) => op), ["snapshot", "claim", "status", "earlier", "judge", "snapshot", "threads", "approve", "status", "marker", "marker"]);
+  assert.deepEqual(clean.calls.map(([op]) => op), ["snapshot", "claim", "summary", "status", "earlier", "judge", "snapshot", "threads", "approve", "summary", "status", "marker", "marker"]);
   assert.deepEqual(clean.calls.slice(-3), [
     ["status", clean.run.head, target, "clean"], ["marker", clean.run.head, target, "clean", "add"],
     ["marker", clean.run.head, target, "in-flight", "remove"],
@@ -216,12 +253,16 @@ test("a no-review run approves only a clean outcome and never restates earlier f
 
   const blocked = fixture(t, { skip: true, outstanding: true });
   assert.deepEqual(await blocked.drive(), { outcome: "changes-requested" });
-  assert.deepEqual(blocked.calls.map(([op]) => op), ["snapshot", "claim", "status", "earlier", "judge", "snapshot", "threads", "judge", "status", "marker", "marker"]);
+  assert.deepEqual(blocked.calls.map(([op]) => op), ["snapshot", "claim", "summary", "status", "earlier", "judge", "snapshot", "threads", "judge", "summary", "status", "marker", "marker"]);
   assert.match(blocked.read("failure-log"), /earlier review remain outstanding/);
   assert.match(blocked.read("report.md"), /Fixture defect still stands/);
   const settlement = blocked.json("judgements/earlier-findings.json");
-  assert.equal(settlement.input.findings[0].head, blocked.run.head);
+  assert.equal(settlement.input.findings[0].head, head);
   assert.equal(settlement.answer.findings[0].outcome, "stands");
+  assert.deepEqual(blocked.summaries.map(({ state }) => state), ["inspecting", "changes-requested"]);
+  assert.match(blocked.summaries.at(-1).body,
+    /The lexer drops an empty token.*lexer\.go:5.*raised at `2222222`/);
+  assert.doesNotMatch(blocked.summaries.at(-1).body, /Section/);
 });
 
 test("an incomplete review or unconfirmed write withdraws the run without a clean marker", async (t) => {
@@ -234,6 +275,10 @@ test("an incomplete review or unconfirmed write withdraws the run without a clea
       ["status", f.run.head, target, "incomplete"], ["marker", f.run.head, target, "in-flight", "remove"],
     ]);
     assert.equal(f.read("failure-log").trim().split("\n").length, 1);
+    assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "reviewing", "incomplete"]);
+    assert.match(f.summaries.at(-1).body, options.incomplete
+      ? /The specialist review did not complete/
+      : /Minos could not confirm publication of the findings/);
   }
 });
 
@@ -259,6 +304,10 @@ test("a brief's blocker alone publishes a request for changes", async (t) => {
   assert.deepEqual(await f.drive(), { outcome: "changes-requested" });
   assert.deepEqual(f.calls.find(([op]) => op === "review").slice(1, 4), [f.run.head, target, "request-changes"]);
   assert.match(f.drafts[0][0].body, /The parser rejects a valid record/);
+  assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "reviewing", "changes-requested"]);
+  assert.match(f.summaries.at(-1).body, /\| logic \| none \|/);
+  assert.match(f.summaries.at(-1).body, /Brief `\.review\/parser\.md` \| 1/);
+  assert.match(f.summaries.at(-1).body, /Brief `\.review\/lexer\.md` \| skipped: no lexing change/);
   assert.equal(f.json("verdict-decision.json").verdict, "clean");
   assert.equal(f.json("verdict-decision-brief.json").verdict, "request-changes");
   assert.equal(existsSync(join(f.runDir, "judgements/earlier-findings.json")), false);
@@ -282,6 +331,7 @@ test("a guarded publication can refuse a head that moved after settlement", asyn
   assert.equal(ending.outcome, "superseded");
   assert.equal(ending.step, "publish");
   assert.equal(f.drafts.length, 0);
+  assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "reviewing"]);
   assert.deepEqual(f.calls.slice(-2), [["snapshot"], ["marker", head, reviewBase, "in-flight", "remove"]]);
 });
 
@@ -299,6 +349,7 @@ test("a memory handoff records durable progress and keeps in-flight for the succ
   assert.deepEqual(f.calls.slice(-2), [["snapshot"], ["status", f.run.head, reviewBase, "continuation"]]);
   assert.deepEqual(f.json("handoff.json").progress, { stage: "review", head: f.run.head, latestReview: 7 });
   assert.equal(f.read("lead-complete"), "continuation\n");
+  assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "reviewing"]);
   assert.equal(existsSync(f.failureLog), false);
 });
 
@@ -340,4 +391,46 @@ test("a killed dispatch retries once and keeps both attempts' input", async (t) 
   assert.deepEqual(f.json("review-args.json"), f.json("review@2-args.json"));
   assert.deepEqual(f.json("review-result.json"), f.json("review@2-result.json"));
   assert.match(f.read("report.md"), /review ended on SIGKILL/);
+});
+
+
+test("a clean summary completes the head when the optional write of its status fails", async (t) => {
+  const f = fixture(t, { skip: true, refusedStatus: "clean" });
+  assert.deepEqual(await f.drive(), { outcome: "clean" });
+  assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "clean"]);
+  assert.match(f.read("report.md"), /status write could not be confirmed/);
+});
+
+test("an unconfirmed terminal summary leaves the run incomplete before writing a clean status", async (t) => {
+  const f = fixture(t, { skip: true, refusedSummary: "clean" });
+  const ending = await f.drive();
+  assert.equal(ending.outcome, "incomplete");
+  assert.equal(ending.step, "conclude");
+  assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "incomplete"]);
+  assert.match(f.summaries.at(-1).body, /could not confirm the final result/);
+  assert.doesNotMatch(f.summaries.at(-1).body, /summary write could not be discovered/);
+  assert.match(f.read("report.md"), /summary write could not be discovered/);
+  assert.equal(f.calls.some(([op, , , state]) => op === "status" && state === "clean"), false);
+});
+
+test("a head move that the terminal summary write discovers leaves no later summary", async (t) => {
+  const f = fixture(t, { skip: true, movedOnSummary: "clean" });
+  assert.equal((await f.drive()).outcome, "superseded");
+  assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting"]);
+  assert.deepEqual(f.calls.slice(-2), [["snapshot"], ["marker", head, reviewBase, "in-flight", "remove"]]);
+});
+
+test("a failed reviewing summary is recorded even when the specialist review then fails", async (t) => {
+  const f = fixture(t, { incomplete: true, refusedSummary: "reviewing" });
+  assert.equal((await f.drive()).outcome, "incomplete");
+  assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "incomplete"]);
+  assert.match(f.read("report.md"), /summary write could not be discovered/);
+});
+
+test("a failed incomplete summary does not prevent withdrawal", async (t) => {
+  const f = fixture(t, { incomplete: true, refusedSummary: "incomplete" });
+  assert.equal((await f.drive()).outcome, "incomplete");
+  assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "reviewing"]);
+  assert.deepEqual(f.calls.at(-1), ["marker", f.run.head, target, "in-flight", "remove"]);
+  assert.match(f.read("report.md"), /summary write could not be discovered/);
 });

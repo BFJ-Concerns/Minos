@@ -53,7 +53,8 @@ func newStatusReaderFixture(t *testing.T, pages []string, repeat bool, refuseSou
 			if page > 0 && page <= len(pages) {
 				response = pages[page-1]
 			}
-		case "/api/v1/repos/owner/repo/issues/17/dependencies", "/api/v1/repos/owner/repo/pulls/17/reviews":
+		case "/api/v1/repos/owner/repo/issues/17/dependencies", "/api/v1/repos/owner/repo/pulls/17/reviews",
+			"/api/v1/repos/owner/repo/issues/17/comments":
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.String())
 			http.NotFound(w, r)

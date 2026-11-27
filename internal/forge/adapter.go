@@ -305,6 +305,45 @@ func (a *Adapter) PostReview(ctx context.Context, guard Guard, verdict ReviewVer
 	return decodeWriteResult(out, runErr)
 }
 
+// SummaryComment reads the service's summary comment on the pull request,
+// nil when it has none. A snapshot carries the same comment; this is the
+// read for a caller that needs nothing else of the pull request.
+func (a *Adapter) SummaryComment(ctx context.Context, repository Repository, pullRequest int64) (*SummaryComment, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "summary-comment", Arguments: []string{repository.Owner, repository.Name, strconv.FormatInt(pullRequest, 10), a.serviceLogin}})
+	if err != nil {
+		return nil, err
+	}
+	var comment *SummaryComment
+	if err := json.Unmarshal(out, &comment); err != nil {
+		return nil, fmt.Errorf("decode forge summary comment: %w", err)
+	}
+	if comment != nil && comment.ID <= 0 {
+		return nil, fmt.Errorf("forge summary comment carries no id")
+	}
+	return comment, nil
+}
+
+// WriteSummary makes body the pull request's summary comment under the
+// guard: the comment is created when the pull request has none and edited
+// in place otherwise, never posted a second time. The body must open with
+// a summary record for the guarded head, so the completion marker a write
+// leaves can only speak of the head the guard confirmed.
+func (a *Adapter) WriteSummary(ctx context.Context, guard Guard, body string) WriteResult {
+	record, found := product.ParseSummary(body)
+	if !found {
+		return WriteResult{Outcome: WriteRejected, Reason: "summary comment does not open with a summary record"}
+	}
+	if record.Head != guard.HeadSHA {
+		return WriteResult{Outcome: WriteRejected, Reason: "summary record names a head other than the guarded one"}
+	}
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "guarded-write-summary",
+		Arguments: a.guardArguments(guard),
+		Stdin:     strings.NewReader(body),
+	})
+	return decodeWriteResult(out, err)
+}
+
 // AddMarker writes one marker in its configured form under the guard.
 func (a *Adapter) AddMarker(ctx context.Context, guard Guard, marker Marker) WriteResult {
 	return a.markerWrite(ctx, guard, marker, "guarded-add-reaction", "guarded-add-label")

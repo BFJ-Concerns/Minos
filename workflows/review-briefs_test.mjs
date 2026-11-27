@@ -346,6 +346,7 @@ test("a mixed partition is one durable run disposition with its inapplicable uni
   assert.equal(result.briefs[0].status, "run");
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.summarySections, [{ kind: "brief", name: candidate.path, findings: 0 }]);
   assert.deepEqual(verdict.ran, [{
     brief: candidate.path,
     title: "Full",
@@ -393,6 +394,7 @@ test("an entirely inapplicable partition is one durable skipped disposition", as
   assert.equal(result.briefs[0].status, "skipped");
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.summarySections, [{ kind: "brief", name: candidate.path, skipped: "all 2 partition units were inapplicable" }]);
   assert.deepEqual(verdict.ran, []);
   assert.deepEqual(verdict.skipped, [{
     brief: candidate.path,
@@ -941,6 +943,7 @@ test("worker dispatch options strip capabilities and identify fan-out settlement
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.complete, true, verdict.incomplete.join("\n"));
   assert.equal(verdict.confirmedFindings.length, 1);
+  assert.deepEqual(verdict.summarySections, [{ kind: "brief", name: ".review/errors.md", findings: 1 }]);
 });
 
 test("identified partition failure reaches the verdict by label", async (t) => {

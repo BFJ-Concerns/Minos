@@ -569,7 +569,7 @@ test("a missing specialist result remains visible as a required leg", async () =
   assert.ok(result.requiredModelEvidence.some((leg) => leg.role === "specialist"));
 });
 
-test("specialist inapplicability is a skip-like disposition whose own findings never reach a verifier", async () => {
+test("specialist inapplicability is a skip-like disposition whose own findings never reach a verifier", async (t) => {
   const { result, calls } = await runScript(ARGS, responder({
     specialist: () => specialistResult(
       [finding({ title: "must not escape" })],
@@ -585,6 +585,11 @@ test("specialist inapplicability is a skip-like disposition whose own findings n
     skipKind: "inapplicable",
     reason: "the assigned scope contains no relevant behaviour",
   }]);
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.summarySections, [
+    { kind: "concern", name: "logic", skipped: "the assigned scope contains no relevant behaviour" },
+  ]);
 });
 
 test("the review plan dispatches exactly every requested specialist", async () => {
@@ -1103,6 +1108,10 @@ test("findings one fix would resolve are merged and verified once, with the grou
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
   assert.equal(verdict.confirmedFindings.length, 1);
+  assert.deepEqual(verdict.summarySections, [
+    { kind: "concern", name: "logic", findings: 1 },
+    { kind: "concern", name: "failure", findings: 1 },
+  ]);
 });
 
 test("a grouping that loses or repeats a finding stops the review before verification", async (t) => {
@@ -1225,6 +1234,7 @@ test("an unsettled verdict reaches the verdict as an open question, never as a c
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
   assert.deepEqual(verdict.confirmedFindings, []);
+  assert.deepEqual(verdict.summarySections, [{ kind: "concern", name: "logic", findings: 0 }]);
   assert.deepEqual(verdict.unsettledFindings.map(({ verdict: disposition, wouldSettle }) => ({ disposition, wouldSettle })), [
     { disposition: "unsettled", wouldSettle: "Run the change against a stalled peer." },
   ]);

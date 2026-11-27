@@ -6,6 +6,8 @@ package forge
 import (
 	"context"
 	"io"
+
+	"github.com/BFJ-Concerns/Minos/internal/product"
 )
 
 type Repository struct {
@@ -81,6 +83,16 @@ type PullRequestComment struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// SummaryComment is the service's summary comment as the forge holds it:
+// the oldest conversation comment the service wrote on the pull request
+// whose body opens with a summary record (product.SummaryOpening). A pull
+// request has at most one in the ordinary course; were a second ever made,
+// the oldest is the one read and edited, so reader and writer agree.
+type SummaryComment struct {
+	ID   int64  `json:"id"`
+	Body string `json:"body"`
+}
+
 type Dependency struct {
 	Repository string `json:"repository"`
 	Number     int64  `json:"number"`
@@ -108,6 +120,21 @@ type Snapshot struct {
 	DependenciesAvailable bool         `json:"dependencies_available"`
 	DependencyError       string       `json:"dependency_error,omitempty"`
 	OpenDependencies      []Dependency `json:"open_dependencies"`
+
+	// Summary is the service's summary comment, nil when the pull request
+	// has none.
+	Summary *SummaryComment `json:"summary,omitempty"`
+}
+
+// SummaryRecord reads the record the pull request's summary comment opens
+// with. A pull request with no summary comment, or one whose first line is
+// no longer a record, has none, and its head is then judged by the review
+// and status it carries.
+func (snapshot Snapshot) SummaryRecord() (product.SummaryRecord, bool) {
+	if snapshot.Summary == nil {
+		return product.SummaryRecord{}, false
+	}
+	return product.ParseSummary(snapshot.Summary.Body)
 }
 
 // RepositoryMetadata is what a forge says about a repository a run clones:

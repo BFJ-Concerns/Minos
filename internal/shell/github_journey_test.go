@@ -1161,9 +1161,22 @@ func (s *githubFixtureState) handleOperations(w http.ResponseWriter, r *http.Req
 			w.WriteHeader(201)
 			writeFixtureJSON(s.t, w, record)
 			return true
-		case r.Method == http.MethodPost && strings.HasPrefix(path, "/repos/acme/widgets/issues/") && strings.HasSuffix(path, "/comments"):
+		case r.Method == http.MethodPost && path == "/repos/acme/widgets/issues/7/comments":
+			record := map[string]any{"id": 800 + len(s.writes), "body": payload["body"], "user": map[string]any{"login": githubFixtureBotLogin}}
+			s.issueComments = append(s.issueComments, record)
 			w.WriteHeader(201)
-			writeFixtureJSON(s.t, w, map[string]any{"id": 800 + len(s.writes), "body": payload["body"]})
+			writeFixtureJSON(s.t, w, record)
+			return true
+		case r.Method == http.MethodPatch && strings.HasPrefix(path, "/repos/acme/widgets/issues/comments/"):
+			id := strings.TrimPrefix(path, "/repos/acme/widgets/issues/comments/")
+			for _, comment := range s.issueComments {
+				if fmt.Sprint(comment["id"]) == id {
+					comment["body"] = payload["body"]
+					writeFixtureJSON(s.t, w, comment)
+					return true
+				}
+			}
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 			return true
 		}
 	}

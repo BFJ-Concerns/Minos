@@ -244,12 +244,22 @@ func staleTerminalMarker(snapshot forge.Snapshot, botLogin, statusContext string
 	return !completed || state != want
 }
 
-// headCompletion is the current head's completion marker: the state of a
-// terminal Minos review of the head, or else of the latest Minos status on
-// it when that status is terminal. Admission and marker reconciliation
-// both read it, so a head is never deferred as one outcome while carrying
-// the other's marker.
+// headCompletion is the current head's completion marker. The summary
+// comment speaks first: a record that names this head with a finished
+// state completes it. Where the comment says nothing finished of this
+// head, the head is completed by a terminal Minos review of it, or else by
+// the latest Minos status on it when that status is terminal. Those two
+// are all a head carries when the run that finished it wrote no summary
+// comment, as the resident lead writes none, and such a head reads as
+// finished for as long as it stands.
+// Admission and marker reconciliation both read this, so a head is never
+// deferred as one outcome while carrying the other's marker.
 func headCompletion(snapshot forge.Snapshot, botLogin, statusContext string) (product.State, bool) {
+	if record, found := snapshot.SummaryRecord(); found {
+		if state, completed := record.Completion(snapshot.HeadSHA); completed {
+			return state, true
+		}
+	}
 	if review, found := currentReview(snapshot, botLogin); found {
 		if state, terminal := terminalState(review); terminal {
 			return state, true
@@ -289,8 +299,7 @@ func settleCompletedMarkers(ctx context.Context, adapter *forge.Adapter, guard f
 }
 
 // pullRequestAdmissionEligibility holds the non-writing admission chain. The
-// completion marker is head-bound: a terminal Minos review of the current
-// head, or a clean/attention Minos status on it. The sweep never writes
+// completion marker is head-bound (headCompletion). The sweep never writes
 // statuses itself — the terminal status is the lead's own best-effort write
 // (the 2026-08-30 Decision rejects code-owned status reconciliation).
 type pullRequestAdmissionEligibility struct {

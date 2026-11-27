@@ -10,7 +10,8 @@
 // head, reviewed or not.
 //
 // Settles `outstanding`: the earlier blocking findings that stand, each
-// { key, where, path, line, head, reason }, empty when none stands.
+// { key, where, path, line, head, reason }, with a title when the original
+// finding has one. An empty list means none stands.
 
 import { REVIEW_BODY, THREAD, earlierMinosFindings } from "../earlier-minos-findings.mjs";
 import { STANDS, stage as earlierFindings } from "../judgements/earlier-findings.mjs";
@@ -54,8 +55,9 @@ export async function settleEarlierFindings(run) {
     outstanding: answer.findings
       .filter((entry) => entry.outcome === STANDS)
       .map(({ key, reason }) => {
-        const { where, path, line, head } = byKey.get(key);
-        return { key, where, path, line, head, reason };
+        const { where, path, line, head, finding } = byKey.get(key);
+        const title = finding.match(/^\*\*Blocking · [^:\r\n]+: (.+)\*\*(?:\r?\n|$)/)?.[1];
+        return { key, where, path, line, head, ...(title ? { title } : {}), reason };
       }),
   };
 }

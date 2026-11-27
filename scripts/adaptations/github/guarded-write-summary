@@ -1,0 +1,73 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
+
+# Makes the text on standard input the open pull request's summary comment.
+# The comment is created when the login keeps none on the pull request and
+# edited in place otherwise, so a pull request never gains a second. A
+# comment that already holds the text counts as written.
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"
+body="$(cat)"
+
+# The comment is found again by how it opens, so a text that opens any
+# other way could never be edited: it is refused before any forge call.
+case "$body" in
+  "$summary_opening"*) ;;
+  *) write_result rejected "summary comment does not open with the summary record"; exit 0 ;;
+esac
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+# Whether the comment $1, as summary_comment prints it, holds the requested
+# text. A forge may store a body with other line endings or without its
+# outer whitespace, so neither is compared. The text rides beside the
+# comment on standard input, never as an argument.
+holds_requested_body() {
+  { printf '%s\n' "$1"; printf '%s' "$body" | jq -Rs .; } | json_match -s '
+    def settled: gsub("\r\n"; "\n") | sub("^\\s+"; "") | sub("\\s+$"; "");
+    if length != 2 then error("expected the comment and the requested text") else
+    .[0] != null and ((.[0].body // "") | settled) == (.[1] | settled) end'
+}
+
+existing="$(summary_comment "$owner" "$repo" "$pr" "$login" 2>/dev/null)" || {
+  write_result uncertain "summary comment could not be read"
+  exit 0
+}
+if holds_requested_body "$existing"; then
+  write_result applied "summary comment already current"
+  exit 0
+else
+  held=$?
+  if [ "$held" -eq 2 ]; then
+    write_result uncertain "summary comment could not be compared"
+    exit 0
+  fi
+fi
+
+payload="$(printf '%s' "$body" | jq -Rsc '{body: .}')"
+comment_id="$(printf '%s' "$existing" | jq -r 'if . == null then "" else .id end')"
+if [ -z "$comment_id" ]; then
+  api_json POST "/repos/${owner}/${repo}/issues/${pr}/comments" "$payload" >/dev/null 2>&1 || true
+else
+  api_json PATCH "/repos/${owner}/${repo}/issues/comments/${comment_id}" "$payload" >/dev/null 2>&1 || true
+fi
+
+# A lost response can still be an applied write, so the forge is read again
+# before the write is reported either way.
+written="$(summary_comment "$owner" "$repo" "$pr" "$login" 2>/dev/null)" || {
+  write_result uncertain "summary write could not be discovered"
+  exit 0
+}
+if holds_requested_body "$written"; then
+  write_result applied
+else
+  write_result uncertain "summary write could not be discovered"
+fi
