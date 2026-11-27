@@ -64,7 +64,28 @@ func TestProjectionSweepFacts(t *testing.T) {
 					state.setStatuses([]map[string]any{{"id": 7, "context": "Minos", "status": "failure", "description": product.Attention().Description(), "creator": map[string]any{"login": "Minos"}}})
 				}
 			case "partial":
-				writeTestFile(t, filepath.Join(cfg.Root, "repos", "aaa-vanished.toml"), "forge = \"forgejo\"\nowner = \"minos-e2e-owner\"\nrepo = \"vanished\"\n[adaptation]\nrun-body = \"/opt/minos/run-body/run-body\"\n")
+				path := filepath.Join(cfg.Root, "service.toml")
+				content, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				forgeConfig := cfg.Forges["forgejo"]
+				writeTestFile(t, path, string(content)+fmt.Sprintf(`
+[forges.second]
+adaptation = %q
+api-base = %q
+credential-file = %q
+webhook-secret-file = %q
+`, forgeConfig.Adaptation, forgeConfig.APIBase, forgeConfig.CredentialFile, forgeConfig.WebhookSecretFile))
+				for _, forge := range []string{"forgejo", "second"} {
+					writeTestFile(t, filepath.Join(cfg.Root, "repos", forge+"-vanished.toml"), fmt.Sprintf(`
+forge = %q
+owner = "minos-e2e-owner"
+repo = "vanished"
+[adaptation]
+run-body = "/opt/minos/run-body/run-body"
+`, forge))
+				}
 			case "readied":
 				writeTestFile(t, sweepDeferralsPath(cfg), `{"kind":"minos-sweep-deferrals-v1","deferrals":[{"pr":"1","reason":"unobserved old deferral"}]}`)
 			case "review marker":
@@ -109,7 +130,7 @@ func TestProjectionSweepFacts(t *testing.T) {
 				}
 			case "partial":
 				skipped, _ := doc["skipped_repositories"].(map[string]any)
-				if doc["partial"] != true || skipped["minos-e2e-owner/vanished"] == nil {
+				if doc["partial"] != true || skipped["forgejo/minos-e2e-owner/vanished"] == nil || skipped["second/minos-e2e-owner/vanished"] == nil {
 					t.Fatalf("partial pass coverage missing: %#v", doc)
 				}
 			case "clean", "attention", "review marker":

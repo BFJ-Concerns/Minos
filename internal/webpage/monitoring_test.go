@@ -25,7 +25,7 @@ func TestOperatorQueueShowsSweepReasons(t *testing.T) {
 			{"owner":"acme","repo":"widget","pr":"3","detail":"all 2/2 run slots are occupied"},
 			{"owner":"acme","repo":"widget","pr":"4","blocking_unit":"minos-run-widget-pr4.service"}
 		],
-		"skipped_repositories":{"acme/offline":"forge unavailable"}
+		"skipped_repositories":{"acme/offline":"forge unavailable","forgejo/acme/widget":"Forgejo unavailable","github/acme/widget":"GitHub unavailable"}
 	}`), &sweep); err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,8 @@ func TestOperatorQueueShowsSweepReasons(t *testing.T) {
 	assertMonitoringPage(t, response.Code, response.Body.String(),
 		"2026-11-27T04:45:00Z", "Partial", "Draft pull request", "open dependencies: acme/other#8",
 		"acme/widget #2", "pull request snapshot unavailable", "all 2/2 run slots are occupied",
-		"Already running", "acme/offline", "forge unavailable")
+		"Already running", "acme/offline", "forge unavailable",
+		"forgejo/acme/widget", "Forgejo unavailable", "github/acme/widget", "GitHub unavailable")
 	reading = nil
 	response = visit(site, "/queue", session)
 	assertMonitoringPage(t, response.Code, response.Body.String(), "No completed sweep record is available")

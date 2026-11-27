@@ -46,7 +46,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	var attempted, unreadable int
 	skipped := make(map[string]string)
 	for _, repo := range repos {
-		slug := repo.Owner + "/" + repo.Repo
+		slug := repo.Forge + "/" + repo.Owner + "/" + repo.Repo
 		forgeConfig, ok := cfg.Forges[repo.Forge]
 		if !ok {
 			skipped[slug] = fmt.Sprintf("unknown forge %q", repo.Forge)
