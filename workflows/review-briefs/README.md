@@ -47,6 +47,7 @@ Run slots take a value from the run:
 | `{{other-concerns}}` | a list line for every other concern: its name and summary |
 | `{{concerns}}` | the same line for every concern |
 | `{{planned-focus}}` | the planned unit's `concern` sentence and its `scope` paths |
+| `{{same-concern-units}}` | every other planned unit of the same concern, each in the form `{{planned-focus}}` takes, or nothing when the unit is its concern's only one |
 | `{{brief-path}}`, `{{brief}}` | a `.review/` brief's path and text |
 | `{{assignment}}` | the scope and extent a `.review/` brief's reviewer was given |
 | `{{findings}}` | the findings as a JSON array, with the fields `review-contracts.mjs` lists for that stage |
