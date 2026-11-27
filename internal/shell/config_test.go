@@ -421,6 +421,21 @@ func TestRepositoryReviewKeySetAloneOverServiceDefaults(t *testing.T) {
 	}
 }
 
+// A repository can leave each head's review to be chosen, over a service
+// that names a mode for every head.
+func TestRepositoryReviewModeCanBeAutomatic(t *testing.T) {
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, "[repositories.review]\nmode = \"quick\"\n")
+	writeRepoConfig(t, root, "automatic.toml", repoConfig("[review]\nmode = \"automatic\"\n"))
+	repos, err := LoadRepoConfigs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := repos[0].Review.Mode; mode != "automatic" {
+		t.Fatalf("review.mode = %q, want the repository's automatic", mode)
+	}
+}
+
 func TestRepositoryKnobsAreValidatedAtBothLevels(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -442,7 +457,7 @@ func TestRepositoryKnobsAreValidatedAtBothLevels(t *testing.T) {
 		{name: "issue kind with a path", toml: "[filing-destination]\nkind = \"issue\"\nrepository = \"owner/plans\"\npath = \"x\"\n", want: "filing-destination.path does not apply"},
 		{name: "none kind with a repository", toml: "[filing-destination]\nkind = \"none\"\nrepository = \"owner/plans\"\n", want: "do not apply to the none kind"},
 		{name: "unknown review depth", toml: "[review]\ndepth = \"deep\"\n", want: "review.depth must be one of light, standard, thorough"},
-		{name: "unknown review mode", toml: "[review]\nmode = \"automatic\"\n", want: "review.mode must be one of specialist, quick"},
+		{name: "unknown review mode", toml: "[review]\nmode = \"auto\"\n", want: "review.mode must be one of specialist, quick, automatic"},
 		{name: "marker with both forms", toml: "[markers]\nclean = {reaction = \"+1\", label = \"minos/approved\"}\n", want: "markers.clean must set exactly one of reaction or label"},
 		{name: "marker with neither form", toml: "[markers]\nattention = {}\n", want: "markers.attention must set exactly one of reaction or label"},
 		{name: "marker reaction that is not a name", toml: "[markers]\nin-flight = {reaction = \"thumbs up\"}\n", want: "markers.in-flight reaction must be a reaction name"},

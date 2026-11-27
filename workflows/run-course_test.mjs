@@ -39,6 +39,7 @@ function fixture(t, {
   refusedReview = false, refusedMarker = false, failedSettlement = false, incomplete = false,
   pressure = false, pressureOnPublish = false, moved = false, movedAtSnapshot, movedOnReview = false,
   carry = false, killedFirstReview = false, refusedSummary, refusedStatus, movedOnSummary, movedOnMarker,
+  reviewMode, modeAnswer,
 } = {}) {
   const runDir = operationRoot(t, "minos-course-");
   const workspace = join(runDir, "workspace");
@@ -88,6 +89,7 @@ printf '%s\\n' '{"outcome":"applied","written":1}'
     MINOS_COMMIT_AUTHOR_EMAIL: "minos@example.test", MINOS_OWNER: "owner", MINOS_REPO_NAME: "repo",
     MINOS_HEAD_BRANCH: "work", MINOS_PR: "7",
     MINOS_PUSH_INSPECTION_OUTCOMES: '["no-review","increment","full"]',
+    ...(reviewMode === undefined ? {} : { MINOS_REVIEW_MODE: reviewMode }),
   };
   // Give the input builders real Git coordinates and leave a distinct
   // target pinned for all forge operations.
@@ -172,6 +174,12 @@ printf '%s\\n' '{"outcome":"applied","written":1}'
               brief: findingDecision(briefBlocks),
             };
             break;
+          case "review-mode":
+            assert.equal(args.input.target, briefBase);
+            assert.equal(args.input.head, run.head);
+            if (modeAnswer instanceof Error) throw modeAnswer;
+            answer = modeAnswer;
+            break;
           case "earlier-findings":
             assert.deepEqual(args.input.findings.map(({ path, head, replies }) => [path, head, replies]),
               [["lexer.go", head, []]]);
@@ -209,9 +217,10 @@ printf '%s\\n' '{"outcome":"applied","written":1}'
       return result;
     },
   };
+  // A carried verdict names its mode, as an adjudicated one does.
   if (carry) write("carried-review-result.json", carry === "wrong-base"
-    ? { ...verdict, reviewed: { ...verdict.reviewed, target: run.head } }
-    : verdict);
+    ? { ...verdict, mode: "specialist", reviewed: { ...verdict.reviewed, target: run.head } }
+    : { ...verdict, mode: "quick" });
   return {
     calls, drafts, summaries, run, json, failureLog, runDir, filingAttempts,
     drive: () => driveRun(run, { complete: true }),
@@ -424,6 +433,60 @@ test("an earlier verdict for the same head but another base is dispatched again"
   assert.equal(f.json("stale-review-result.json").reviewed.target, f.run.head);
   assert.deepEqual(f.calls.filter(([op]) => op === "dispatch").map(([, name]) => name), ["review", "review-brief"]);
   assert.notEqual(f.json("review-args.json").target, f.run.head);
+});
+
+// Each mode followed from the setting through the course to the input its
+// builder made and the workflow dispatched: the specialist review's input
+// carries its concerns and the exploration prompt, the quick review's
+// neither.
+function mainReview(f) {
+  const [, name, workflow] = f.calls.find(([op, name]) => op === "dispatch" && name === "review");
+  const args = f.json(`${name}-args.json`);
+  return { workflow, concerns: args.concerns !== undefined, exploration: args.prompts.exploration !== undefined };
+}
+
+test("each review mode the setting names reaches its own input builder and workflow, and the report names it", async (t) => {
+  for (const [setting, expected] of [
+    [undefined, { workflow: "review.js", concerns: true, exploration: true, mode: "specialist" }],
+    ["specialist", { workflow: "review.js", concerns: true, exploration: true, mode: "specialist" }],
+    ["quick", { workflow: "quick-review.js", concerns: false, exploration: false, mode: "quick" }],
+  ]) {
+    const f = fixture(t, { reviewMode: setting });
+    assert.deepEqual(await f.drive(), { outcome: "clean" });
+    const { mode, ...review } = expected;
+    assert.deepEqual(mainReview(f), review, `review.mode ${setting}`);
+    assert.ok(f.read("report.md").includes(`- Main review in the **${mode}** mode.`));
+    assert.ok(!f.calls.some(([op, name]) => op === "judge" && name === "review-mode"), "no review-mode stage is asked");
+  }
+});
+
+test("under automatic the review-mode stage's choice is the review dispatched, with its reason in the report", async (t) => {
+  for (const mode of ["quick", "specialist"]) {
+    const f = fixture(t, { reviewMode: "automatic", modeAnswer: { mode, reason: `Fixture chose ${mode}.` } });
+    assert.deepEqual(await f.drive(), { outcome: "clean" });
+    assert.equal(mainReview(f).workflow, mode === "quick" ? "quick-review.js" : "review.js");
+    assert.deepEqual(f.calls.filter(([op]) => op === "judge").map(([, name]) => name).slice(0, 2), ["push-inspection", "review-mode"]);
+    assert.equal(f.json("judgements/review-mode.json").answer.mode, mode);
+    const report = f.read("report.md");
+    assert.ok(report.includes(`- Main review in the **${mode}** mode.`));
+    assert.ok(report.includes(`the review-mode stage chose it. Fixture chose ${mode}.`), report);
+  }
+});
+
+test("under automatic a stage with no usable answer gives the head the specialist review and reports why", async (t) => {
+  const f = fixture(t, { reviewMode: "automatic", modeAnswer: { mode: "quick", reason: " " } });
+  assert.deepEqual(await f.drive(), { outcome: "clean" });
+  assert.equal(mainReview(f).workflow, "review.js");
+  const report = f.read("report.md");
+  assert.match(report, /no choice was made; the specialist review stood in/);
+  assert.match(report, /## Anomalies[\s\S]*review-mode stage gave no usable answer[\s\S]*reason is blank/);
+});
+
+test("under automatic a carried main verdict is reused without asking the review-mode stage", async (t) => {
+  const f = fixture(t, { reviewMode: "automatic", carry: true, modeAnswer: new Error("the stage was asked") });
+  assert.deepEqual(await f.drive(), { outcome: "clean" });
+  assert.ok(!f.calls.some(([op, name]) => op === "judge" && name === "review-mode"));
+  assert.match(f.read("report.md"), /the reused review settled it, and no choice was asked for/);
 });
 
 test("a killed dispatch retries once and keeps both attempts' input", async (t) => {

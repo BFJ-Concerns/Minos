@@ -68,7 +68,25 @@ test("the report names the main review's mode from its verdict, or the settled m
   };
   assert.ok((await read({ reviewMode: { mode: "specialist" }, review: { mode: "quick" } })).includes("- Main review in the **quick** mode."));
   assert.ok((await read({ reviewMode: { mode: "quick" } })).includes("- Main review in the **quick** mode."));
+  assert.ok((await read({ reviewMode: { mode: "quick" }, review: { mode: "specialist" } })).includes("- Main review in the **specialist** mode."));
+  assert.ok((await read({ reviewMode: { mode: "specialist" } })).includes("- Main review in the **specialist** mode."));
   assert.ok(!(await read({})).some((line) => line.startsWith("- Main review in")));
+});
+
+test("under automatic the report says how the head came by its mode", async (t) => {
+  const empty = { commands: [], phases: [], workers: [] };
+  const read = async (reviewMode) => {
+    const run = reportedRun(t, empty);
+    await writeReport(run, { reviewMode }, { outcome: "clean" });
+    return readFileSync(join(run.runDir, "report.md"), "utf8");
+  };
+  const chosen = await read({ mode: "quick", setting: "automatic", chosen: "A typo in a comment." });
+  assert.ok(chosen.includes("- Main review in the **quick** mode.\n  - The mode was left to each head and the review-mode stage chose it. A typo in a comment.\n"), chosen);
+  assert.match(await read({ mode: "quick", setting: "automatic", carried: true }), /reused review settled it/);
+  const failed = await read({ mode: "specialist", setting: "automatic", problem: "stage review-mode ended without a result" });
+  assert.match(failed, /no choice was made; the specialist review stood in/);
+  assert.match(failed, /## Anomalies\n\n- The review-mode stage gave no usable answer, so the head got the specialist review: stage review-mode ended without a result/);
+  assert.doesNotMatch(await read({ mode: "quick", setting: "quick" }), /left to each head/);
 });
 
 test("the report lists what a successful forge command said", async (t) => {

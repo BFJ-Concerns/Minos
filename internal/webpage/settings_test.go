@@ -476,8 +476,8 @@ func TestReviewModeIsChosenOnTheRepositoryPage(t *testing.T) {
 	session := signIn(t, site)
 	page := "/repositories/forgejo/bfj/estate/settings"
 	row := settingRowHTML(t, visit(site, page, session).Body.String(), "review.mode")
-	if !strings.Contains(row, "<option selected>specialist</option>") || !strings.Contains(row, "<option>quick</option>") {
-		t.Errorf("the review mode does not open on the specialist review with quick offered:\n%s", row)
+	if !strings.Contains(row, "<option selected>specialist</option>") || !strings.Contains(row, "<option>quick</option>") || !strings.Contains(row, "<option>automatic</option>") {
+		t.Errorf("the review mode does not open on the specialist review with quick and automatic offered:\n%s", row)
 	}
 	response := submit(site, page, url.Values{"setting": {"review.mode"}, "value": {"quick"}, "action": {"set"}}, session)
 	if response.Code != http.StatusSeeOther {

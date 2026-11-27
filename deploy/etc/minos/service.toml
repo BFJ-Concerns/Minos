@@ -82,10 +82,14 @@ signature-header = "X-Forgejo-Signature"
 # a review returns.
 # depth = "standard"
 # The review mode says which review a head gets: specialist, where an
-# exploration leg plans the review and a specialist reads for each concern,
-# or quick, where one general reviewer reads the change for every kind of
-# problem, dividing it among several only when it is too large for one.
-# Either way every finding is merged and verified before it is published.
+# exploration leg plans the review and a specialist reads for each concern;
+# quick, where one general reviewer reads the change for every kind of
+# problem, dividing it among several only when it is too large for one; or
+# automatic, where an agent reads each head's change first and chooses the
+# specialist review where its risk justifies one and the quick review
+# otherwise. Where that agent gives no usable answer the head gets the
+# specialist review. Either way every finding is merged and verified before
+# it is published.
 # mode = "specialist"
 # Push inspection reads each new head before any review and chooses no
 # review, a review of what changed since the head Minos last finished on,

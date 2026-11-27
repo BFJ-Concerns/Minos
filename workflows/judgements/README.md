@@ -8,6 +8,7 @@ answer the driver carries out as given.
 | Stage | Decides | Driver step |
 |---|---|---|
 | `push-inspection` | how much review a head needs: none, the increment since the head Minos last finished on, or the whole pull request | `run-steps/inspect-push.mjs` |
+| `review-mode` | which review a head gets, specialist or quick, where the repository's `review.mode` is `automatic` | `run-steps/choose-review-mode.mjs` |
 | `verdict-classification` | which confirmed findings of the main and brief verdicts gate, take a never-gating class or are advisory | `run-steps/classify.mjs` |
 | `earlier-findings` | whether each blocking finding of an earlier Minos review still stands: answered by the author, gone from the code, or not | `run-steps/settle-earlier-findings.mjs` |
 
@@ -88,6 +89,13 @@ role for every stage a run's driver asks.
 A stage that gives no answer, or one its `answerProblem` refuses, fails
 the step that asked, and the run ends incomplete. No default answer stands
 in: a default would be the driver deciding.
+
+`review-mode` is the one exception. Where it gives no usable answer the
+head gets the specialist review, the one a repository gets unless set, and
+the run goes on with the failure among the report's anomalies. Neither of
+its answers is wrong for any change, and the specialist review is the one
+that misses less, so taking it decides nothing about the change that the
+stage was asked to decide.
 
 The step then carries the answer out. What an answer makes the run do is
 the step's code and never the stage's.

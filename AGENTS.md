@@ -59,7 +59,12 @@ Claude Code by default or on Codex (`MINOS_LEAD_ENGINE`).
   repository whose `review.mode` is `quick` gets `workflows/quick-review.js`
   in its place, where general reviewers with no concern propose, divided
   into shares only when the reviewer given the whole change judges it too
-  large for one (`workflows/review-mode.mjs`). In the
+  large for one (`workflows/review-mode.mjs`). Under `automatic` the
+  scripted driver asks the `review-mode` judgement stage which of the two
+  a head gets, except where a carried verdict already settles it, and
+  gives the head the specialist review where the stage has no usable
+  answer; the resident lead gives every such head the specialist review.
+  In the
   brief stage a planner selects the briefs the change gives work to and
   divides them into units, each proposed on by its own leg.
   Both then merge, where one leg groups the findings one fix would

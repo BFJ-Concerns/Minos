@@ -452,10 +452,9 @@ write, matching the target rule above.)
    step and after it applies to both reviews alike. Under any other value,
    or none, build and dispatch the specialist review as written here. The
    setting is carried out as it reads and is not yours to weigh against
-   the change. A value that leaves the review to be chosen for each head
-   is honoured only by the scripted driver, which asks an agent stage for
-   the choice: on meeting one, give the head the specialist review and say
-   in the run report that no choice was made in this run.
+   the change. When it is `automatic`, give the head the specialist review
+   and say in the run report that the setting left the review to be chosen
+   for each head and no choice was made in this run.
 
    Choose exactly one branch:
 

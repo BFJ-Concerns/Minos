@@ -320,9 +320,10 @@ type RepositoryKnobs struct {
 		Depth string `toml:"depth"`
 		// Mode is the review a head gets, one of reviewModes: the
 		// specialist review, planned by exploration and proposed on by a
-		// specialist for each concern, or the quick review, proposed on by
-		// general reviewers with no concerns. Either is merged and verified
-		// alike.
+		// specialist for each concern; the quick review, proposed on by
+		// general reviewers with no concerns; or automatic, where an agent
+		// reads each head's change and chooses between the two. Either
+		// review is merged and verified alike.
 		Mode string `toml:"mode"`
 	} `toml:"review"`
 	PushInspection struct {
@@ -769,10 +770,11 @@ var reviewDepths = []string{"light", "standard", "thorough"}
 
 const defaultReviewMode = "specialist"
 
-// reviewModes are the values review.mode takes, each the review every head
-// of the repository gets. workflows/review-mode.mjs lists the same values
-// as MODE_SETTINGS and names each mode's workflow.
-var reviewModes = []string{"specialist", "quick"}
+// reviewModes are the values review.mode takes: the review every head of
+// the repository gets, or automatic, which leaves it to be chosen for each
+// head. workflows/review-mode.mjs lists the same values as MODE_SETTINGS
+// and names each mode's workflow.
+var reviewModes = []string{"specialist", "quick", "automatic"}
 
 func validReviewThreshold(value string) bool {
 	switch value {
