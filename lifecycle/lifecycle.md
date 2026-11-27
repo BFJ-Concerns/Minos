@@ -338,10 +338,18 @@ write, matching the target rule above.)
    fire only while the session is idle — exactly the state a yielded lead
    is in. With the flag watcher armed, a timer wake means something is
    wrong or slow, so it never polls blind: read the Ensemble status
-   snapshot the launcher maintains at `$MINOS_RUN_DIR/ensemble.local.json`
-   — its per-agent states and its `updatedAt` timestamp, which the
-   launcher refreshes every few seconds while alive, say whether the
-   workflow is still moving, stalled, or gone — and check the flag. A
+   snapshot and check the flag. Each workflow run keeps its own snapshot,
+   `$MINOS_RUN_DIR/ensemble.<run-id>.local.json`, under a run id the
+   launcher chooses, so find yours by what the file says and not by its
+   name: its `workflow` field is `minos-review` for the main review and
+   `minos-repository-review-briefs` for the brief stage, and where a
+   killed attempt left a second file for the same workflow, the later
+   `startedAt` is the attempt you are waiting on. Its per-agent states
+   and its `updatedAt` time, which the launcher refreshes every few
+   seconds while alive, say whether the workflow is still moving or has
+   stalled. The launcher removes the file as its workflow ends, so
+   finding none while the flag is still absent is a stage between its
+   workflow's end and the wrapper's flag: read it as still progressing. A
    workflow still progressing needs nothing more: end the turn again, and
    the recurring timer stays armed. A flag already present means both
    notifications were lost — proceed to the result exactly as if one had
@@ -615,13 +623,20 @@ write, matching the target rule above.)
    one, so write the brief decision with the main decision beside it.
    That covers a brief finding at the same line and under the same title
    as a main-review finding even where you gave them no label, because
-   the composer merges the two as one finding.
+   the composer merges the two as one finding. Whether the author
+   already has that finding is one fact about it, so settle it first and
+   give both twins the same answer: both take `already-raised` and
+   neither gates, or neither takes the class. A class otherwise falls
+   away where a sibling gates, but not this one: a gate on one twin
+   would post again what the author already has.
 
    The composer publishes a labelled defect once, at its highest-severity
    site, naming the other sites and the groups that also raised it; an
    advisory one is filed as one entry. It refuses, with nothing written,
    a label whose findings gate differently across the two decisions, and
-   an advisory defect the two decisions class differently. Distinct
+   an advisory defect the two decisions class differently. It
+   refuses as well twins that one decision classes `already-raised` and
+   the other calls new, even where the other gates them. Distinct
    defects at one line take no label — the composer cross-references
    them. The label is this run's vocabulary only; a later run over a new
    head names its own.
@@ -686,8 +701,10 @@ write, matching the target rule above.)
    A request-changes plan contains one review with the blocking findings
    from both review stages and nothing else. The same defect
    raised by both stages at one site is merged once, naming the brief that
-   also raised it. A clean plan has no posts: publish no approval review,
-   summary comment, or finding comment; step 7 supplies the clean marker and status.
+   also raised it. A clean plan has no posts: write no review,
+   summary comment, or finding comment for it. A clean plan is not yet a
+   clean pull request, which step 7 decides with the earlier findings in
+   view; the clean marker, the status and any approval are written there.
    The guarded command anchors what the diff geometry allows and folds
    the rest into the review body — a confirmed finding is
    never dropped or moved to a line it does not concern, and placement
@@ -750,9 +767,15 @@ write, matching the target rule above.)
    a comment on the pull request that rejects it and says which finding
    it means, by its title or its path and line.
    `"$MINOS_BIN" forge comments` prints the pull request's comments
-   oldest first, each with its `user` and `body`; the author is the
-   snapshot's `author`. Read them only when a review body holds a
-   blocking finding.
+   oldest first, each with its `user`, `body` and `created_at`. A comment
+   settles a finding held in a review body only when its `user` is the
+   snapshot's `author` and its `created_at` is later than the
+   `submitted_at` the snapshot gives for the Minos review whose body
+   holds the finding. A comment written before that review was published
+   answers something else, however well its words fit, and anyone
+   else's rejection is not the author's. Both times are RFC 3339:
+   compare them as instants, not as strings. Read the comments only when
+   a review body holds a blocking finding.
 
    Only the reading shows that a defect is gone. That the cited lines
    changed is not enough, and neither is this run's review not raising it
@@ -765,9 +788,21 @@ write, matching the target rule above.)
    nothing new for them: the review that raised them is still on the
    pull request.
 
-   **Clean:** post no review of your own (a pull-request-comment filing
+   **Clean:** write no review of your own (a pull-request-comment filing
    destination may already have posted the advisory entries as one
-   comment review, which carries no verdict); set
+   comment review, which carries no verdict). The one review a clean
+   outcome may carry is an approval, and a command decides it: run
+   `"$MINOS_BIN" forge approve HEAD TARGET` first, on every clean
+   outcome, a run that reviewed nothing included. Where Minos's own
+   latest verdict review on the pull request requested changes, it posts
+   an approving review, so the forge stops showing a block Minos no
+   longer holds. Otherwise it prints `{"outcome":"not-needed"}` and
+   writes nothing, which is the usual answer and not a failure. An
+   approval the forge will not take, for any reason but a moved head,
+   would leave that block standing under a clean marker, so the outcome
+   is not clean: set `"$MINOS_BIN" forge status HEAD TARGET incomplete`,
+   remove the in-flight marker, write the non-clean terminal marker, and
+   stop, leaving the head for a later run. With the approval settled, set
    `"$MINOS_BIN" forge status HEAD TARGET clean`, then add the clean marker with
    `"$MINOS_BIN" forge marker HEAD TARGET clean add`, and remove the
    in-flight marker with

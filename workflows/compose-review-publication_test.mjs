@@ -399,7 +399,7 @@ test("a labelled brief twin merged by site and title still pulls its labelled si
   assert.match(comments[0].body, /Also at: `internal\/review\.go:90`\./);
 });
 
-for (const className of ["declared-out-of-scope", "speculative-hardening", "already-raised"])
+for (const className of ["declared-out-of-scope", "speculative-hardening"])
   for (const classedGroup of ["main", "brief"])
     test(`a gating finding is posted though its ${classedGroup} twin was classed ${className}`, (t) => {
       const classed = { gating: false, class: className };
@@ -419,6 +419,76 @@ for (const className of ["declared-out-of-scope", "speculative-hardening", "alre
       assert.equal(plan.speculativeHardening, 0);
       assert.deepEqual(readJson(plan.triage.entries), []);
     });
+
+for (const raisedGroup of ["main", "brief"])
+  test(`a gating finding whose ${raisedGroup} twin was judged already raised stops the composer with nothing written`, (t) => {
+    const raised = { gating: false, class: "already-raised" };
+    const gating = { gating: true };
+    const { result, scratch } = compose(t, {
+      main: verdict([finding("a", { title: "Lost update" })]),
+      mainDecision: decision(raisedGroup === "main" ? "clean" : "request-changes", [{ key: "a", ...(raisedGroup === "main" ? raised : gating) }]),
+      brief: verdict([finding("b", { title: "Lost update", source: "Money safety" })]),
+      briefDecision: decision(raisedGroup === "brief" ? "clean" : "request-changes", [{ key: "b", ...(raisedGroup === "brief" ? raised : gating) }]),
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /one finding at internal\/review\.go:42 is already raised in one decision and new in the other/);
+    assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
+  });
+
+test("brief twins of one main finding merge to one result in either listing order", (t) => {
+  const briefTwins = [
+    finding("b", { severity: "Critical", title: "Lost update", source: "Money safety" }),
+    finding("c", { severity: "Medium", title: "lost  update", source: "Conservation" }),
+  ];
+  const dispositions = [{ key: "b", gating: true }, { key: "c", gating: false, class: "speculative-hardening" }];
+  const outcomes = [briefTwins, [...briefTwins].reverse()].map((listed) => {
+    const { result, plan, read, readJson } = compose(t, {
+      main: verdict([finding("a", { severity: "Medium", title: "Lost update" })]),
+      mainDecision: decision("clean", [{ key: "a", gating: false, class: "speculative-hardening" }]),
+      brief: verdict(listed),
+      briefDecision: decision("request-changes", listed === briefTwins ? dispositions : [...dispositions].reverse()),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return { posts: posts(plan), comments: readJson(plan.posts[0].comments), body: read(plan.posts[0].body), triage: readJson(plan.triage.entries) };
+  });
+  assert.deepEqual(outcomes[0], outcomes[1]);
+  assert.equal(outcomes[0].comments.length, 1);
+  assert.match(outcomes[0].comments[0].body, /Blocking · Critical: Lost update/);
+  assert.match(outcomes[0].comments[0].body, /Also raised by: Conservation, Money safety\./);
+});
+
+for (const order of ["listed", "reversed"])
+  test(`brief twins classed apart from their main twin stop the composer whichever is listed first (${order})`, (t) => {
+    const listed = [
+      finding("b", { severity: "Medium", title: "Lost update", source: "Money safety" }),
+      finding("c", { severity: "Medium", title: "Lost update", source: "Conservation" }),
+    ];
+    const dispositions = [{ key: "b", gating: false, class: "declared-out-of-scope" }, { key: "c", gating: false }];
+    const { result } = compose(t, {
+      main: verdict([finding("a", { severity: "Medium", title: "Lost update" })]),
+      mainDecision: decision("clean", [{ key: "a", gating: false }]),
+      brief: verdict(order === "listed" ? listed : [...listed].reverse()),
+      briefDecision: decision("clean", order === "listed" ? dispositions : [...dispositions].reverse()),
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /classed differently across the decisions: unclassed and declared-out-of-scope/);
+  });
+
+for (const order of ["raised first", "gating first"])
+  test(`a brief twin of main findings that disagree on whether the finding is new stops the composer (${order})`, (t) => {
+    const mainFindings = [finding("a", { title: "Lost update" }), finding("b", { title: "Lost update" })];
+    const mainDispositions = [{ key: "a", gating: false, class: "already-raised" }, { key: "b", gating: true }];
+    const reversed = order === "gating first";
+    const { result, scratch } = compose(t, {
+      main: verdict(reversed ? [...mainFindings].reverse() : mainFindings),
+      mainDecision: decision("request-changes", reversed ? [...mainDispositions].reverse() : mainDispositions),
+      brief: verdict([finding("c", { title: "Lost update", source: "Money safety" })]),
+      briefDecision: decision("clean", [{ key: "c", gating: false, class: "already-raised" }]),
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /one finding at internal\/review\.go:42 is already raised in one decision and new in the other/);
+    assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
+  });
 
 test("advisory twins sharing a class keep it", (t) => {
   const { result, plan, readJson } = compose(t, {

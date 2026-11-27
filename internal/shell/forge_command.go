@@ -19,7 +19,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|threads|comments|claim|status|earlier|review|marker|file-issue|repository-metadata|clone-credential")
+		return fmt.Errorf("usage: minos forge snapshot|threads|comments|claim|status|earlier|review|approve|marker|file-issue|repository-metadata|clone-credential")
 	}
 	// Repository metadata and the clone credential are not about the pull
 	// request, so they need the run's forge but none of its coordinates.
@@ -171,10 +171,6 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		record, err := product.FormatRecord(map[string]string{"head": guard.HeadSHA, product.RecordTargetKey: guard.TargetSHA})
-		if err != nil {
-			return err
-		}
 		var comments []forge.ReviewComment
 		addendum := ""
 		if len(args) == 6 {
@@ -195,14 +191,20 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 				fmt.Fprintf(os.Stderr, "forge review: %s\n", diagnostic)
 			}
 		}
-		// The lead signs the review it authors; each comment already
-		// carries its proposing and verifying models from the publication
-		// composer, so the lead's identity goes on the body alone.
-		if leadModel := os.Getenv("MINOS_LEAD_MODEL"); leadModel != "" {
-			addendum += "\n\nReviewed by: `" + leadModel + "`."
+		return postReview(ctx, stdout, adapter, guard, verdict, strings.TrimRight(string(body), "\r\n")+addendum, comments)
+	case "approve":
+		if len(args) != 3 || args[1] == "" || args[2] == "" {
+			return fmt.Errorf("usage: minos forge approve HEAD TARGET")
 		}
-		text := strings.TrimRight(string(body), "\r\n") + addendum + "\n\n" + record
-		return emitForgeResult(stdout, "review", adapter.PostReview(ctx, guard, verdict, text, comments))
+		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
+		snapshot, err := adapter.Snapshot(ctx, guard.Repository, guard.PullRequest)
+		if err != nil {
+			return err
+		}
+		if !ownChangesRequested(snapshot) {
+			return json.NewEncoder(stdout).Encode(map[string]string{"outcome": "not-needed", "reason": "Minos's latest verdict on this pull request does not request changes"})
+		}
+		return postReview(ctx, stdout, adapter, guard, forge.ReviewApprove, cleanApprovalBody, nil)
 	case "marker":
 		if len(args) != 5 || (args[4] != "add" && args[4] != "remove") {
 			return fmt.Errorf("usage: minos forge marker HEAD TARGET in-flight|clean|attention add|remove")
@@ -356,6 +358,52 @@ func namedProductState(name string) (product.State, bool) {
 		}
 	}
 	return product.State{}, false
+}
+
+// postReview signs and records a review body and posts it under the guard.
+// The lead signs the review it authors; each comment already carries its
+// proposing and verifying models from the publication composer, so the
+// lead's identity goes on the body alone.
+func postReview(ctx context.Context, stdout io.Writer, adapter *forge.Adapter, guard forge.Guard, verdict forge.ReviewVerdict, text string, comments []forge.ReviewComment) error {
+	record, err := product.FormatRecord(map[string]string{"head": guard.HeadSHA, product.RecordTargetKey: guard.TargetSHA})
+	if err != nil {
+		return err
+	}
+	if leadModel := os.Getenv("MINOS_LEAD_MODEL"); leadModel != "" {
+		text += "\n\nReviewed by: `" + leadModel + "`."
+	}
+	return emitForgeResult(stdout, "review", adapter.PostReview(ctx, guard, verdict, text+"\n\n"+record, comments))
+}
+
+// cleanApprovalBody is the approving review's whole message: it answers an
+// earlier request for changes, and the summary comment carries the rest.
+const cleanApprovalBody = "No blocking finding remains at this head."
+
+// ownChangesRequested says whether the service's own latest verdict on the
+// pull request requests changes. A clean head approves only then, so the
+// forge's view of the pull request stops showing a block Minos no longer
+// holds, and a pull request Minos never blocked gets no approval. Comment
+// reviews carry no verdict and are passed over; a dismissed review ends the
+// block it carried. Review ids rise with submission on both forges.
+func ownChangesRequested(snapshot forge.Snapshot) bool {
+	var latest *forge.Review
+	for index := range snapshot.Reviews {
+		review := &snapshot.Reviews[index]
+		if review.User != snapshot.AuthenticatedUser {
+			continue
+		}
+		switch strings.ToUpper(review.State) {
+		case "REQUEST_CHANGES", "REQUESTED_CHANGES", "APPROVED", "APPROVE", "DISMISSED":
+			if latest == nil || review.ID > latest.ID {
+				latest = review
+			}
+		}
+	}
+	if latest == nil {
+		return false
+	}
+	state := strings.ToUpper(latest.State)
+	return state == "REQUEST_CHANGES" || state == "REQUESTED_CHANGES"
 }
 
 func emitForgeResult(stdout io.Writer, operation string, result forge.WriteResult) error {
