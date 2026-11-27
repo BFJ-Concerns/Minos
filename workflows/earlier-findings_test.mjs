@@ -138,7 +138,7 @@ function fixtureRun({ reviews = [minosReview], forgeThreads = threads, answer } 
   };
 }
 
-test("the step keeps the findings the stage says stand, with the stage's reason", async () => {
+test("the step keeps the original finding title and the stage's reason for keeping it", async () => {
   const { run, asked, read } = fixtureRun({
     answer: { findings: [
       { key: "thread-1", outcome: AUTHOR_REJECTED, reason: "The author replied that the format allows it." },
@@ -152,7 +152,15 @@ test("the step keeps the findings the stage says stand, with the stage's reason"
   assert.equal(asked[0].judged, stage);
   assert.deepEqual(read, ["snapshot", "threads", "comments"]);
   assert.deepEqual(settled, {
-    outstanding: [{ key: "review-7-1", where: "review-body", path: "docs/a.md", line: 3, head: earlierHead, reason: "docs/a.md:3 still makes the claim." }],
+    outstanding: [{
+      key: "review-7-1",
+      where: "review-body",
+      path: "docs/a.md",
+      line: 3,
+      head: earlierHead,
+      title: "Stale claim",
+      reason: "docs/a.md:3 still makes the claim.",
+    }],
   });
 });
 
