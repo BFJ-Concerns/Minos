@@ -192,6 +192,18 @@ test("a run keeps what a successful forge command said on stderr", async (t) => 
   assert.equal(readFileSync(join(run.runDir, "forge.log"), "utf8"), `${note}\n`);
 });
 
+test("a forge note that cannot be logged costs only the log, never the forge call", async (t) => {
+  const run = scriptedRun(t, {
+    forgeScript: `printf '{"outcome":"applied"}\\n'; echo "forge review: inline comments folded" >&2; exit 0\n`,
+    dispatchScript: "exit 0\n",
+  });
+  mkdirSync(join(run.runDir, "forge.log"));
+
+  assert.deepEqual(await run.forge("review", "abc", "def", "comment", "body.md"), { outcome: "applied" });
+  assert.equal(run.forgeNotes[0], "minos forge review: forge review: inline comments folded");
+  assert.match(run.forgeNotes[1], /^could not keep the note above in forge\.log: EISDIR/);
+});
+
 test("a run's dispatch launches the stage from the clone and returns its result, and a stage with none throws", async (t) => {
   const run = scriptedRun(t, {
     forgeScript: "exit 0\n",

@@ -119,7 +119,7 @@ function reportToStderr(message) {
 // refused write does, the error carries that as `result`. What a command
 // that succeeded said on stderr (a review whose inline comments were folded
 // into its body, say) is kept in forge.log and in `run.forgeNotes`, which
-// the report lists.
+// the report lists; a forge.log that cannot be written costs only the log.
 function forge(run, args) {
   return new Promise((settle, reject) => {
     execFile(run.env.MINOS_BIN, ["forge", ...args], { cwd: run.workspace, env: run.env, maxBuffer: Infinity }, (error, stdout, stderr) => {
@@ -134,7 +134,13 @@ function forge(run, args) {
         if (said) {
           const note = `minos forge ${args[0]}: ${said}`;
           run.forgeNotes.push(note);
-          appendFileSync(join(run.runDir, "forge.log"), `${note}\n`);
+          // The note is presentation: a log that cannot be written is
+          // reported beside it and never undoes the write that succeeded.
+          try {
+            appendFileSync(join(run.runDir, "forge.log"), `${note}\n`);
+          } catch (logError) {
+            run.forgeNotes.push(`could not keep the note above in forge.log: ${logError.message}`);
+          }
         }
         return settle(result);
       }
