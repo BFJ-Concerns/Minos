@@ -17,9 +17,9 @@ export const DEFAULT_THRESHOLD = "High";
 // The classes that judge an at-or-above-threshold confirmed finding out of
 // gating; a below-threshold finding may carry one too. The first two object
 // to the kind of finding. The third objects to saying it again: the author
-// already has this finding from Minos and has answered it, or the filing
-// destination already carries it. A finding in any of the three leaves the
-// run on no surface at all: the run record keeps it. Any other basis for
+// already has this finding from Minos and the cited code is unchanged. A
+// below-threshold finding may also repeat a filing entry. The run record
+// keeps classed findings. Any other basis for
 // declassification is the mechanical binding the lead's judgement exists to
 // prevent.
 export const DECLARED_OUT_OF_SCOPE_CLASS = "declared-out-of-scope";
