@@ -553,8 +553,9 @@ write, matching the target rule above.)
    The digest lists every confirmed finding with its severity, confidence
    values, and threshold position, and a `thresholdIndication` — what the
    configured threshold alone would say. Classification is your judgement,
-   informed by the threshold rather than mechanically bound to it (the
-   commission's balance rule): a confirmed finding at or above the
+   informed by the threshold rather than mechanically bound to it: the
+   threshold gives each finding its default, and you depart from a
+   default only on a basis this step names. A confirmed finding at or above the
    threshold gates by default, and only three classes may be judged out.
    Two object to the kind of finding:
    a gap the pull-request description explicitly declares as known or out
