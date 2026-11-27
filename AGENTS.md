@@ -1,10 +1,11 @@
 # Minos
 
 Minos is a pull-request review service. An authenticated webhook or the
-periodic sweep starts one trusted lead, on Claude Code by default or on
-Codex (`MINOS_LEAD_ENGINE`). The lead may clone and read without an
-internal containment layer; it reviews and publishes to the forge, and
-nothing else.
+periodic sweep starts a run. The scripted driver carries the review between
+one-shot judgements when `MINOS_RUN_DRIVER` is set. Otherwise a resident lead
+carries it on Claude Code by default or on Codex (`MINOS_LEAD_ENGINE`). The
+run can clone and read the repository, review its changes and publish to the
+forge without an internal containment layer.
 
 ## Layout
 
@@ -77,8 +78,8 @@ nothing else.
   cache: without it, `minos forge earlier` looks among the newest 20 of
   the pull request's commits for one Minos marked clean by status or
   requested changes on by review, and a full review follows when none
-  qualifies. The lifecycle dispatches no scope workflow;
-  `workflows/review-scope.js` ships unused.
+  qualifies. The resident lead and the scripted driver use the same
+  brief engagement rules to constrain push inspection.
 - The pull request carries only what blocks it. A confirmed finding that
   neither blocks nor takes a class is advisory and goes to the configured
   filing destination, as do unverified observations from outside the

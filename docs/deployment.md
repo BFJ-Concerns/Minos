@@ -133,6 +133,9 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
      path directly; Ensemble workers resolve `claude` and `codex` by
      command name through the inherited PATH (the `environment.d` file
      from step 2), so both the absolute variable and PATH must be correct;
+   - set `MINOS_RUN_DRIVER` to `/opt/minos/workflows/run-driver.mjs` to use the
+     scripted driver after comparing the judgement stages with archived runs.
+     With this setting unset, the resident lead carries the run;
    - set `MINOS_LEAD_ENGINE` to `claude` or `codex` (`claude` by default)
      and `MINOS_LEAD_MODEL` to the model the lead runs on — `claude-opus-5-5`
      by default for Claude, `gpt-6.1-sol` for Codex; a Codex lead needs
@@ -446,23 +449,27 @@ A successful run exits after a `clean` marker, a continuation, or a recorded
 exits with status 75 and waits for the timer. An operator's
 `systemctl --user stop` of a run unit also requests a sweep.
 
-Each run launches the lead on the configured engine and model. `run-body`
-keeps resumable `done` and `blocked` turns alive after useful run activity has
+The scripted driver runs the course directly and uses one-shot judgement stages.
+`run-body` waits for the script and samples memory pressure while it runs.
+
+In resident-lead mode each run launches the lead on the configured engine
+and model. `run-body` keeps resumable `done` and `blocked` turns alive after useful run activity has
 begun. A lead blocked before its first run-tree change is stopped and recorded
 as a supervision failure. The supervisor otherwise stops the session only
 after the lead reports `failed` or `stopped`, the lead writes a terminal marker
 (`clean`, `non-clean`, or `continuation`), or the run tree outside its private
-home has not changed for the silence timeout. The silence backstop records a supervision failure instead of
-treating that stop as success. The lead invokes review and repository-brief
-workflows through `/opt/minos/workflows/adjudicated-review`; the wrapper runs
-the selected script with `/opt/minos/runtime/ensemble.mjs` and asks the sibling
-run-record adapter to confirm every required leg ran to completion and every
-finding carries a verdict. The foreground run body waits for the exact
-background session and stops it at one of those terminal conditions. The
-transient systemd unit bounds a wedged run at `runs.duration-ceiling`.
+home has not changed for the silence timeout. The silence backstop records a
+supervision failure. The foreground run body waits for the background session
+and stops it at one of those terminal conditions.
 
-A run that fails before the lead launches — workspace setup, configuration
-loading, lifecycle instruction — writes no status to the forge. The run body
+Both modes dispatch the review and repository-brief workflows through
+`adjudicated-review`. The wrapper finds the launcher in the sibling
+`runtime/` directory and confirms from the run record that every required
+leg completed and every finding carries a verdict. The transient systemd
+unit bounds either mode at `runs.duration-ceiling`.
+
+A failure during run setup, such as an unreadable configuration or lifecycle
+instruction, leaves the forge status untouched. The run body
 attempts to append the failure to `runs.failure-log`; when the log path is
 unset or unwritable, stderr carries the evidence instead. The run exits after
 recording the failure. A run whose lead ends with a failing exit and no

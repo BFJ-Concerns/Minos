@@ -1,4 +1,4 @@
-// How a run ends, for the driver and every step. A run ends one of four
+// How a run ends, for the driver and every step. A run ends one of five
 // ways, and an ending is `{ outcome }` with, where the run stopped short,
 // the `step` that stopped it and the `cause`.
 
@@ -12,6 +12,8 @@ export const INCOMPLETE = "incomplete";
 // The pull request's head moved, so the head the run was started for is
 // no longer the thing to review.
 export const SUPERSEDED = "superseded";
+// Memory pressure interrupted the course at a stage boundary.
+export const CONTINUATION = "continuation";
 
 // A head that was judged is spent: it keeps its completion marker until it
 // moves. Any other ending leaves the head eligible for a later run.

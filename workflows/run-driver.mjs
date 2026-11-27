@@ -18,17 +18,18 @@
 // nothing and the course goes on, so the course is the same list for
 // every run.
 //
-// The course ends in one of two ways. Its last step settles `outcome`,
+// The last step settles `outcome`,
 // clean or changes-requested, once the forge holds that result. Or a step
 // throws: HeadMoved ends the run superseded, and anything else ends it
 // incomplete, naming the step and the error's message as the cause. A step
 // therefore handles no failure it cannot put right; it throws and the run
-// ends the one way a failed run ends.
+// ends the one way a failed run ends. At a stage boundary memory pressure
+// can hand the run to a successor.
 //
 // The closing duties then run for every ending, each
 // `async (run, settled, ending)`. One that fails is reported and the rest
-// still run. The process exits 0 when the head is spent and 75 when it
-// stays eligible, which is the meaning run-body's own exit status carries.
+// still run. Exit 0 spends the head or wakes the continuation. Exit 75
+// leaves the head eligible for a periodic sweep.
 
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -36,11 +37,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { JUDGEMENT_RUNNER, JUDGEMENT_WORKFLOW, answerFrom, judgementArgs, judgementRecord } from "./judgement-stage.mjs";
-import { CHANGES_REQUESTED, CLEAN, HeadMoved, INCOMPLETE, SUPERSEDED, spendsHead } from "./run-endings.mjs";
+import { CHANGES_REQUESTED, CLEAN, CONTINUATION, INCOMPLETE, SUPERSEDED, spendsHead } from "./run-endings.mjs";
+import { prepareStage } from "./run-process.mjs";
 import { claim } from "./run-steps/claim.mjs";
 import { classify } from "./run-steps/classify.mjs";
 import { conclude } from "./run-steps/conclude.mjs";
+import { continueRun } from "./run-steps/continue-run.mjs";
+import { movedHead } from "./run-steps/forge-writes.mjs";
 import { inspectPush } from "./run-steps/inspect-push.mjs";
+import { markWorking } from "./run-steps/mark-working.mjs";
 import { publish } from "./run-steps/publish.mjs";
 import { recordFailure } from "./run-steps/record-failure.mjs";
 import { review } from "./run-steps/review.mjs";
@@ -49,34 +54,54 @@ import { settleEarlierFindings } from "./run-steps/settle-earlier-findings.mjs";
 import { withdraw } from "./run-steps/withdraw.mjs";
 import { writeReport } from "./run-steps/write-report.mjs";
 
-export const COURSE = [claim, inspectPush, review, reviewBriefs, classify, publish, settleEarlierFindings, conclude];
-export const CLOSING = [withdraw, recordFailure, writeReport];
+export const COURSE = [claim, markWorking, inspectPush, review, reviewBriefs, classify, publish, settleEarlierFindings, conclude];
+export const CLOSING = [recordFailure, withdraw, writeReport];
+
+const pressureBoundaries = new Map([
+  [claim, "claim"], [inspectPush, "push-inspection"], [review, "review"],
+  [reviewBriefs, "review-brief"], [classify, "classification"], [publish, "publication"],
+]);
 
 export const EXIT_HEAD_SPENT = 0;
 export const EXIT_HEAD_ELIGIBLE = 75;
 
 // Carries the run through its course and closing duties and returns how it
 // ended.
-export async function driveRun(run, { course = COURSE, closing = CLOSING, report = reportToStderr } = {}) {
+export async function driveRun(run, { course = COURSE, closing = CLOSING, report = reportToStderr, complete = false } = {}) {
   let settled = {};
   let ending;
   let step;
   try {
-    for (step of course) settled = { ...settled, ...(await step(run, settled)) };
-    ending = settled.outcome === CLEAN || settled.outcome === CHANGES_REQUESTED
+    for (step of course) {
+      const result = await step(run, settled);
+      settled = { ...settled, ...result };
+      const boundary = pressureBoundaries.get(step);
+      if (run.runDir && boundary && result && await continueRun(run, boundary)) {
+        ending = { outcome: CONTINUATION, step: boundary, cause: "memory pressure" };
+        break;
+      }
+    }
+    ending ??= settled.outcome === CLEAN || settled.outcome === CHANGES_REQUESTED
       ? { outcome: settled.outcome }
       : { outcome: INCOMPLETE, step: step ? step.name : "course", cause: "the course ended without settling an outcome" };
   } catch (error) {
-    ending = error instanceof HeadMoved
-      ? { outcome: SUPERSEDED, step: step.name, cause: error.message }
-      : { outcome: INCOMPLETE, step: step.name, cause: error.message };
+    ending = { outcome: movedHead(error) ? SUPERSEDED : INCOMPLETE, step: step.name, cause: error.message };
   }
+  const closingProblems = [];
+  let terminalWorkComplete = true;
   for (const duty of closing) {
     try {
-      await duty(run, settled, ending);
+      await duty(run, settled, ending, closingProblems);
     } catch (error) {
-      report(`closing duty ${duty.name} failed: ${error.message}`);
+      const problem = `closing duty ${duty.name} failed: ${error.message}`;
+      report(problem);
+      closingProblems.push(problem);
+      if (duty !== writeReport) terminalWorkComplete = false;
     }
+  }
+  if (complete && terminalWorkComplete) {
+    const marker = ending.outcome === CLEAN || ending.outcome === CONTINUATION ? ending.outcome : "non-clean";
+    writeFileSync(join(run.runDir, "lead-complete"), `${marker}\n`);
   }
   return ending;
 }
@@ -114,10 +139,14 @@ function dispatch(run, name, workflow, runner) {
   return new Promise((settle, reject) => {
     const child = spawn(command, args, { cwd: run.workspace, env: run.env, stdio: ["ignore", "inherit", "inherit"] });
     child.once("error", reject);
-    child.once("close", (code) => {
+    child.once("close", (code, signal) => {
       const result = join(run.runDir, `${name}-result.json`);
-      if (code !== 0 || !existsSync(result))
-        return reject(new Error(`stage ${name} ended without a result; ${name}.log has its diagnostics`));
+      if (code !== 0 || !existsSync(result)) {
+        const reason = signal ? `signal ${signal}` : `exit ${code}`;
+        const failure = new Error(`stage ${name} ended without a result; ${name}.log has its diagnostics (${reason})`);
+        failure.killed = signal !== null || [130, 137, 143].includes(code);
+        return reject(failure);
+      }
       try {
         settle(JSON.parse(readFileSync(result, "utf8")));
       } catch {
@@ -132,11 +161,13 @@ function dispatch(run, name, workflow, runner) {
 // a run, under its own name.
 export async function judge(run, stage, input) {
   const args = judgementArgs(stage, input, { env: run.env });
-  writeFileSync(join(run.runDir, `${stage.name}-args.json`), `${JSON.stringify(args)}\n`);
-  const answer = answerFrom(stage, input, await run.dispatch(stage.name, JUDGEMENT_WORKFLOW, JUDGEMENT_RUNNER));
+  const attempt = prepareStage(run, stage.name, `${JSON.stringify(args)}\n`);
+  writeFileSync(join(run.runDir, `${attempt}-input.json`), `${JSON.stringify(input)}\n`);
+  const answer = answerFrom(stage, input, await run.dispatch(attempt, JUDGEMENT_WORKFLOW, JUDGEMENT_RUNNER));
   const records = join(run.runDir, "judgements");
   mkdirSync(records, { recursive: true });
-  writeFileSync(join(records, `${stage.name}.json`), `${JSON.stringify(judgementRecord(stage, input, answer, args.routing), null, 2)}\n`);
+  writeFileSync(join(records, `${attempt}.json`), `${JSON.stringify(judgementRecord(stage, input, answer, args.routing), null, 2)}\n`);
+  run.judgementAnswers?.set(stage.name, answer);
   return answer;
 }
 
@@ -155,6 +186,7 @@ export function openRun(env = process.env) {
     runDir: need("MINOS_RUN_DIR"),
     workspace: need("MINOS_WORKSPACE"),
     orientation: need("MINOS_ORIENTATION"),
+    judgementAnswers: new Map(),
     forge: (...args) => forge(run, args),
     dispatch: (name, workflow, runner) => dispatch(run, name, workflow, runner),
     judge: (stage, input) => judge(run, stage, input),
@@ -163,7 +195,7 @@ export function openRun(env = process.env) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const ending = await driveRun(openRun());
+  const ending = await driveRun(openRun(), { complete: true });
   process.stdout.write(`${JSON.stringify(ending)}\n`);
-  process.exitCode = spendsHead(ending) ? EXIT_HEAD_SPENT : EXIT_HEAD_ELIGIBLE;
+  process.exitCode = spendsHead(ending) || ending.outcome === CONTINUATION ? EXIT_HEAD_SPENT : EXIT_HEAD_ELIGIBLE;
 }

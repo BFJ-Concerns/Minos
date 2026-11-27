@@ -631,6 +631,38 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 // sweep pass; an incomplete outcome or a stop without a recorded status
 // exits 75 and waits for the timer, so a head that keeps ending incomplete
 // never re-runs at run pace.
+func TestRunBodyWaitsForTheScriptedDriverWithoutLaunchingTheLead(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	driver := filepath.Join(fixture.root, "run-driver.mjs")
+	contents := `
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const { MINOS_RUN_DIR, MINOS_LEAD_MODEL, MINOS_ORIENTATION, MINOS_PROVISIONED_ENGINES } = process.env;
+if (MINOS_LEAD_MODEL || !existsSync(MINOS_ORIENTATION) || MINOS_PROVISIONED_ENGINES !== "claude codex") {
+  throw new Error("driver did not receive the scripted runtime environment");
+}
+writeFileSync(join(MINOS_RUN_DIR, "lead-complete"), "non-clean\n");
+process.exitCode = 75;
+`
+	if err := os.WriteFile(driver, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture.appendConfig(t, map[string]string{
+		"MINOS_RUN_DRIVER": driver, "MINOS_LEAD_ENGINE": "unused",
+		"MINOS_LIFECYCLE_INSTRUCTION": "/no-resident-lead-prompt",
+	})
+	output, err := fixture.execute(nil)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 75 {
+		t.Fatalf("scripted run exit = %v, want 75\n%s", err, output)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "non-clean")
+	assertFileEmpty(t, fixture.failureLog)
+	if _, err := os.Stat(fixture.record); !os.IsNotExist(err) {
+		t.Fatalf("resident lead was launched: %v", err)
+	}
+}
+
 func TestRunBodyExitStatusSaysWhetherTheHeadIsSpent(t *testing.T) {
 	for _, tc := range []struct {
 		marker, applied string

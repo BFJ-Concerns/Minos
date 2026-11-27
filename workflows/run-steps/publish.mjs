@@ -1,12 +1,46 @@
-// Publishes what the decisions call for: composes the publication plan,
-// posts the review holding the gating findings, and files the plan's
-// triage entries at the configured filing destination. A gating finding
-// that reached no durable surface throws; a filing that failed does not,
-// and is carried for the run report.
-//
-// Takes `review`, `briefReview` and `decisions`. Does nothing when no
-// review ran.
-// Settles `publication`: the plan as posted, with the filing's result.
-export async function publish(run, settled) {
-  throw new Error("the publish step is not built");
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { runCommand } from "../run-process.mjs";
+import { DEFAULT_THRESHOLD } from "../verdict-classification.mjs";
+import { applied } from "./forge-writes.mjs";
+
+function helper(name) {
+  return fileURLToPath(new URL(`../${name}`, import.meta.url));
+}
+
+function recordDecision(run, name, decision) {
+  const path = join(run.runDir, name);
+  writeFileSync(path, `${JSON.stringify(decision)}\n`);
+  return path;
+}
+
+export async function publish(run, { review, briefReview, reviewFile, briefReviewFile, decisions }) {
+  if (!review) return;
+  const output = join(run.runDir, "publication");
+  const args = [
+    output, run.orientation, run.env.MINOS_REVIEW_THRESHOLD || DEFAULT_THRESHOLD,
+    reviewFile, recordDecision(run, "verdict-decision.json", decisions.main),
+  ];
+  if (briefReview) args.push(briefReviewFile, recordDecision(run, "verdict-decision-brief.json", decisions.brief));
+  const plan = JSON.parse(await runCommand(run, process.execPath, [helper("compose-review-publication.mjs"), ...args]));
+  for (const post of plan.posts) {
+    await applied(run, "review", [run.head, run.target, post.verdict, post.body, post.comments]);
+  }
+
+  let filing;
+  try {
+    const result = await runCommand(run, process.execPath, [helper("file-triage.mjs"), plan.triage.entries, run.orientation]);
+    filing = JSON.parse(result);
+  } catch (error) {
+    filing = { outcome: "unfiled", reason: error.message };
+  }
+  let filingRecordProblem;
+  try {
+    writeFileSync(join(run.runDir, "triage-result.json"), `${JSON.stringify(filing)}\n`);
+  } catch (error) {
+    filingRecordProblem = `Could not record triage delivery. ${error.message}`;
+  }
+  return { publication: { plan, filing, filingRecordProblem } };
 }
