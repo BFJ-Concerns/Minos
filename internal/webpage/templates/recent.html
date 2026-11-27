@@ -1,0 +1,31 @@
+{{define "content"}}
+<h1>Recent runs</h1>
+{{if .TakenAt.IsZero}}
+<p class="empty">Archived run listings are disabled.</p>
+{{else}}
+<p>Last {{.Hours}} hours, up to {{.Limit}} runs. Archive listed {{ago .TakenAt}}.</p>
+{{range .Runs}}
+<section class="run">
+<h2>{{if and .Owner .Repo .PR}}{{.Owner}}/{{.Repo}} #{{.PR}}{{else if .Unit}}{{.Unit}}{{else}}{{.Archive}}{{end}}</h2>
+<dl class="monitoring-list">
+<dt>Archived</dt><dd>{{ago .ArchivedAt}}</dd>
+<dt>Outcome</dt><dd>{{.Outcome}}</dd>
+<dt>Duration</dt><dd>{{if .Duration}}{{.Duration}}{{else if .RecordedSpan}}{{.RecordedSpan}} of recorded activity{{else}}Unavailable{{end}}</dd>
+{{if .Skipped}}<dt>Review skipped</dt><dd>{{if .SkipReason}}{{.SkipReason}}{{else if .Report}}See the run report below.{{else}}Reason unavailable.{{end}}</dd>{{end}}
+{{if .Failure}}<dt>Failure reason</dt><dd>{{.Failure}}</dd>
+{{else if or (eq .Outcome "Failed") (eq .Outcome "Incomplete") (eq .Outcome "Non-clean")}}
+<dt>Reason</dt><dd>{{if .Report}}See the run report below.{{else}}Unavailable{{end}}</dd>
+{{end}}
+</dl>
+{{with .Report}}
+<details>
+<summary>Run report excerpt</summary>
+<pre>{{.}}</pre>
+</details>
+{{end}}
+</section>
+{{else}}
+<p class="empty">No runs were archived in this window.</p>
+{{end}}
+{{end}}
+{{end}}

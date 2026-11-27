@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+github_authenticate "$1" "$2"
+pulls="$(api GET "/repos/$1/$2/pulls?state=all&sort=created&direction=desc&per_page=$4&page=$3")"
+printf '%s' "$pulls" | jq -ec '
+  if type != "array" then error("expected a pull request array") else
+    map({number, author: (.user.login // ""), url: (.html_url // "")})
+  end'

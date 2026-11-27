@@ -1,0 +1,36 @@
+{{define "content"}}
+<h1>Live runs</h1>
+<p>{{len .Runs}} of {{.Status.MaxConcurrent}} run slots occupied. Read {{ago .Status.GeneratedAt}}.</p>
+{{with .Status.Error}}<p class="refusal">{{.}}</p>{{end}}
+{{range .Runs}}
+<section class="run">
+<h2>{{if .PR}}{{.Owner}}/{{.Repo}} #{{.PR}}{{else}}{{.Unit}}{{end}} {{if .Forge}}<small class="muted">{{.Forge}}</small>{{end}}</h2>
+<dl class="monitoring-list">
+<dt>Stage</dt><dd>{{.Stage}}</dd>
+<dt>Started</dt><dd>{{ago .StartedAt}}</dd>
+{{with .Head}}<dt>Head</dt><dd><code>{{.}}</code></dd>{{end}}
+</dl>
+{{with .Error}}<p class="refusal">{{.}}</p>{{end}}
+{{with .Stages}}
+<h3>Stages</h3>
+<ul class="activity">
+{{range .}}<li>{{.Name}}{{if gt .Attempt 1}} (attempt {{.Attempt}}){{end}} <span class="tag">{{.State}}</span>{{if .StartedAt}} · {{ago .StartedAt}}{{end}}</li>{{end}}
+</ul>
+{{end}}
+<h3>Dispatched workers</h3>
+{{if .TimingsError}}
+<p class="refusal">Worker timing records could not be read.</p>
+{{else if .Workers}}
+<ul class="activity">
+{{range .Workers}}<li>{{if .Label}}{{.Label}}{{else}}Worker{{end}} {{if .Status}}<span class="tag">{{.Status}}</span>{{end}}
+{{if or .Phase .Engine .Model}}<small class="muted">{{.Phase}} {{.Engine}} {{.Model}}</small>{{end}}
+{{if .StartedAt}} · {{ago .StartedAt}}{{end}}</li>{{end}}
+</ul>
+{{else}}
+<p class="empty">No dispatched workers are recorded yet.</p>
+{{end}}
+</section>
+{{else}}
+<p class="empty">No runs are active.</p>
+{{end}}
+{{end}}

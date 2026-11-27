@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const archivePendingFile = ".archive-pending"
@@ -39,7 +41,7 @@ func RunCommand(ctx context.Context, args []string) error {
 	}
 	cmd := exec.CommandContext(ctx, runBodyPath())
 	cmd.Dir = runDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), "MINOS_RUN_STARTED_AT="+strconv.FormatInt(time.Now().Unix(), 10))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	runErr := cmd.Run()

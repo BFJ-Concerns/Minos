@@ -1,0 +1,11 @@
+{{define "content"}}
+<section class="sign-in">
+<h1>Sign in</h1>
+<form method="post" action="/sign-in">
+<input type="hidden" name="next" value="{{.Next}}">
+<label for="credential">Operator credential</label>
+<input id="credential" name="credential" type="password" autocomplete="current-password" required autofocus>
+<button>Sign in</button>
+</form>
+</section>
+{{end}}

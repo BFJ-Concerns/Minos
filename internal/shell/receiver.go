@@ -17,7 +17,9 @@ const maxWebhookBodyBytes int64 = 1 << 20
 
 var serveReceiver = (*http.Server).Serve
 
-func ReceiveCommand(ctx context.Context, args []string) error {
+// ReceiveCommand runs the listener. Each surface mounts its own routes on it
+// beside the webhook and status routes.
+func ReceiveCommand(ctx context.Context, args []string, surfaces ...Surface) error {
 	fs := flag.NewFlagSet("receive", flag.ContinueOnError)
 	configRoot := fs.String("config", DefaultConfigRoot, "configuration root")
 	if err := fs.Parse(args); err != nil {
@@ -40,7 +42,7 @@ func ReceiveCommand(ctx context.Context, args []string) error {
 	}
 	log.Printf("minos receiver listening on %s", listener.Addr())
 	server := &http.Server{
-		Handler:      receiverRoutes(ctx, cfg),
+		Handler:      receiverRoutes(ctx, cfg, surfaces...),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: time.Minute,
 	}
@@ -49,9 +51,12 @@ func ReceiveCommand(ctx context.Context, args []string) error {
 
 // receiverRoutes mounts the listener's surface. The status projection is
 // mounted only when a token file is configured for it, so a deployment that
-// has not been given one serves the webhook route alone.
-func receiverRoutes(ctx context.Context, cfg ServiceConfig) *http.ServeMux {
+// has not been given one serves the webhook route alone. Every surface reads
+// through the one StateReader, which shares the status routes' cache.
+func receiverRoutes(ctx context.Context, cfg ServiceConfig, surfaces ...Surface) *http.ServeMux {
 	mux := http.NewServeMux()
+	// One archive-listing cache is shared by the listener surfaces.
+	recentRuns := newRecentRunsCache(cfg.RecentTimingsCacheTTL())
 	mux.HandleFunc("POST /hooks/", func(w http.ResponseWriter, r *http.Request) {
 		deliveryConfig, err := LoadServiceConfig(cfg.Root)
 		if err != nil {
@@ -64,9 +69,6 @@ func receiverRoutes(ctx context.Context, cfg ServiceConfig) *http.ServeMux {
 		}
 	})
 	if cfg.Listener.StatusTokenFile != "" {
-		// One cache for the listener's lifetime: it is what turns a polled
-		// route back into an occasional read of the archive host.
-		recentRuns := newRecentRunsCache(cfg.RecentTimingsCacheTTL())
 		mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 			if err := handleStatus(ctx, cfg, w, r); err != nil {
 				log.Printf("status failed: %v", err)
@@ -77,6 +79,10 @@ func receiverRoutes(ctx context.Context, cfg ServiceConfig) *http.ServeMux {
 				log.Printf("recent runs failed: %v", err)
 			}
 		})
+	}
+	state := newStateReader(cfg, recentRuns)
+	for _, mount := range surfaces {
+		mount(mux, cfg, state)
 	}
 	return mux
 }

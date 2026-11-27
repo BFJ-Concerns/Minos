@@ -11,6 +11,12 @@ nothing else.
 - `cmd/minos` — the service binary.
 - `internal/shell/` — the Go service: webhook receiver, sweep, run
   lifecycle, configuration and the `minos forge` commands the lead runs.
+- `internal/webpage/` — the web page the service serves its operator: the
+  one sign-in, the layout and stylesheet, and one Go file and one template
+  for each page. A page reads through `shell.StateReader`
+  (`internal/shell/state_reader.go`) and changes a setting through the
+  configuration writer (`internal/shell/settings_write.go`), and the
+  service never imports it.
 - `internal/forge/` — the forge protocol: the adapter that runs a forge's
   adaptation scripts and the write guards and markers built on it.
 - `internal/product/` — the status vocabulary Minos writes on a pull

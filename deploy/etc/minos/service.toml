@@ -12,6 +12,10 @@ bot-login = "REPLACE_WITH_FORGEJO_BOT_LOGIN"
 
 [listener]
 bind = ":8919"
+# The one operator credential that signs a browser in to the web page, a
+# secret in a file as the webhook secret is. With this key set the receiver
+# serves the page at the root of the listener; without it, no page.
+page-credential-file = "/etc/minos/page.credential"
 
 # One [forges.<key>] table per forge Minos reviews on; the key is the
 # webhook route suffix (/hooks/<key>) and the "forge" value of each

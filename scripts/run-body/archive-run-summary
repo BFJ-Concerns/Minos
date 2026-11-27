@@ -1,0 +1,83 @@
+#!/usr/bin/env sh
+set -eu
+
+run_dir="$1"
+salvaged="$2"
+marker="$(head -c 64 "$run_dir/lead-complete" 2>/dev/null || true)"
+status="$(head -c 64 "$run_dir/forge-status" 2>/dev/null || true)"
+started="${MINOS_RUN_STARTED_AT:-0}"
+elapsed=""
+case "$started" in
+  ''|*[!0-9]*) ;;
+  *) ended="$(date +%s)"
+     if [ "$started" -gt 0 ] && [ "$ended" -ge "$started" ]; then
+       elapsed="$((ended - started))"
+     fi ;;
+esac
+
+# Only accept a shared ledger line for this invocation, pull request and head.
+# The bounded tail keeps the archive independent of total ledger size.
+ledger_failure=""
+if [ "$marker" != clean ] && [ "$marker" != continuation ] &&
+   [ -n "$elapsed" ] && [ -n "${MINOS_HEAD_SHA:-}" ] && [ -r "${MINOS_FAILURE_LOG:-}" ]; then
+  from="$(date -u -d "@$started" '+%Y-%m-%dT%H:%M:%S')"
+  pull="${MINOS_OWNER:-}/${MINOS_REPO_NAME:-}#${MINOS_PR:-}"
+  ledger_failure="$(tail -c 65536 -- "$MINOS_FAILURE_LOG" |
+    awk -v from="$from" -v pull="pull_request=$pull" -v head="head=$MINOS_HEAD_SHA" '
+      BEGIN { since = "timestamp=" from }
+      $1 ~ /^timestamp=/ && substr($1, 1, length(since)) >= since && $2 == pull && $3 == head {
+        sub(/^[^ ]+ +[^ ]+ +[^ ]+ +/, "")
+        reason = $0
+      }
+      END { if (reason != "") print substr(reason, 1, 2048) }
+    ')"
+fi
+# A per-run failure file, when present, also survives a crashed supervisor.
+if [ "$marker" != clean ] && [ "$marker" != continuation ] && [ -z "$ledger_failure" ]; then
+  for name in failure.log failures.log; do
+    if [ -s "$run_dir/$name" ]; then
+      ledger_failure="$(tail -c 2048 "$run_dir/$name")"
+      break
+    fi
+  done
+fi
+
+case "$marker:$status" in
+  clean:*)          outcome=clean ;;
+  continuation:*)   outcome=continuation ;;
+  non-clean:attention) outcome=attention ;;
+  non-clean:incomplete) outcome=incomplete ;;
+  non-clean:*)      outcome=non-clean ;;
+  *)                outcome=unknown ;;
+esac
+if [ "$outcome" = unknown ] && { [ -n "$ledger_failure" ] || [ "$salvaged" = true ]; }; then
+  outcome=failed
+  if [ -z "$ledger_failure" ]; then
+    ledger_failure="The service recovered this run after it stopped without a terminal record."
+  fi
+fi
+
+skip_reason="$(jq -er '.answer | select(.outcome == "no-review") | .reason | strings' \
+  "$run_dir/judgements/push-inspection.json" 2>/dev/null | head -c 2048 || true)"
+skipped=false
+if [ -n "$skip_reason" ] ||
+   { [ "$marker" = clean ] && [ ! -f "$run_dir/carried-review-result.json" ] &&
+     ! find "$run_dir" -maxdepth 1 -name 'review*-args.json' -print -quit | grep -q .; }; then
+  skipped=true
+fi
+
+# The lead's report is the source of its free-form skip and failure reasons.
+# Keep a bounded excerpt beside the structured record for those runs.
+report=""
+if { [ "$skipped" = true ] || [ "$outcome" != clean ]; } && [ -r "$run_dir/report.md" ]; then
+  report="$(head -c 8192 "$run_dir/report.md")"
+fi
+printf '%s\0' "$ledger_failure" "$skip_reason" "$report" |
+  jq -Rs --arg outcome "$outcome" --arg elapsed "$elapsed" --argjson skipped "$skipped" '
+    split("\u0000") as [$failure, $skip, $report] |
+    {outcome: $outcome, review_skipped: $skipped}
+    + (if $elapsed == "" then {} else {duration_seconds: ($elapsed | tonumber)} end)
+    + (if $failure == "" then {} else {failure_reason: $failure} end)
+    + (if $skip == "" then {} else {skip_reason: $skip} end)
+    + (if $report == "" then {} else {report_excerpt: $report} end)
+  '
