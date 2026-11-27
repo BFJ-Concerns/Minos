@@ -174,11 +174,16 @@ on_exit() {
   status="$1"
   trap - 0
   set +e
-  if [ "$status" -ne 0 ] &&
-    { [ "$prelaunch" = true ] || [ "$supervisor_failure" = true ]; }; then
-    append_failure
-  fi
   stop_session
+  if [ "$status" -ne 0 ]; then
+    if [ "$prelaunch" = true ] || [ "$supervisor_failure" = true ]; then
+      append_failure
+    elif ! grep -Eqx 'clean|non-clean|continuation' "$completion_marker" 2>/dev/null; then
+      failure_stage="lead-supervision"
+      failure_cause="$MINOS_LEAD_ENGINE lead ended without a verdict (last state: ${agent_state:-unknown}, driver exit: $status)"
+      append_failure
+    fi
+  fi
   archive_run
   remove_run_tmpdir
   exit "$status"
