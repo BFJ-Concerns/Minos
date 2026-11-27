@@ -12,6 +12,9 @@
  *   .notice         something the operator should read once (a change saved)
  *   .refusal        why a change was not made, or a page not shown
  *   button.quiet    an action that is not the page's main one
+ *   .setting        one setting: a details element, its summary the key,
+ *                   where its value comes from and the value
+ *   .actions        a form's buttons, side by side
  *
  * Every colour is one of the properties below, each set once for light and
  * once for dark.
@@ -367,4 +370,41 @@ button.quiet {
   .finding-counts td {
     padding-inline: 0.25rem;
   }
+}
+
+.setting {
+  max-width: 52rem;
+  border-bottom: 1px solid var(--rule);
+  padding: 0.5rem 0;
+}
+
+.setting > summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.setting > summary .tag {
+  margin: 0 0.5rem;
+}
+
+.setting textarea,
+.setting .value {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.875rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.actions button {
+  margin: 0;
+}
+
+[aria-invalid="true"] {
+  border-color: var(--bad);
 }

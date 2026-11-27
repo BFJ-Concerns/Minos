@@ -61,6 +61,8 @@ var pages = []Page{
 	livePage,
 	recentPage,
 	findingsPage,
+	serviceSettingsPage,
+	repositorySettingsPage,
 }
 
 // ErrNotFound, wrapped by a Show or Change, answers 404: the path names a
@@ -91,11 +93,16 @@ type site struct {
 	navigation     []navigationEntry
 	keys           sessionKeys
 	attempts       attemptThrottle
+	// now is the clock the sign-in throttle reads.
+	now     func() time.Time
+	handler http.Handler
 }
 
+func (site *site) ServeHTTP(w http.ResponseWriter, r *http.Request) { site.handler.ServeHTTP(w, r) }
+
 // newSite serves pages behind the credential held in credentialFile.
-func newSite(credentialFile string, read Readings, write Settings, pages []Page) http.Handler {
-	site := &site{credentialFile: credentialFile, read: read, write: write, views: map[string]*template.Template{}}
+func newSite(credentialFile string, read Readings, write Settings, pages []Page) *site {
+	site := &site{credentialFile: credentialFile, read: read, write: write, views: map[string]*template.Template{}, now: time.Now}
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.FileServerFS(files))
 	mux.HandleFunc("GET /sign-in", site.showSignIn)
@@ -116,7 +123,8 @@ func newSite(credentialFile string, read Readings, write Settings, pages []Page)
 	}
 	// A form posted from another site is refused before it reaches a page,
 	// so a form needs no token and a page cannot forget one.
-	return guarded(http.NewCrossOriginProtection().Handler(mux))
+	site.handler = guarded(http.NewCrossOriginProtection().Handler(mux))
+	return site
 }
 
 // guarded sets what every response of the page carries: a policy under which
