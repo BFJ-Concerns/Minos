@@ -16,7 +16,7 @@ if ! printf '%s' "$payload" | jq -e '
   exit 0
 fi
 marker="$(printf '%s' "$payload" | jq -r '.body | match("<!-- minos:[A-Za-z0-9_-]+ -->").string')"
-user="$(api GET /api/v1/user 2>/dev/null)" || {
+user="$(api_read /api/v1/user 2>/dev/null)" || {
   write_result uncertain "authenticated forge identity could not be read"
   exit 0
 }
@@ -31,7 +31,7 @@ issue_presence() {
   previous=''
   found=''
   while :; do
-    current="$(api GET "${issues_path}?state=all&type=issues&sort=oldest&limit=50&page=${page}" 2>/dev/null)" || return 2
+    current="$(api_read "${issues_path}?state=all&type=issues&sort=oldest&limit=50&page=${page}" 2>/dev/null)" || return 2
     if ! printf '%s' "$current" | jq -e '
       type == "array" and all(.[]; (.body == null or (.body | type) == "string"))
     ' >/dev/null; then return 2; fi

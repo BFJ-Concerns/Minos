@@ -38,7 +38,7 @@ review_presence() {
     $reviews[] | select(.commit_id == $head and .state == $state and (.body // "") == $body and (.user.login // .user.username // "") == $login) | .id')" || return 2
   [ -n "$ids" ] || return 1
   for id in $ids; do
-    comments="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews/${id}/comments" 2>/dev/null)" || return 2
+    comments="$(api_read "/api/v1/repos/${owner}/${repo}/pulls/${pr}/reviews/${id}/comments" 2>/dev/null)" || return 2
     # Forgejo may rewrite an anchored comment's stored blame position. Path
     # and body are the durable content Minos owns; geometry is forge-owned.
     if printf '%s\n%s\n' "$comments" "$input" | json_match -s '
