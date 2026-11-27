@@ -97,13 +97,12 @@ function forgeOutcome(error) {
 class EmptyCredential extends Error {}
 
 // The HTTPS git credential the forge's adaptation derives from its own
-// credential. The secret reaches git only as a Basic authorisation header
-// in the GIT_CONFIG_* environment; no error built here quotes it.
-async function cloneCredential() {
+// credential for the filing repository. No error built here quotes it.
+async function cloneCredential(repository) {
   if (!process.env.MINOS_BIN) throw new Error("MINOS_BIN is required to reach the forge");
   let credential;
   try {
-    credential = JSON.parse(await askForge("clone-credential"));
+    credential = JSON.parse(await askForge("clone-credential", ...repository.split("/")));
   } catch (error) {
     const outcome = forgeOutcome(error);
     if (outcome && outcome.refusal === "empty-credential") throw new EmptyCredential("forge credential file is empty");
@@ -113,14 +112,6 @@ async function cloneCredential() {
       typeof credential.password !== "string" || credential.password === "")
     throw new Error("the forge's clone credential is not a credential object");
   return credential;
-}
-
-function gitEnvironment(credential) {
-  const authorisation = Buffer.from(`${credential.username}:${credential.password}`).toString("base64");
-  return {
-    ...process.env, GIT_TERMINAL_PROMPT: "0",
-    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Basic ${authorisation}`,
-  };
 }
 
 function git(directory, env, ...args) {
@@ -176,36 +167,52 @@ async function deliverToFile({ destination, entries, attribution, reviewedReposi
   const repository = destination.repository || reviewedRepository;
   const location = `${repository}:${destination.path}`;
   let lastFailure = "";
-  let env;
+  let credential;
   try {
-    env = gitEnvironment(await cloneCredential());
+    credential = await cloneCredential(repository);
   } catch (error) {
     if (error instanceof EmptyCredential) return { kind: "file", outcome: "unfiled", reason: error.message };
     return { kind: "file", outcome: "unfiled", reason: `filing to ${location} failed: ${error.message}` };
   }
-  for (let attempt = 1; attempt <= PUSH_ATTEMPTS; attempt += 1) {
-    try {
-      const target = await lookupRepository(repository);
-      const reviewed = repository === reviewedRepository;
-      if (reviewed && protection && target.branch === protection.headBranch)
-        return { kind: "file", outcome: "unfiled", reason: `filing to ${location} refused: the repository's default branch ${target.branch} is the pull-request branch, which Minos never writes` };
-      const clone = cloneForFiling(runDir, repository, target, env, reviewed ? protection : null);
-      const filePath = join(clone, destination.path);
-      const contents = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
-      const { text, written } = appendFilingEntries(contents, entries, attribution, reviewedRepository);
-      if (written === 0) return { kind: "file", outcome: "filed", written: 0, location };
-      mkdirSync(join(filePath, ".."), { recursive: true });
-      writeFileSync(filePath, text);
-      git(clone, env, "add", "--", destination.path);
-      git(clone, env, "-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`,
-        "commit", "--quiet", "--only", "-m", "issues: record review material for triage", "--", destination.path);
-      git(clone, env, "push", "--quiet", "origin", `HEAD:${target.branch}`);
-      return { kind: "file", outcome: "filed", written, location };
-    } catch (error) {
-      lastFailure = describe(error);
+  let authDirectory;
+  try {
+    mkdirSync(runDir, { recursive: true });
+    authDirectory = mkdtempSync(join(runDir, "filing-auth-"));
+    const config = join(authDirectory, "gitconfig");
+    const authorisation = Buffer.from(`${credential.username}:${credential.password}`).toString("base64");
+    writeFileSync(config, `[http]\n\textraHeader = Authorization: Basic ${authorisation}\n`, { mode: 0o600 });
+    const env = {
+      ...process.env, GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "include.path", GIT_CONFIG_VALUE_0: config,
+    };
+    for (let attempt = 1; attempt <= PUSH_ATTEMPTS; attempt += 1) {
+      try {
+        const target = await lookupRepository(repository);
+        const reviewed = repository === reviewedRepository;
+        if (reviewed && protection && target.branch === protection.headBranch)
+          return { kind: "file", outcome: "unfiled", reason: `filing to ${location} refused: the repository's default branch ${target.branch} is the pull-request branch, which Minos never writes` };
+        const clone = cloneForFiling(runDir, repository, target, env, reviewed ? protection : null);
+        const filePath = join(clone, destination.path);
+        const contents = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
+        const { text, written } = appendFilingEntries(contents, entries, attribution, reviewedRepository);
+        if (written === 0) return { kind: "file", outcome: "filed", written: 0, location };
+        mkdirSync(join(filePath, ".."), { recursive: true });
+        writeFileSync(filePath, text);
+        git(clone, env, "add", "--", destination.path);
+        git(clone, env, "-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`,
+          "commit", "--quiet", "--only", "-m", "issues: record review material for triage", "--", destination.path);
+        git(clone, env, "push", "--quiet", "origin", `HEAD:${target.branch}`);
+        return { kind: "file", outcome: "filed", written, location };
+      } catch (error) {
+        lastFailure = describe(error);
+      }
     }
+    return { kind: "file", outcome: "unfiled", reason: `filing to ${location} failed: ${lastFailure}` };
+  } catch (error) {
+    return { kind: "file", outcome: "unfiled", reason: `filing to ${location} failed: ${describe(error)}` };
+  } finally {
+    if (authDirectory) rmSync(authDirectory, { recursive: true, force: true });
   }
-  return { kind: "file", outcome: "unfiled", reason: `filing to ${location} failed: ${lastFailure}` };
 }
 
 // The forge command owns both marker lookup and the durable write. Temporary

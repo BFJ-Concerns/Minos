@@ -148,12 +148,11 @@ needs; it is not required.
    (default `Minos`), and the sweep's completion marker is read under
    that context only. A status's Details link lands on the review Minos
    posted for the reviewed head, or on the pull request itself when it
-   posted none. For a Forgejo forge, `[forges.<key>] web-base`
-   sets the link's host and optional path prefix as an absolute HTTP(S)
-   URL; unset, the link derives the web host from `api-base` by stripping
-   a trailing `/api/v1`. GitHub links always derive the web host from the
-   API base (`https://github.com` for the public API, the Enterprise host
-   otherwise) and ignore `web-base`.
+   posted none. On either forge, `[forges.<key>] web-base` sets the link's
+   host and optional path prefix as an absolute HTTP(S) URL. When unset,
+   Forgejo strips a trailing `/api/v1` from `api-base`. GitHub uses
+   `https://github.com` for the public API and the Enterprise web host
+   for Enterprise Server.
 
    The status is review information, not a merge gate: do not make this
    context a required status check in branch protection. It can be missing
@@ -265,9 +264,8 @@ needs; it is not required.
    token. The token needs these Forgejo scopes: `read:user` (identity
    verification), `write:repository` (cloning, branch reads, commit
    statuses, requested reviewers, and reviews), and `write:issue`
-   (reactions, labels, dependency lookups, and alert issues). The account
-   named by
-   `service.bot-login` must match the token's authenticated identity; the
+   (reactions, labels, dependency lookups, and issue filing). The account
+   named by `service.bot-login` must match the token's authenticated identity; the
    claim adapter rejects a mismatch. The Forgejo instance must expose the
    issue-dependencies API (`/api/v1/repos/.../issues/.../dependencies`); a
    missing or disabled endpoint produces "dependency state unavailable" and
@@ -277,28 +275,24 @@ needs; it is not required.
    requests and commit statuses read and write, contents read — and write
    where a `file` filing destination or the failure ledger pushes to an
    installed repository — and issues read and write where a filing
-   destination or alert needs them; subscribe it
+   destination needs them; subscribe it
    to pull request, pull request review and issue comment events; one
    webhook pointing at `/hooks/github` with the secret), install it on each
    repository Minos reviews, and write the credential file as JSON:
-   `{"app-id": "<App id>", "installation-id": "<installation id>",
-   "private-key-file": "/etc/minos/github-app.pem"}` beside the downloaded
-   private key. The adaptation mints an installation token from it for each
-   invocation and caches the token until it nears expiry; the box needs
-   `openssl` for the App JWT. The App's login is its slug with the `[bot]`
-   suffix (`minos-review[bot]`) — the login GitHub shows on every write the
-   App makes, and the one the guards compare against. Set it as
+   `{"app-id": "<App id>", "private-key-file": "/etc/minos/github-app.pem"}`
+   beside the downloaded private key. The adaptation asks GitHub which
+   installation serves each repository and caches its token until it nears
+   expiry. One forge entry can serve repositories under several installation
+   owners. Existing credential files may still carry `installation-id`.
+   The box needs `openssl` to sign the App JWT. GitHub shows the App's
+   slug with the `[bot]` suffix (`minos-review[bot]`) on every write the
+   App makes. Minos checks writes against that login. Set it as
    `service.bot-login` when GitHub is the only forge; when another forge's
    account holds `service.bot-login`, set it as `bot-login` in
    `[forges.<key>]` instead, which overrides the service's login on that
    forge alone. A GitHub App cannot be a requested reviewer, so the claim on
    GitHub is the in-flight marker alone.
-5. Install `minos-sweep-alert.service` (the sweep's `OnFailure=` hook, which
-   files an operator alert issue on the repository named by the `[service]`
-   `alert-forge`/`alert-owner`/`alert-repo` keys; the sweep files the same
-   alert itself when a configured repo is skipped for six consecutive
-   sweep passes — roughly an hour at the default ten-minute cadence, but
-   pass-count-based, not time-based): run
+5. Install the systemd user units. Run
    `minos install-units --config /etc/minos ~/.config/systemd/user` as the
    deployment user, then `systemctl --user daemon-reload` and enable
    `minos-receiver.service` and `minos-sweep.timer`. The units are embedded
@@ -308,6 +302,11 @@ needs; it is not required.
    memory envelope, so runs share that envelope rather than a copied
    default, and the timer and the `minos-sweep-after-run@.service` template
    verbatim.
+
+   Before upgrading an installation that filed operator alerts, remove
+   `alert-forge`, `alert-owner` and `alert-repo` from the `[service]` table
+   in `service.toml`. Reinstall the user units and reload systemd to remove
+   the failure hook from `minos-sweep.service`.
 6. Optionally, configure a forge webhook so a review starts as soon as a
    pull request changes rather than on the sweep's next pass; the sweep
    finds every pull request needing review without one. Point it at `/hooks/<forge key>` —
@@ -368,10 +367,10 @@ setup cannot fetch the admitted target SHA because the forge no longer
 advertises it (typically because the base branch moved), the failure cause
 carries that refusal; the next sweep pass re-derives from current forge state.
 Workspace setup resolves clone URLs and credentials through the forge-neutral
-`minos forge repository-metadata` and `minos forge clone-credential` operations
-rather than reading the forge API directly; each adaptation implements both,
-and the credential reaches git only as a `GIT_CONFIG_*` authorisation header,
-never on argv.
+`minos forge repository-metadata OWNER REPO` and
+`minos forge clone-credential OWNER REPO` operations. Git reads the
+repository's authorisation header from an owner-only temporary configuration
+file. Uninstalled public GitHub forks can be cloned anonymously.
 
 After the lead has finished its forge writes, `run-body` streams its report,
 Claude transcripts, Codex rollout JSONLs and Ensemble run records as a zstd tar
@@ -399,9 +398,11 @@ Each digest is limited to 256 KiB and reads only the run-local report and
 failure log, Claude transcripts, Codex rollouts and exact Ensemble record tree.
 The sweep fetches and rebases its append-only commit onto `origin/main` before
 pushing. The push authenticates through the selected forge adaptation's
-`clone-credential` operation using `runs.failures-credential-file` — a
-separate credential from the reviewed-forge file — and reaches git as a
-Basic authorisation header via `GIT_CONFIG_*`, never on argv.
+`clone-credential` operation using the separate
+`runs.failures-credential-file`. For GitHub, Minos resolves the installation
+for the repository in the ledger checkout's HTTP(S) push URL for `origin`.
+Git reads the authorisation header from an owner-only temporary
+configuration file.
 
 The receiver handles new events immediately. The sweep periodically starts any
 open, non-draft pull request whose current head carries no completion marker.

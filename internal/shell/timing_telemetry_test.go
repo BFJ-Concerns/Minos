@@ -924,6 +924,41 @@ this line is not JSON and must cost one event, never the record
 	}
 }
 
+func TestCollectTimingsPreservesPayloadsLargerThanAnExecArgument(t *testing.T) {
+	runDir := t.TempDir()
+	large := strings.Repeat("x", 150*1024)
+	event := fmt.Sprintf("{\"name\":\"review\",\"detail\":%q}\n", large)
+	if err := os.WriteFile(filepath.Join(runDir, "timings.ndjson"), []byte(event), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTimingPhaseAgentRecord(t, filepath.Join(runDir, "ensemble-records", "record", "agents", "arm", "agent.json"),
+		large, "Verify", 1000, "2026-08-17T00:00:00Z", "2026-08-17T00:00:01Z")
+
+	recordPath := filepath.Join(runDir, "timing-record.json")
+	if output, err := runCollectTimings(t, nil, runDir, recordPath); err != nil {
+		t.Fatalf("collect-timings: %v\n%s", err, output)
+	}
+	content, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record struct {
+		Commands []struct{ Detail string }
+		Workers  []struct{ Label string }
+		Phases   []struct {
+			LongestArm struct{ Label string } `json:"longest_arm"`
+		}
+	}
+	if err := json.Unmarshal(content, &record); err != nil {
+		t.Fatal(err)
+	}
+	if len(record.Commands) != 1 || record.Commands[0].Detail != large ||
+		len(record.Workers) != 1 || record.Workers[0].Label != large ||
+		len(record.Phases) != 1 || record.Phases[0].LongestArm.Label != large {
+		t.Fatal("large command, worker or phase data was lost")
+	}
+}
+
 func TestCollectTimingsHarvestsASingleRecordRootWhenTheOtherIsAbsent(t *testing.T) {
 	runDir := t.TempDir()
 	writeTimingFixtureAgentRecord(t,

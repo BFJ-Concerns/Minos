@@ -4,22 +4,17 @@ set -eu
 : "${MINOS_API_BASE:?MINOS_API_BASE is required}"
 : "${MINOS_FORGE_CREDENTIAL:?MINOS_FORGE_CREDENTIAL is required}"
 
-# Minos acts on GitHub as a GitHub App. The forge's credential file is the
-# App's registration — a JSON object naming the App id, the installation
-# id on the reviewed repositories and the path of the App's private key —
-# and every request runs on a short-lived installation token this file
-# mints from it. The service and the run body each hand that record over
-# as MINOS_FORGE_CREDENTIAL; nothing outside this adaptation sees a token.
+# The registration supplies the App identity and signing key. The requested
+# repository determines which installation can act on it.
 credential_field() {
   printf '%s' "$MINOS_FORGE_CREDENTIAL" | jq -er --arg key "$1" '
     if type != "object" then error("credential is not a JSON object") else
     (.[$key] // "" | tostring) end' 2>/dev/null
 }
 app_id="$(credential_field "app-id")" || app_id=""
-installation_id="$(credential_field "installation-id")" || installation_id=""
 private_key_file="$(credential_field "private-key-file")" || private_key_file=""
-if [ -z "$app_id" ] || [ -z "$installation_id" ] || [ -z "$private_key_file" ]; then
-  echo 'github: MINOS_FORGE_CREDENTIAL must be a JSON object carrying "app-id", "installation-id" and "private-key-file"' >&2
+if [ -z "$app_id" ] || [ -z "$private_key_file" ]; then
+  echo 'github: MINOS_FORGE_CREDENTIAL must be a JSON object carrying "app-id" and "private-key-file"' >&2
   exit 1
 fi
 if [ ! -r "$private_key_file" ]; then
@@ -32,13 +27,20 @@ github_request() {
   request_path="$2"
   request_auth="$3"
   shift 3
-  curl -fsS \
-    -X "$request_method" \
-    -H "Authorization: ${request_auth}" \
+  if [ -n "$request_auth" ]; then
+    github_curl -H @/dev/fd/3 "$@" -X "$request_method" "${MINOS_API_BASE%/}${request_path}" 3<<EOF
+Authorization: $request_auth
+EOF
+  else
+    github_curl "$@" -X "$request_method" "${MINOS_API_BASE%/}${request_path}"
+  fi
+}
+
+github_curl() {
+  curl -sS \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
-    "$@" \
-    "${MINOS_API_BASE%/}${request_path}"
+    "$@"
 }
 
 base64url() {
@@ -54,6 +56,7 @@ app_jwt() {
   jwt_claims="$(jq -ncj --argjson iat "$((jwt_now - 60))" --argjson exp "$((jwt_now + 540))" --arg iss "$app_id" \
     '{iat:$iat, exp:$exp, iss:$iss}' | base64url)"
   jwt_signature="$(printf '%s.%s' "$jwt_header" "$jwt_claims" | openssl dgst -sha256 -sign "$private_key_file" -binary | base64url)"
+  [ -n "$jwt_signature" ] || return 1
   printf '%s.%s.%s' "$jwt_header" "$jwt_claims" "$jwt_signature"
 }
 
@@ -63,12 +66,12 @@ app_jwt() {
 # with GitHub's [bot] suffix — so the guards compare the configured
 # bot-login against it.
 mint_installation_token() {
-  mint_jwt="$(app_jwt)" || return 1
-  mint_app="$(github_request GET /app "Bearer ${mint_jwt}")" || return 1
+  mint_app="$(github_request GET /app "Bearer ${installation_jwt}" -f)" || return 1
   mint_slug="$(printf '%s' "$mint_app" | jq -er '.slug // empty')" || return 1
-  mint_response="$(github_request POST "/app/installations/${installation_id}/access_tokens" "Bearer ${mint_jwt}")" || return 1
+  mint_response="$(github_request POST "/app/installations/${installation_id}/access_tokens" "Bearer ${installation_jwt}" -f)" || return 1
   printf '%s' "$mint_response" | jq -ec --arg slug "$mint_slug" '
-    if (.token | type) != "string" or (.expires_at | type) != "string"
+    if (.token | type) != "string" or (.token | length == 0 or test("[\r\n]"))
+      or (.expires_at | type) != "string"
     then error("installation token response lacks token or expires_at")
     else {token, expires_at, login: ($slug + "[bot]")} end'
 }
@@ -79,9 +82,6 @@ mint_installation_token() {
 # fewer than two minutes remain. A token the forge has revoked early fails
 # its request as any other forge error and is re-minted after expiry.
 token_cache_root="${MINOS_GITHUB_TOKEN_CACHE:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}}"
-token_cache_key="$(printf '%s %s %s' "$MINOS_API_BASE" "$app_id" "$installation_id" | sha256sum | cut -c1-32)"
-token_cache_file="${token_cache_root%/}/minos-github-${token_cache_key}.json"
-
 load_installation_token() {
   load_now="$(date +%s)"
   if [ -r "$token_cache_file" ]; then
@@ -95,56 +95,75 @@ load_installation_token() {
   fi
   load_fresh="$(mint_installation_token)" || return 1
   mkdir -p "$token_cache_root" 2>/dev/null || true
-  if (umask 077 && printf '%s\n' "$load_fresh" >"${token_cache_file}.$$"); then
-    mv -f "${token_cache_file}.$$" "$token_cache_file" 2>/dev/null || rm -f "${token_cache_file}.$$"
+  if load_tmp="$(mktemp "${token_cache_file}.XXXXXX" 2>/dev/null)"; then
+    if ! printf '%s\n' "$load_fresh" >"$load_tmp" || ! mv -f "$load_tmp" "$token_cache_file"; then
+      rm -f "$load_tmp"
+    fi
   fi
   printf '%s' "$load_fresh"
 }
 
-token_record="$(load_installation_token)" || {
-  echo "github: could not mint an installation token for App ${app_id}, installation ${installation_id}" >&2
-  exit 1
+# The optional public mode is for clone-related reads. A missing installation
+# may mean a public fork, so the caller can try an unauthenticated lookup.
+github_authenticate() {
+  installation_owner="${1:?repository owner is required}"
+  installation_repo="${2:?repository name is required}"
+  installation_jwt="$(app_jwt)" || return 1
+  request_with_status GET "/repos/${installation_owner}/${installation_repo}/installation" "Bearer ${installation_jwt}" || return 1
+  if [ "$api_status_code" = 404 ] && [ "${3:-}" = public ]; then
+    github_authorisation=""
+    return 0
+  fi
+  if [ "$api_status_code" != 200 ]; then
+    echo "github: installation lookup for ${installation_owner}/${installation_repo} returned HTTP ${api_status_code}" >&2
+    return 1
+  fi
+  installation_id="$(printf '%s' "$api_status_body" | jq -er '.id | select(type == "number" and . > 0 and . == floor)')" || {
+    echo "github: repository installation lookup did not return an installation ID" >&2
+    return 1
+  }
+  token_cache_key="$(printf '%s\n' "${MINOS_API_BASE%/}" "$app_id" "$installation_id" | sha256sum | cut -c1-32)"
+  token_cache_file="${token_cache_root%/}/minos-github-${token_cache_key}.json"
+  token_record="$(load_installation_token)" || {
+    echo "github: could not mint an installation token for App ${app_id}, installation ${installation_id}" >&2
+    return 1
+  }
+  MINOS_GITHUB_TOKEN="$(printf '%s' "$token_record" | jq -er '.token | select(type == "string" and length > 0 and (test("[\r\n]") | not))')" || return 1
+  MINOS_GITHUB_LOGIN="$(printf '%s' "$token_record" | jq -er '.login | select(type == "string" and length > 0)')" || return 1
+  github_authorisation="Bearer ${MINOS_GITHUB_TOKEN}"
 }
-MINOS_GITHUB_TOKEN="$(printf '%s' "$token_record" | jq -r '.token')"
-MINOS_GITHUB_LOGIN="$(printf '%s' "$token_record" | jq -r '.login')"
 
 api() {
   api_method="$1"
   api_path="$2"
   shift 2
-  github_request "$api_method" "$api_path" "Bearer ${MINOS_GITHUB_TOKEN}" "$@"
+  github_request "$api_method" "$api_path" "$github_authorisation" -f "$@"
 }
 
-# api_with_status is for decisions where HTTP absence or refusal is
-# materially different from an unreadable forge. It returns non-zero only
-# for transport failure and exposes the confirmed HTTP status and body
-# through global variables.
-api_with_status() {
-  method="$1"
-  path="$2"
-  shift 2
-  api_status_file="$(mktemp)"
-  if api_status_code="$(curl -sS \
-    -o "$api_status_file" \
-    -w '%{http_code}' \
-    -X "$method" \
-    -H "Authorization: Bearer ${MINOS_GITHUB_TOKEN}" \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "$@" \
-    "${MINOS_API_BASE%/}${path}")"; then
+# Expose confirmed HTTP status and body. Return non-zero on transport failure.
+request_with_status() {
+  status_method="$1"
+  status_path="$2"
+  status_auth="$3"
+  shift 3
+  api_status_file="$(mktemp)" || return 1
+  if api_status_code="$(github_request "$status_method" "$status_path" "$status_auth" \
+    -o "$api_status_file" -w '%{http_code}' "$@")"; then
     api_status_body="$(cat "$api_status_file")"
     rm -f "$api_status_file"
     return 0
   fi
   rm -f "$api_status_file"
-  # Callers consume these shared status fields after this sourced function
-  # returns; ShellCheck cannot see those reads while analysing the library.
-  # shellcheck disable=SC2034
   api_status_code=""
-  # shellcheck disable=SC2034
   api_status_body=""
   return 1
+}
+
+api_with_status() {
+  api_status_method="$1"
+  api_status_path="$2"
+  shift 2
+  request_with_status "$api_status_method" "$api_status_path" "$github_authorisation" "$@"
 }
 
 # A payload whose size the forge or the lead decides reaches jq and curl on

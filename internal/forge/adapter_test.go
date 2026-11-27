@@ -166,45 +166,32 @@ func TestRemoveReactionMarkerUsesGuardedPullRequestIdentity(t *testing.T) {
 	}
 }
 
-// Both operations must carry the caller's title and multiline body, while
-// preserving their distinct operation name and service-login arguments.
-func TestIssueWritesCarryPayloadAndOperation(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		arguments []string
-		call      func(*Adapter, context.Context, Repository, string, string) WriteResult
-	}{
-		{name: "alert", arguments: []string{"owner", "repo"}, call: (*Adapter).Alert},
-		{name: "guarded-file-issue", arguments: []string{"owner", "repo", "Minos"}, call: (*Adapter).FileIssue},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			runner := &recordingRunner{outputs: [][]byte{[]byte(`{"outcome":"applied"}`)}, errors: []error{nil}}
-			adapter, err := NewAdapter(runner, "Minos", "Minos")
-			if err != nil {
-				t.Fatal(err)
-			}
-			title := `Advisory "write" failure`
-			body := "Two writers read the same revision.\nThe later update wins."
-			test.call(adapter, t.Context(), Repository{Owner: "owner", Name: "repo"}, title, body)
-			if len(runner.requests) != 1 {
-				t.Fatalf("requests = %v, want one", runner.requests)
-			}
-			request := runner.requests[0]
-			if request.Operation != test.name || !slices.Equal(request.Arguments, test.arguments) {
-				t.Fatalf("operation=%q arguments=%v", request.Operation, request.Arguments)
-			}
-			payload, err := io.ReadAll(request.Stdin)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var got map[string]string
-			if err := json.Unmarshal(payload, &got); err != nil {
-				t.Fatal(err)
-			}
-			if len(got) != 2 || got["title"] != title || got["body"] != body {
-				t.Fatalf("issue payload = %s, want title=%q body=%q", payload, title, body)
-			}
-		})
+func TestFileIssueCarriesPayloadAndOperation(t *testing.T) {
+	runner := &recordingRunner{outputs: [][]byte{[]byte(`{"outcome":"applied"}`)}, errors: []error{nil}}
+	adapter, err := NewAdapter(runner, "Minos", "Minos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := `Advisory "write" failure`
+	body := "Two writers read the same revision.\nThe later update wins."
+	adapter.FileIssue(t.Context(), Repository{Owner: "owner", Name: "repo"}, title, body)
+	if len(runner.requests) != 1 {
+		t.Fatalf("requests = %v, want one", runner.requests)
+	}
+	request := runner.requests[0]
+	if request.Operation != "guarded-file-issue" || !slices.Equal(request.Arguments, []string{"owner", "repo", "Minos"}) {
+		t.Fatalf("operation=%q arguments=%v", request.Operation, request.Arguments)
+	}
+	payload, err := io.ReadAll(request.Stdin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["title"] != title || got["body"] != body {
+		t.Fatalf("issue payload = %s, want title=%q body=%q", payload, title, body)
 	}
 }
 

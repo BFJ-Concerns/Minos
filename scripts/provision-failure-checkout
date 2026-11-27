@@ -23,8 +23,12 @@ forge_token="$(sed -n '1p' "$credential_file")"
 
 mkdir -p "$(dirname "$destination")"
 GIT_CONFIG_COUNT=1
-GIT_CONFIG_KEY_0="http.extraHeader"
-GIT_CONFIG_VALUE_0="Authorization: token $forge_token"
+git_config="$(mktemp)"
+trap 'rm -f "$git_config"' 0
+escaped_token="$(printf '%s' "$forge_token" | sed 's/[\\"]/\\&/g')"
+printf '[http]\n\textraHeader = "Authorization: token %s"\n' "$escaped_token" >"$git_config"
+GIT_CONFIG_KEY_0="include.path"
+GIT_CONFIG_VALUE_0="$git_config"
 GIT_TERMINAL_PROMPT=0
 export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT
 git clone "$clone_url" "$destination"

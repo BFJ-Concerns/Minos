@@ -227,10 +227,16 @@ func TestInstallReviewRuntimePreflightRejectsInvalidRanges(t *testing.T) {
 	for _, versionRange := range []string{"2.1.300", "claude 2.1.300", ">=", ">=2..300", ">=2.1.x", ">=2.1.300.1"} {
 		t.Run(versionRange, func(t *testing.T) {
 			sourceRoot := preflightSourceRoot(t, "claude\tclaude --version\t"+versionRange+"\tengine")
+			binDir := t.TempDir()
+			stubTool(t, binDir, "claude", "2.1.300 (Claude Code)")
 			destination := filepath.Join(t.TempDir(), "opt", "minos")
-			output, err := runInstallerWithPath(t, sourceRoot, destination, t.TempDir())
-			if err == nil || !strings.Contains(output, "preflight: claude:") {
-				t.Fatalf("installer accepted invalid range: %v\n%s", err, output)
+			output, err := runInstallerWithPath(t, sourceRoot, destination, binDir)
+			want := "preflight: claude: expected any or >=MAJOR.MINOR.PATCH, got '" + versionRange + "'"
+			if strings.HasPrefix(versionRange, ">=") {
+				want = "preflight: claude: invalid minimum range '" + versionRange + "'"
+			}
+			if err == nil || !strings.Contains(output, want) {
+				t.Fatalf("invalid range did not produce %q: %v\n%s", want, err, output)
 			}
 			assertNothingInstalled(t, destination)
 		})

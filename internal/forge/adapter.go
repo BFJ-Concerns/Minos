@@ -86,14 +86,20 @@ func (e *RepositoryLookupError) Error() string {
 // CloneCredential asks the adaptation for the HTTPS git credential its
 // credential file stands for. Decoding errors never quote the output, which
 // carries the secret.
-func (a *Adapter) CloneCredential(ctx context.Context) (CloneCredential, error) {
-	out, err := a.runner.Run(ctx, RunRequest{Operation: "clone-credential"})
+func (a *Adapter) CloneCredential(ctx context.Context, repository Repository) (CloneCredential, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "clone-credential", Arguments: []string{repository.Owner, repository.Name}})
 	if err != nil {
 		return CloneCredential{}, err
 	}
 	var credential CloneCredential
 	if json.Unmarshal(out, &credential) != nil {
 		return CloneCredential{}, fmt.Errorf("decode clone credential: output is not a credential object")
+	}
+	if credential.Anonymous {
+		if credential.Username != "" || credential.Password != "" {
+			return CloneCredential{}, fmt.Errorf("anonymous clone credential carried a username or password")
+		}
+		return credential, nil
 	}
 	if credential.Username == "" || credential.Password == "" {
 		return CloneCredential{}, fmt.Errorf("clone credential omitted its username or password")
@@ -179,12 +185,6 @@ func (a *Adapter) PostReview(ctx context.Context, guard Guard, verdict ReviewVer
 	return decodeWriteResult(out, runErr)
 }
 
-// Alert files an operator alert as a repository issue: one open issue per
-// title, with repeat alerts arriving as comments on it.
-func (a *Adapter) Alert(ctx context.Context, repository Repository, title, body string) WriteResult {
-	return a.writeIssue(ctx, "alert", []string{repository.Owner, repository.Name}, title, body)
-}
-
 // AddMarker writes one marker in its configured form under the guard.
 func (a *Adapter) AddMarker(ctx context.Context, guard Guard, marker Marker) WriteResult {
 	return a.markerWrite(ctx, guard, marker, "guarded-add-reaction", "guarded-add-label")
@@ -193,22 +193,16 @@ func (a *Adapter) AddMarker(ctx context.Context, guard Guard, marker Marker) Wri
 // FileIssue delivers one marked entry to its configured repository. Its
 // identity survives reviewed-head movement and closed destination issues.
 func (a *Adapter) FileIssue(ctx context.Context, repository Repository, title, body string) WriteResult {
-	return a.writeIssue(ctx, "guarded-file-issue", []string{repository.Owner, repository.Name, a.serviceLogin}, title, body)
-}
-
-// writeIssue carries the shared title/body payload across issue operations;
-// each adaptation owns its own identity and deduplication contract.
-func (a *Adapter) writeIssue(ctx context.Context, operation string, arguments []string, title, body string) WriteResult {
 	payload, err := json.Marshal(struct {
 		Title string `json:"title"`
 		Body  string `json:"body"`
 	}{Title: title, Body: body})
 	if err != nil {
-		return WriteResult{Outcome: WriteRejected, Reason: "encode " + operation + ": " + err.Error()}
+		return WriteResult{Outcome: WriteRejected, Reason: "encode guarded-file-issue: " + err.Error()}
 	}
 	out, runErr := a.runner.Run(ctx, RunRequest{
-		Operation: operation,
-		Arguments: arguments,
+		Operation: "guarded-file-issue",
+		Arguments: []string{repository.Owner, repository.Name, a.serviceLogin},
 		Stdin:     bytes.NewReader(payload),
 	})
 	return decodeWriteResult(out, runErr)

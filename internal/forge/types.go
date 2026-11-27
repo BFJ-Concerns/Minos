@@ -103,11 +103,12 @@ type RepositoryMetadata struct {
 }
 
 // CloneCredential is the HTTPS git credential the forge's adaptation derives
-// from its credential file. The password is a secret: callers hand it to git
-// through the environment and never print, log or persist it.
+// for a repository. Public repositories may allow anonymous clones. Callers
+// keep passwords out of process arguments and logs.
 type CloneCredential struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username  string `json:"username"`
+	Password  string `json:"password"`
+	Anonymous bool   `json:"anonymous,omitempty"`
 }
 
 type ReviewVerdict string

@@ -2,6 +2,7 @@
 set -eu
 # shellcheck source-path=SCRIPTDIR
 . "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
 
 # Marker identity is independent of the reviewed head. Existing open or
 # closed issues suppress creation; a new write must belong to the service.

@@ -45,8 +45,11 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		return json.NewEncoder(stdout).Encode(metadata)
 	case "clone-credential":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: minos forge clone-credential")
+		repository := forge.Repository{Owner: os.Getenv("MINOS_OWNER"), Name: os.Getenv("MINOS_REPO_NAME")}
+		if len(args) == 3 && repositoryName.MatchString(args[1]+"/"+args[2]) {
+			repository = forge.Repository{Owner: args[1], Name: args[2]}
+		} else if len(args) != 1 {
+			return fmt.Errorf("usage: minos forge clone-credential OWNER REPO")
 		}
 		adapter, _, err := runForge()
 		if errors.Is(err, errEmptyForgeCredential) {
@@ -57,7 +60,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		credential, err := adapter.CloneCredential(ctx)
+		credential, err := adapter.CloneCredential(ctx, repository)
 		if err != nil {
 			return err
 		}

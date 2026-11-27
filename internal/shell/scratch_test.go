@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -289,11 +290,7 @@ func TestFailureDigestUsesExplicitBoundedEvidenceSources(t *testing.T) {
 	}
 }
 
-func TestPublishFailureDigestTimesOutAndRetainsLocalCommit(t *testing.T) {
-	originalTimeout := failurePublishTimeout
-	t.Cleanup(func() { failurePublishTimeout = originalTimeout })
-	failurePublishTimeout = 50 * time.Millisecond
-
+func TestPublishFailureDigestCancellationRetainsLocalCommit(t *testing.T) {
 	root := t.TempDir()
 	checkout := filepath.Join(root, "failure-ledger")
 	runGit(t, root, "init", "-b", "main", checkout)
@@ -312,22 +309,6 @@ func TestPublishFailureDigestTimesOutAndRetainsLocalCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bin := filepath.Join(root, "bin")
-	if err := os.MkdirAll(bin, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeScript(t, filepath.Join(bin, "git"), fmt.Sprintf(`#!/usr/bin/env sh
-if [ "$3" = "fetch" ]; then
-  sleep 2
-  exit 1
-fi
-exec %q "$@"
-`, realGit))
-	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	credential := filepath.Join(root, "forgejo.token")
 	writeTestFile(t, credential, "fixture-token\n")
 	var cfg ServiceConfig
@@ -337,14 +318,24 @@ exec %q "$@"
 	cfg.Service.CommitAuthorName = "Minos"
 	cfg.Service.CommitAuthorEmail = "Minos@minos.invalid"
 
-	started := time.Now()
-	if err := publishFailureDigest(t.Context(), cfg); err == nil {
-		t.Fatal("publish succeeded despite hung fetch")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	original := failureLedgerCommand
+	t.Cleanup(func() { failureLedgerCommand = original })
+	failureLedgerCommand = func(publishCtx context.Context, name string, args ...string) *exec.Cmd {
+		if _, ok := publishCtx.Deadline(); !ok {
+			t.Fatal("ledger command has no publish deadline")
+		}
+		if args[2] == "fetch" {
+			cancel()
+		}
+		return original(publishCtx, name, args...)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("publish stopped after %s, want within one second", elapsed)
+	err = publishFailureDigest(ctx, cfg)
+	if !errors.Is(err, context.Canceled) || !strings.HasPrefix(err.Error(), "git fetch:") {
+		t.Fatalf("publish error = %v, want cancellation at fetch", err)
 	}
-	message := strings.TrimSpace(runScratchGitOutput(t, checkout, "log", "-1", "--pretty=%s"))
+	message := gitOutput(t, checkout, "log", "-1", "--pretty=%s")
 	if message != "docs: record salvaged Minos run failure" {
 		t.Fatalf("local salvage commit = %q, want retained commit", message)
 	}
@@ -571,17 +562,6 @@ func TestPublishFailureDigestRebasesOntoUpdatedOrigin(t *testing.T) {
 			t.Fatalf("%s omits %q: %s", path, want, contents)
 		}
 	}
-}
-
-func runScratchGitOutput(t *testing.T, directory string, arguments ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", arguments...)
-	cmd.Dir = directory
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(arguments, " "), err, output)
-	}
-	return string(output)
 }
 
 func configureTestGit(t *testing.T, directory string) {
