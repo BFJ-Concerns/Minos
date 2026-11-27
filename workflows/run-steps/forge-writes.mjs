@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { HeadMoved } from "../run-endings.mjs";
 import { composeSummary } from "../summary-comment.mjs";
+import { keptWalkthrough } from "../walkthrough.mjs";
 
 export async function currentSnapshot(run) {
   const snapshot = await run.forge("snapshot");
@@ -41,10 +42,13 @@ export async function setStatus(run, state, head = run.head, target = run.target
 // place. A write the forge did not confirm throws, a moved head as
 // HeadMoved does. This is how a step writes a state that is the head's
 // completion marker, clean or changes requested: the step fails when the
-// marker is not on the forge.
+// marker is not on the forge. Every write carries the walkthrough kept for
+// the pull request (walkthrough.mjs) unless `facts` hands over a newer
+// one, so no state's edit drops it.
 export async function writeSummary(run, state, facts = {}) {
   const text = join(run.runDir, "summary-comment.md");
-  writeFileSync(text, `${composeSummary({ ...facts, state, head: run.head, target: run.target })}\n`);
+  const shown = { walkthrough: keptWalkthrough(run.env), ...facts, state, head: run.head, target: run.target };
+  writeFileSync(text, `${composeSummary(shown)}\n`);
   return applied(run, "summary", [run.head, run.target, state, text]);
 }
 
