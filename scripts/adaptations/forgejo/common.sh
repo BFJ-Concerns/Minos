@@ -382,6 +382,6 @@ commit_statuses() {
   done
   printf '%s' "$status_all" | jq --arg provider forgejo '[.[] |
     if ((.id | type) != "number" or .id <= 0) then error("Forgejo status is missing a positive id") else
-      {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // ""), created_at:(.created_at // "")}
+      {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // "")}
     end] | sort_by(.id) | reverse'
 }

@@ -29,8 +29,6 @@ const (
 	StatusError   StatusState = "error"
 )
 
-// Status is one commit status. CreatedAt is the forge's RFC 3339 time the
-// status was written, comparable with a comment's CreatedAt.
 type Status struct {
 	ID          int64       `json:"id"`
 	Provider    string      `json:"provider"`
@@ -39,7 +37,6 @@ type Status struct {
 	Creator     string      `json:"creator"`
 	Description string      `json:"description"`
 	TargetURL   string      `json:"target_url"`
-	CreatedAt   string      `json:"created_at"`
 }
 
 // Review is one submitted review. SubmittedAt is the forge's own RFC 3339

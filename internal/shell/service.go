@@ -173,15 +173,18 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	lastFinished := func() (headStatuses, error) {
 		return lastFinishedHeadStatuses(ctx, cfg, facts.Forge, adapter, guard)
 	}
-	spawnedWith := readSpawnedWith(cfg, facts.Forge, guard)
-	effect, err := commandsInForce(commands, snapshot, lastFinished, spawnedWith, botLogin, cfg.Service.StatusContext)
+	record := readCommandRecord(cfg, facts.Forge, guard)
+	effect, err := commandsInForce(commands, snapshot, lastFinished, record, botLogin, cfg.Service.StatusContext)
 	if err != nil {
 		return ReconcileResult{
 			Decision: ReconcileNothing, DeferralReason: "comment commands unavailable",
 			DeferralReasons: append([]string{"comment commands unavailable"}, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
 		}, fmt.Errorf("work out comment commands: %w", err)
 	}
-	acknowledgeCommands(ctx, adapter, guard, effect.acknowledge)
+	if acknowledged := acknowledgeCommands(ctx, adapter, guard, effect.unacknowledged); len(acknowledged) > 0 {
+		record.Acknowledged = append(record.Acknowledged, acknowledged...)
+		writeCommandRecord(cfg, facts.Forge, guard, record)
+	}
 	if effect.skipped {
 		return ReconcileResult{
 			Decision: ReconcileDecision(deferredDecisionPrefix + skippedByCommandReason), DeferralReason: skippedByCommandReason,
@@ -212,7 +215,16 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		return ReconcileResult{}, err
 	}
 	if outcome.Outcome == SpawnStarted || outcome.Outcome == SpawnContinued {
-		recordSpawnedWith(cfg, facts.Forge, guard, spawnedWith, effect.waiting)
+		startedFor := false
+		for _, comment := range effect.waiting {
+			if _, started := record.Started[comment.ID]; !started {
+				record.Started[comment.ID] = effect.results
+				startedFor = true
+			}
+		}
+		if startedFor {
+			writeCommandRecord(cfg, facts.Forge, guard, record)
+		}
 	}
 	return ReconcileResult{
 		Decision:     outcome.Outcome,

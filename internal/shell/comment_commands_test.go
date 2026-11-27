@@ -462,3 +462,41 @@ func TestCommandRecordGoesWithTheClosedPullRequest(t *testing.T) {
 		t.Fatalf("command record outlived the closed pull request: %v", err)
 	}
 }
+
+// The run started for a command can end incomplete after an earlier run,
+// started before the command, finished clean; the earlier run's result
+// answers nothing, so the retry is still the full review asked for.
+func TestCommandOutlivesAnIncompleteRunStartedForIt(t *testing.T) {
+	journey := newCommandJourney(t)
+	if result := journey.reconcile(t); result.Decision != SpawnStarted {
+		t.Fatalf("first reconciliation = %#v", result)
+	}
+	journey.comment("maintainer", "@minos-review full review")
+	journey.status(t, product.Working())
+	journey.status(t, product.Clean())
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || journey.launchedOutcomes(t) != `["full"]` {
+		t.Fatalf("commanded reconciliation = %#v", result)
+	}
+	journey.status(t, product.Working())
+	journey.status(t, product.Incomplete())
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || len(journey.launches) != 3 {
+		t.Fatalf("retry reconciliation = %#v after %d launches", result, len(journey.launches))
+	}
+	if got := journey.launchedOutcomes(t); got != `["full"]` {
+		t.Fatalf("retry outcomes = %s, want full alone", got)
+	}
+}
+
+func TestCommandSupersededAfterAnUnrelatedRunIsAcknowledged(t *testing.T) {
+	journey := newCommandJourney(t)
+	if result := journey.reconcile(t); result.Decision != SpawnStarted {
+		t.Fatalf("first reconciliation = %#v", result)
+	}
+	review := journey.comment("maintainer", "@minos-review review")
+	journey.status(t, product.Working())
+	journey.status(t, product.Clean())
+	skip := journey.comment("maintainer", "@minos-review skip")
+	if result := journey.reconcile(t); result.DeferralReason != skippedByCommandReason || !journey.acknowledged(review) || !journey.acknowledged(skip) {
+		t.Fatalf("reconciliation = %#v, review acknowledged %t, skip acknowledged %t", result, journey.acknowledged(review), journey.acknowledged(skip))
+	}
+}
