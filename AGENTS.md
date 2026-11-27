@@ -89,11 +89,13 @@ Claude Code by default or on Codex (`MINOS_LEAD_ENGINE`).
   (`MINOS_PUSH_INSPECTION_OUTCOMES`; all three by default, `full` always
   among them). That earlier head is known by the
   content of the pull request's files, not by its commits (`minos forge
-  earlier`), from a record kept under the runs directory. The record is a
-  cache: without it, `minos forge earlier` looks among the newest 20 of
-  the pull request's commits for one Minos marked clean by status or
-  requested changes on by review, and a full review follows when none
-  qualifies. The resident lead and the scripted driver use the same
+  earlier`), from a record kept under the runs directory when a finished
+  summary comment or a clean or attention status is written. The record
+  is a cache: without it, `minos forge earlier` takes the last finished
+  head the summary comment's record names, and on a pull request with no
+  summary comment looks among the newest 20 of the pull request's commits
+  for one Minos marked clean by status or requested changes on by review;
+  a full review follows when none qualifies. The resident lead and the scripted driver use the same
   brief engagement rules to constrain push inspection.
 - The pull request carries only what blocks it. A confirmed finding that
   neither blocks nor takes a class is advisory and goes to the configured

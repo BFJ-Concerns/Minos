@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -55,55 +56,70 @@ func reviewedChangePrefix(forgeName string, repo forge.Repository) string {
 }
 
 func removeReviewedChange(cfg ServiceConfig, forgeName string, guard forge.Guard) error {
-	return removeReviewedChangeFile(reviewedChangePath(cfg, forgeName, guard))
+	return removeRecordFile(reviewedChangePath(cfg, forgeName, guard))
 }
 
-func removeReviewedChangeFile(path string) error {
+func removeRecordFile(path string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove reviewed change %s: %w", filepath.Base(path), err)
+		return fmt.Errorf("remove %s: %w", path, err)
 	}
 	return nil
 }
 
-// Collect the enrolled records for forge checks and discard records with no
-// enrolment. Split off the final numeric suffix so existing file names work
-// even when a forge, owner or repository name contains hyphens.
-func pruneUnenrolledReviewedChanges(cfg ServiceConfig, repos []RepoConfig) map[string][]int64 {
-	dir := filepath.Join(cfg.Runs.Dir, ".reviewed")
-	entries, err := os.ReadDir(dir)
-	if err != nil && !os.IsNotExist(err) {
-		log.Printf("read reviewed changes: %v", err)
-	}
+// pullRequestRecordDirs are the directories under the runs directory where
+// the service keeps a record per pull request: the reviewed change and the
+// command record. Both are named by reviewedChangePrefix and the pull
+// request's number, and both go when the pull request does.
+func pullRequestRecordDirs(cfg ServiceConfig) []string {
+	return []string{filepath.Join(cfg.Runs.Dir, ".reviewed"), commandRecordDir(cfg)}
+}
+
+// pruneUnenrolledRecords collects, by repository prefix, the pull requests
+// that have a record in any pull-request record directory, for forge
+// checks, and discards the records of repositories no longer enrolled.
+// Split off the final numeric suffix so existing file names work even when
+// a forge, owner or repository name contains hyphens.
+func pruneUnenrolledRecords(cfg ServiceConfig, repos []RepoConfig) map[string][]int64 {
 	enrolled := make(map[string][]int64, len(repos))
 	for _, repo := range repos {
 		enrolled[reviewedChangePrefix(repo.Forge, forge.Repository{Owner: repo.Owner, Name: repo.Repo})] = nil
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
+	for _, dir := range pullRequestRecordDirs(cfg) {
+		entries, err := os.ReadDir(dir)
+		if err != nil && !os.IsNotExist(err) {
+			log.Printf("read pull-request records: %v", err)
 		}
-		stem := strings.TrimSuffix(entry.Name(), ".json")
-		split := strings.LastIndexByte(stem, '-') + 1
-		if !strings.Contains(stem[:split], "%2F") {
-			continue
-		}
-		prefix, pr := stem[:split], stem[split:]
-		number, err := strconv.ParseInt(pr, 10, 64)
-		if err != nil || number <= 0 || strconv.FormatInt(number, 10) != pr {
-			continue
-		}
-		if _, ok := enrolled[prefix]; ok {
-			enrolled[prefix] = append(enrolled[prefix], number)
-		} else if err := removeReviewedChangeFile(filepath.Join(dir, entry.Name())); err != nil {
-			log.Print(err)
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			stem := strings.TrimSuffix(entry.Name(), ".json")
+			split := strings.LastIndexByte(stem, '-') + 1
+			if !strings.Contains(stem[:split], "%2F") {
+				continue
+			}
+			prefix, pr := stem[:split], stem[split:]
+			number, err := strconv.ParseInt(pr, 10, 64)
+			if err != nil || number <= 0 || strconv.FormatInt(number, 10) != pr {
+				continue
+			}
+			if _, ok := enrolled[prefix]; !ok {
+				if err := removeRecordFile(filepath.Join(dir, entry.Name())); err != nil {
+					log.Print(err)
+				}
+			} else if !slices.Contains(enrolled[prefix], number) {
+				enrolled[prefix] = append(enrolled[prefix], number)
+			}
 		}
 	}
 	return enrolled
 }
 
-// An open listing can race a reopen or omit a pull request. Only a direct
-// lookup can confirm that a pull request outside the list is closed or gone.
-func pruneRetiredReviewedChanges(ctx context.Context, cfg ServiceConfig, repo RepoConfig, numbers []int64, open []Facts) {
+// pruneRetiredRecords removes every record of a pull request the forge
+// confirms closed or gone. An open listing can race a reopen or omit a pull
+// request, so only a direct lookup can confirm that a pull request outside
+// the list is retired.
+func pruneRetiredRecords(ctx context.Context, cfg ServiceConfig, repo RepoConfig, numbers []int64, open []Facts) {
 	openNumbers := make(map[int64]bool, len(open))
 	for _, facts := range open {
 		openNumbers[pullRequestNumber(facts)] = true
@@ -111,7 +127,7 @@ func pruneRetiredReviewedChanges(ctx context.Context, cfg ServiceConfig, repo Re
 	repository := forge.Repository{Owner: repo.Owner, Name: repo.Repo}
 	adapter, err := newBehaviouralForge(cfg, repo.Forge)
 	if err != nil {
-		log.Printf("%s/%s: check reviewed changes: %v", repo.Owner, repo.Repo, err)
+		log.Printf("%s/%s: check pull-request records: %v", repo.Owner, repo.Repo, err)
 		return
 	}
 	for _, number := range numbers {
@@ -120,10 +136,11 @@ func pruneRetiredReviewedChanges(ctx context.Context, cfg ServiceConfig, repo Re
 		}
 		retired, err := adapter.PullRequestRetired(ctx, repository, number)
 		if err == nil && retired {
-			err = removeReviewedChange(cfg, repo.Forge, forge.Guard{Repository: repository, PullRequest: number})
+			guard := forge.Guard{Repository: repository, PullRequest: number}
+			err = errors.Join(removeReviewedChange(cfg, repo.Forge, guard), removeCommandRecord(cfg, repo.Forge, guard))
 		}
 		if err != nil {
-			log.Printf("%s/%s#%d: prune reviewed change: %v", repo.Owner, repo.Repo, number, err)
+			log.Printf("%s/%s#%d: prune pull-request records: %v", repo.Owner, repo.Repo, number, err)
 		}
 	}
 }
@@ -167,9 +184,11 @@ func changedPaths(earlier, current map[string]string) []string {
 }
 
 // recordReviewedChange keeps the head a run has just finished on. It runs
-// after the forge accepted the terminal status, which is the durable
-// outcome; a record that cannot be written is said on stderr and costs the
-// next head a full review.
+// after the forge accepted the durable outcome: the summary comment's write
+// of a finished state, or a clean or attention status, which the resident
+// lead writes in its place. A record that cannot be written is said on
+// stderr; the next head's earlier-head search then reads the summary
+// comment instead.
 func recordReviewedChange(ctx context.Context, guard forge.Guard, outcome string) {
 	workspace := os.Getenv("MINOS_WORKSPACE")
 	if workspace == "" {
@@ -203,13 +222,18 @@ func recordReviewedChange(ctx context.Context, guard forge.Guard, outcome string
 	}
 }
 
-// findEarlierHead names the head Minos last finished on before this one. The
-// kept record answers first, whatever became of its commit. Without one, the
-// pull request's own commits are asked, newest first: a commit carrying the
-// service's request-changes review finished as attention, and one whose
-// latest service status is clean finished clean. An attention status alone
-// is not enough, because the service also sets it on a head whose review
-// never completed.
+// findEarlierHead names the head Minos last finished on before this one.
+// The kept record answers first, whatever became of its commit: both the
+// scripted run's finished summary comment and the resident lead's terminal
+// status write it, so it is the newest of the two when both have written.
+// Without it, the summary comment's record names the last finished head,
+// which it carries while a later head is under way. A pull request with
+// neither, finished only by statuses and reviews before the summary
+// comment, has the pull request's own commits asked, newest first: a
+// commit carrying the service's request-changes review finished as
+// attention, and one whose latest service status is clean finished clean.
+// An attention status alone is not enough, because the service also sets
+// it on a head whose review never completed.
 func findEarlierHead(ctx context.Context, adapter *forge.Adapter, guard forge.Guard) (earlierHead, error) {
 	none := earlierHead{Outcome: "none"}
 	workspace := os.Getenv("MINOS_WORKSPACE")
@@ -234,13 +258,25 @@ func findEarlierHead(ctx context.Context, adapter *forge.Adapter, guard forge.Gu
 			return earlierHead{Head: record.Head, Outcome: record.Outcome, Ancestor: ancestor(record.Head), ChangedPaths: changedPaths(record.Files, current)}, nil
 		}
 	}
-	out, err := exec.CommandContext(ctx, "git", "-C", workspace, "rev-list", fmt.Sprintf("--max-count=%d", earlierHeadWalk+1), guard.TargetSHA+".."+guard.HeadSHA).Output()
-	if err != nil {
-		return none, fmt.Errorf("list the pull request's commits: %w", err)
-	}
 	snapshot, err := adapter.Snapshot(ctx, guard.Repository, guard.PullRequest)
 	if err != nil {
 		return none, err
+	}
+	if summary, found := snapshot.SummaryRecord(); found {
+		if head, state, finished := summary.LastFinished(); finished && head != guard.HeadSHA {
+			completion, _ := state.Completion()
+			earlier := earlierHead{Head: head, Outcome: completion.Name(), Ancestor: ancestor(head)}
+			// The head may be gone from the clone, rewritten away; its
+			// changed paths are then null, as for any pair not compared.
+			if files, err := changeFingerprints(ctx, workspace, guard.TargetSHA, head); err == nil {
+				earlier.ChangedPaths = changedPaths(files, current)
+			}
+			return earlier, nil
+		}
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", workspace, "rev-list", fmt.Sprintf("--max-count=%d", earlierHeadWalk+1), guard.TargetSHA+".."+guard.HeadSHA).Output()
+	if err != nil {
+		return none, fmt.Errorf("list the pull request's commits: %w", err)
 	}
 	requestedChanges := map[string]bool{}
 	for _, review := range snapshot.Reviews {

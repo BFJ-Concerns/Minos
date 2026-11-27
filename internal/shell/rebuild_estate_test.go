@@ -553,6 +553,53 @@ func TestForgeEarlierWithoutARecordAsksThePullRequestsOwnCommits(t *testing.T) {
 	}
 }
 
+func (f *earlierHeadFixture) summary(head, state string) {
+	f.t.Helper()
+	text := filepath.Join(f.t.TempDir(), "summary.md")
+	if err := os.WriteFile(text, []byte("Summary.\n"), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	var stdout strings.Builder
+	if err := ForgeCommand(f.t.Context(), []string{"summary", head, f.target(), state, text}, &stdout); err != nil {
+		f.t.Fatalf("summary %s: %v\n%s", state, err, stdout.String())
+	}
+}
+
+// The scripted run marks a finished head with the summary comment, which
+// keeps the reviewed change as a status does; without that record the
+// comment's own record names the last finished head, which it carries
+// while a later head is under way and after the earlier one is rewritten
+// away.
+func TestForgeEarlierReadsTheSummaryComment(t *testing.T) {
+	f := newEarlierHeadFixture(t)
+	first := f.commit("feature.txt", "one\n", "feature")
+	f.summary(first, "clean")
+	second := f.commit("feature.txt", "one\ntwo\n", "extend the feature")
+	got := f.earlier(second)
+	if got.Head != first || got.Outcome != "clean" || !got.Ancestor || !reflect.DeepEqual(got.ChangedPaths, []string{"feature.txt"}) {
+		t.Fatalf("a head after a clean summary reads %#v", got)
+	}
+	if err := os.RemoveAll(filepath.Join(f.runsDir, ".reviewed")); err != nil {
+		t.Fatal(err)
+	}
+	f.summary(second, "inspecting")
+	got = f.earlier(second)
+	if got.Head != first || got.Outcome != "clean" || !got.Ancestor || !reflect.DeepEqual(got.ChangedPaths, []string{"feature.txt"}) {
+		t.Fatalf("the summary's last finished head reads %#v", got)
+	}
+
+	f.summary(second, "changes-requested")
+	if err := os.RemoveAll(filepath.Join(f.runsDir, ".reviewed")); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, f.workspace, "commit", "--quiet", "--amend", "-m", "extend the feature, reworded")
+	rewritten := f.follow()
+	got = f.earlier(rewritten)
+	if got.Head != second || got.Outcome != "attention" || got.Ancestor || got.ChangedPaths == nil || len(got.ChangedPaths) != 0 {
+		t.Fatalf("a rewritten head after a changes-requested summary reads %#v", got)
+	}
+}
+
 func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, facts := state.service(t)

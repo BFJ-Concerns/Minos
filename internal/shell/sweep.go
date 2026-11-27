@@ -39,7 +39,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	reviewedEntries := pruneUnenrolledReviewedChanges(cfg, repos)
+	recordEntries := pruneUnenrolledRecords(cfg, repos)
 	var candidates []sweepCandidate
 	// One unreadable repo must not stop the pass: the rest of the fleet is
 	// swept, and only a total outage fails the unit.
@@ -69,8 +69,8 @@ func SweepCommand(ctx context.Context, args []string) error {
 			continue
 		}
 		prefix := reviewedChangePrefix(repo.Forge, forge.Repository{Owner: repo.Owner, Name: repo.Repo})
-		if numbers := reviewedEntries[prefix]; len(numbers) > 0 {
-			pruneRetiredReviewedChanges(ctx, cfg, repo, numbers, pullRequests)
+		if numbers := recordEntries[prefix]; len(numbers) > 0 {
+			pruneRetiredRecords(ctx, cfg, repo, numbers, pullRequests)
 		}
 		for _, facts := range pullRequests {
 			priority := 1
