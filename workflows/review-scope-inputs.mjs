@@ -3,10 +3,10 @@
 // Compatibility command for the selectable resident lead. It reports brief
 // engagement only, using the same brief rules as scripted push inspection.
 
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import { briefEngagement } from "./brief-dispositions.mjs";
+import { changedPaths } from "./changed-paths.mjs";
 import { reviewBriefsFromWorkspace } from "./review-brief-files.mjs";
 
 const [base, head, occasion = null, ...extra] = process.argv.slice(2);
@@ -17,9 +17,7 @@ try {
   const workspace = process.env.MINOS_WORKSPACE ||
     JSON.parse(readFileSync(process.env.MINOS_ORIENTATION, "utf8")).repository;
   const { briefs } = reviewBriefsFromWorkspace(workspace);
-  const paths = execFileSync("git", ["-C", workspace, "diff", "--no-renames", "--name-only", "-z", base, head], {
-    encoding: "utf8", maxBuffer: Infinity,
-  }).split("\0").filter(Boolean);
+  const paths = changedPaths(workspace, base, head);
   const { briefsEngage } = briefEngagement(briefs, occasion, paths);
   process.stdout.write(`${JSON.stringify({ briefsEngage })}\n`);
 } catch (error) {
