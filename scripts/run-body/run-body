@@ -617,6 +617,9 @@ run_activity_signature() {
 if [ -n "${MINOS_RUN_DRIVER:-}" ]; then
   failure_stage="run-driver"
   failure_cause="could not launch $MINOS_RUN_DRIVER"
+  # A warm successor shares the run directory; an earlier attempt's stage
+  # stop says nothing about this one's stages.
+  rm -f -- "$MINOS_RUN_DIR/stage-stopped"
   node "$MINOS_RUN_DRIVER" </dev/null &
   driver_pid=$!
   prelaunch=false
