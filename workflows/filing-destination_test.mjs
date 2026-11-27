@@ -167,6 +167,14 @@ const advisory = {
   line: 41,
   explanation: "Two writers read the same revision and the later write wins silently.",
 };
+const safeguardRequest = {
+  kind: "safeguard-request",
+  title: "Retry the lookup on a timeout",
+  severity: "Low",
+  path: "internal/store.go",
+  line: 58,
+  explanation: "Nothing shows the lookup timing out, but a retry would cover it.",
+};
 const observation = {
   kind: "out-of-scope-observation",
   id: "specialist-1:observation:1",
@@ -503,15 +511,16 @@ webhook-secret-file = "${token}"
 
   await t.test("new entries create separate issues once across heads", async (t) => {
     const f = await fixture(t);
-    assert.deepEqual(await f.deliver([advisory, observation, misconfiguration, advisory]),
-      { kind: "issue", outcome: "filed", written: 3, location: "owner/plans" });
-    assert.deepEqual(f.posted.map((issue) => issue.title), [advisory.title, observation.title, misconfiguration.title]);
-    for (const [index, entry] of [advisory, observation, misconfiguration].entries()) {
+    assert.deepEqual(await f.deliver([advisory, observation, misconfiguration, advisory, safeguardRequest]),
+      { kind: "issue", outcome: "filed", written: 4, location: "owner/plans" });
+    assert.deepEqual(f.posted.map((issue) => issue.title),
+      [advisory.title, observation.title, misconfiguration.title, `Safeguard request: ${safeguardRequest.title}`]);
+    for (const [index, entry] of [advisory, observation, misconfiguration, safeguardRequest].entries()) {
       assert.equal(f.posted[index].body, `${markedFilingEntry(entry, `Filed by ${identity.name} from owner/repository#17, 2026-09-12`, reviewedRepository)}\n`);
     }
-    assert.deepEqual(await f.deliver([advisory, observation, misconfiguration], "later-head"),
+    assert.deepEqual(await f.deliver([advisory, observation, misconfiguration, safeguardRequest], "later-head"),
       { kind: "issue", outcome: "filed", written: 0, location: "owner/plans" });
-    assert.equal(f.posted.length, 3);
+    assert.equal(f.posted.length, 4);
     assert.equal(existsSync(join(f.directory, "publication")), false);
   });
   for (const state of ["open", "closed"]) await t.test(`${state} marker on a later capped page suppresses creation`, async (t) => {

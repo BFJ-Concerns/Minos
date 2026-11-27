@@ -1,5 +1,5 @@
 // Delivers a run's non-gating material — verified advisory findings,
-// unverified observations from outside the change, findings a verifier
+// safeguard requests where the repository files them, unverified observations from outside the change, findings a verifier
 // could neither confirm nor refute, and configuration
 // diagnostics — to the repository's configured filing destination: a file
 // in a repository's default branch, an issue on a named repository, a
@@ -222,6 +222,12 @@ async function deliverToFile({ destination, entries, attribution, reviewedReposi
   }
 }
 
+// A safeguard request's issue says what it is in its title, so a reader of
+// the issue list tells it from a defect without opening it.
+export function issueTitle(entry) {
+  return entry.kind === "safeguard-request" ? `Safeguard request: ${entry.title}` : entry.title;
+}
+
 // The forge command owns both marker lookup and the durable write. Temporary
 // payloads stay under the run directory, separate from any guidance clone.
 async function deliverToIssue({ destination, entries, attribution, reviewedRepository, runDir }) {
@@ -235,7 +241,7 @@ async function deliverToIssue({ destination, entries, attribution, reviewedRepos
     const titleFile = join(payloadDir, "title");
     const bodyFile = join(payloadDir, "body");
     for (const entry of entries) {
-      writeFileSync(titleFile, entry.title, { mode: 0o600 });
+      writeFileSync(titleFile, issueTitle(entry), { mode: 0o600 });
       writeFileSync(bodyFile, `${markedFilingEntry(entry, attribution, reviewedRepository)}\n`, { mode: 0o600 });
       const result = JSON.parse(execFileSync(process.env.MINOS_BIN,
         ["forge", "file-issue", location, titleFile, bodyFile],

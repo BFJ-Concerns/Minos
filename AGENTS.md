@@ -85,7 +85,10 @@ nothing else.
   a request for a safeguard against something the project is not shown to
   face (`speculative-hardening`), and a restatement of a finding the
   author already has (`already-raised`) (`lifecycle/lifecycle.md`, step 5;
-  `workflows/compose-review-publication.mjs`).
+  `workflows/compose-review-publication.mjs`). The one exception is a
+  repository that sets `review.file-safeguard-requests`, off by default:
+  its `speculative-hardening` findings go to the filing destination as
+  safeguard requests, each marked as no defect.
 - The verdict is the lead's classification judgement, informed by the
   configured severity threshold and never mechanically bound to it
   (`workflows/verdict-classification.mjs` owns the digest and the

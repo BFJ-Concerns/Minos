@@ -299,6 +299,11 @@ type RepositoryKnobs struct {
 	WorkInProgressBranchPrefixes []string       `toml:"work-in-progress-branch-prefixes"`
 	Review                       struct {
 		Threshold string `toml:"threshold"`
+		// FileSafeguardRequests sends the confirmed findings the lead classes
+		// as requests for a safeguard against a failure nobody has observed
+		// to the filing destination, each marked as such. Off, they are
+		// published and filed nowhere.
+		FileSafeguardRequests bool `toml:"file-safeguard-requests"`
 	} `toml:"review"`
 	// GuidanceSources is the ordered list of documents that carry the
 	// reviewed project's declared intent. Empty means the reviewed
@@ -521,6 +526,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if defined("review", "threshold") {
 		knobs.Review.Threshold = own.Review.Threshold
+	}
+	if defined("review", "file-safeguard-requests") {
+		knobs.Review.FileSafeguardRequests = own.Review.FileSafeguardRequests
 	}
 	if defined("guidance-sources") {
 		knobs.GuidanceSources = own.GuidanceSources

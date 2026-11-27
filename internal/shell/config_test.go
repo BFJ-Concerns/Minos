@@ -212,6 +212,7 @@ const testRepositoryDefaults = `[repositories]
 work-in-progress-branch-prefixes = ["structural/"]
 [repositories.review]
 threshold = "Medium"
+file-safeguard-requests = true
 [[repositories.guidance-sources]]
 path = "docs/intent.md"
 [repositories.filing-destination]
@@ -256,7 +257,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	writeRepoConfig(t, root, "inherits.toml", repoConfig(""))
 	writeRepoConfig(t, root, "overrides.toml", repoConfig(
 		"work-in-progress-branch-prefixes = []\n"+
-			"[review]\nthreshold = \"Low\"\n"+
+			"[review]\nthreshold = \"Low\"\nfile-safeguard-requests = false\n"+
 			"[[guidance-sources]]\nrepository = \"owner/repo-plans\"\npath = \"README.md\"\n"+
 			"[[guidance-sources]]\npath = \"AGENTS.md\"\n"+
 			"[filing-destination]\nkind = \"none\"\n"+
@@ -271,7 +272,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	}
 
 	inherits := byPath["inherits.toml"]
-	if inherits.Review.Threshold != "Medium" ||
+	if inherits.Review.Threshold != "Medium" || !inherits.Review.FileSafeguardRequests ||
 		!slices.Equal(inherits.WorkInProgressBranchPrefixes, []string{"structural/"}) ||
 		!slices.Equal(inherits.GuidanceSources, []GuidanceSource{{Path: "docs/intent.md"}}) ||
 		inherits.FilingDestination != (FilingDestination{Kind: FilingKindFile, Path: "ISSUES.md"}) ||
@@ -282,7 +283,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	}
 
 	overrides := byPath["overrides.toml"]
-	if overrides.Review.Threshold != "Low" ||
+	if overrides.Review.Threshold != "Low" || overrides.Review.FileSafeguardRequests ||
 		len(overrides.WorkInProgressBranchPrefixes) != 0 ||
 		!slices.Equal(overrides.GuidanceSources, []GuidanceSource{{Repository: "owner/repo-plans", Path: "README.md"}, {Path: "AGENTS.md"}}) ||
 		overrides.FilingDestination != (FilingDestination{Kind: FilingKindNone}) ||
@@ -304,12 +305,12 @@ func TestRepositoryKnobsUnsetAtBothLevelsTakeTheShippedDefaults(t *testing.T) {
 		t.Fatalf("repos = %+v, error = %v", repos, err)
 	}
 	knobs := repos[0].RepositoryKnobs
-	if knobs.Review.Threshold != "High" || len(knobs.GuidanceSources) != 0 || len(knobs.WorkInProgressBranchPrefixes) != 0 ||
+	if knobs.Review.Threshold != "High" || knobs.Review.FileSafeguardRequests || len(knobs.GuidanceSources) != 0 || len(knobs.WorkInProgressBranchPrefixes) != 0 ||
 		knobs.FilingDestination != (FilingDestination{Kind: FilingKindPullRequestComment}) ||
 		knobs.Markers.InFlight == nil || *knobs.Markers.InFlight != (forge.Marker{Reaction: "eyes"}) ||
 		knobs.Markers.Clean == nil || *knobs.Markers.Clean != (forge.Marker{Reaction: "+1"}) ||
 		knobs.Markers.Attention != nil {
-		t.Fatalf("knobs = %+v, want High threshold, checked-in guidance, no prefixes, pull-request-comment filing, eyes and +1 markers and no attention marker", knobs)
+		t.Fatalf("knobs = %+v, want High threshold, no safeguard-request filing, checked-in guidance, no prefixes, pull-request-comment filing, eyes and +1 markers and no attention marker", knobs)
 	}
 }
 

@@ -53,7 +53,9 @@ author, and the forge's own CI remains the build evidence.
    a comment, written after that review, that names it by its title or its
    path and line. A
    request for a safeguard against a failure the project
-   gives no sign of having is recorded with the run and reported nowhere.
+   gives no sign of having is recorded with the run and reported nowhere,
+   unless the repository sets `review.file-safeguard-requests`: then it is
+   filed as a safeguard request, marked apart from defects.
 
 If any reviewer fails to finish, or any finding lacks a complete verifier
 verdict, the run is incomplete: Minos publishes no review and sets no clean
@@ -215,6 +217,7 @@ Per-repository settings take their defaults from `[repositories]` in
 |---------|---------|--------|
 | `admission` | Ready pull requests from the same repository | Filters by labels, author, base branch, draft state, title, touched paths and fork source. [Admission settings](docs/deployment.md#pull-request-admission) |
 | `review.threshold` | `High` | Severity threshold the lead weighs when classifying: `Critical`, `High`, `Medium` or `Low` |
+| `review.file-safeguard-requests` | `false` | Whether a confirmed request for a safeguard against a failure nobody has observed goes to the filing destination, marked as a safeguard request; it never gates either way |
 | `filing-destination.kind` | `pull-request-comment` | Where findings that do not block go: committed to a `file` in a repository, filed as an `issue`, posted as a `pull-request-comment`, or `none` |
 | `markers` | `eyes` in flight, `+1` clean | The reactions or labels Minos puts on a pull request |
 | `work-in-progress-branch-prefixes` | none | Branch prefixes Minos leaves unreviewed |
