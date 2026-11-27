@@ -258,6 +258,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_CONCERN_ROUTING":          repo.Routing.ConcernRoutes(),
 		"MINOS_MARKERS":                  repo.Markers,
 		"MINOS_PUSH_INSPECTION_OUTCOMES": repo.PushInspection.Outcomes,
+		"MINOS_WALKTHROUGH":              repo.Walkthrough,
 	} {
 		encoded, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
@@ -278,6 +279,18 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		} else if kept != nil {
 			env["MINOS_REPOSITORY_DESCRIPTION"] = path
 		}
+	}
+	// The kept walkthrough travels as its record's path, which the run both
+	// reads and replaces. With the walkthrough off, a kept one is removed, so
+	// turning it on again never shows a walkthrough of a head long gone.
+	walkthroughRecord := walkthroughRecordPath(cfg, facts.Forge, forge.Guard{
+		Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
+		PullRequest: pullRequestNumber(facts),
+	})
+	if repo.Walkthrough.Enabled {
+		env["MINOS_WALKTHROUGH_RECORD"] = walkthroughRecord
+	} else if removeErr := removeRecordFile(walkthroughRecord); removeErr != nil {
+		log.Printf("%s: %v", unit, removeErr)
 	}
 	if handoff != nil && handoff.Progress != nil {
 		progress, marshalErr := json.Marshal(handoff.Progress)

@@ -16,6 +16,8 @@ test("both engines provisioned and nothing configured is the cross-family pairin
     "brief-planner": { engine: "codex", model: "gpt-6.1-sol", effort: "high" },
     judgement: { engine: "claude", model: "claude-opus-5-5", effort: "medium" },
     description: { engine: "claude", model: "claude-opus-5-5", effort: "medium" },
+    walkthrough: { engine: "claude", model: "claude-opus-5-5", effort: "xhigh" },
+    "walkthrough-diagrams": { engine: "codex", model: "gpt-6.1-sol", effort: "xhigh" },
   });
 });
 

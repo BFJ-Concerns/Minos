@@ -67,11 +67,36 @@ func removeRecordFile(path string) error {
 }
 
 // pullRequestRecordDirs are the directories under the runs directory where
-// the service keeps a record per pull request: the reviewed change and the
-// command record. Both are named by reviewedChangePrefix and the pull
-// request's number, and both go when the pull request does.
+// the service keeps a record per pull request: the reviewed change, the
+// command record and the walkthrough. Each is named by reviewedChangePrefix
+// and the pull request's number, and all go when the pull request does
+// (removePullRequestRecords).
 func pullRequestRecordDirs(cfg ServiceConfig) []string {
-	return []string{filepath.Join(cfg.Runs.Dir, ".reviewed"), commandRecordDir(cfg)}
+	return []string{filepath.Join(cfg.Runs.Dir, ".reviewed"), commandRecordDir(cfg), walkthroughRecordDir(cfg)}
+}
+
+// removePullRequestRecords removes every record the service keeps for one
+// pull request.
+func removePullRequestRecords(cfg ServiceConfig, forgeName string, guard forge.Guard) error {
+	return errors.Join(
+		removeReviewedChange(cfg, forgeName, guard),
+		removeCommandRecord(cfg, forgeName, guard),
+		removeRecordFile(walkthroughRecordPath(cfg, forgeName, guard)),
+	)
+}
+
+// walkthroughRecordPath is where the service keeps the last walkthrough
+// published for one pull request (workflows/walkthrough.mjs). The run reads
+// it to revise and show it and writes it once a newer one is published, so
+// the service only names it to the run and removes it. The record is a
+// cache: losing it costs the display of the earlier walkthrough until the
+// next reviewed head, and nothing else.
+func walkthroughRecordPath(cfg ServiceConfig, forgeName string, guard forge.Guard) string {
+	return filepath.Join(walkthroughRecordDir(cfg), reviewedChangePrefix(forgeName, guard.Repository)+strconv.FormatInt(guard.PullRequest, 10)+".json")
+}
+
+func walkthroughRecordDir(cfg ServiceConfig) string {
+	return filepath.Join(cfg.Runs.Dir, ".walkthroughs")
 }
 
 // pruneUnenrolledRecords collects, by repository prefix, the pull requests
@@ -137,7 +162,7 @@ func pruneRetiredRecords(ctx context.Context, cfg ServiceConfig, repo RepoConfig
 		retired, err := adapter.PullRequestRetired(ctx, repository, number)
 		if err == nil && retired {
 			guard := forge.Guard{Repository: repository, PullRequest: number}
-			err = errors.Join(removeReviewedChange(cfg, repo.Forge, guard), removeCommandRecord(cfg, repo.Forge, guard))
+			err = removePullRequestRecords(cfg, repo.Forge, guard)
 		}
 		if err != nil {
 			log.Printf("%s/%s#%d: prune pull-request records: %v", repo.Owner, repo.Repo, number, err)

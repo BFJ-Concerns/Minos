@@ -3,3 +3,5 @@
 {{sections}}
 
 {{outstanding}}
+
+{{walkthrough}}

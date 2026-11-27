@@ -363,6 +363,36 @@ func TestRepositoryDescriptionIsOffUntilEnabled(t *testing.T) {
 	}
 }
 
+// The walkthrough and its diagrams are each off for a repository until
+// enabled, and each key is a setting of its own: a repository that sets one
+// takes the service's value of the other.
+func TestWalkthroughSettingsAreOffUntilEnabled(t *testing.T) {
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, "[repositories.walkthrough]\ndiagrams = true\n")
+	writeRepoConfig(t, root, "bare.toml", repoConfig(""))
+	writeRepoConfig(t, root, "enabled.toml", repoConfig("[walkthrough]\nenabled = true\n"))
+	writeRepoConfig(t, root, "declines.toml", repoConfig("[walkthrough]\nenabled = true\ndiagrams = false\n"))
+	repos, err := LoadRepoConfigs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type walkthrough struct{ enabled, diagrams bool }
+	got := map[string]walkthrough{}
+	for _, repo := range repos {
+		got[filepath.Base(repo.Path)] = walkthrough{repo.Walkthrough.Enabled, repo.Walkthrough.Diagrams}
+	}
+	want := map[string]walkthrough{
+		"bare.toml":     {false, true},
+		"enabled.toml":  {true, true},
+		"declines.toml": {true, false},
+	}
+	for name, settings := range want {
+		if got[name] != settings {
+			t.Fatalf("%s walkthrough = %+v, want %+v", name, got[name], settings)
+		}
+	}
+}
+
 func TestRepositoryKnobsUnsetAtBothLevelsTakeTheShippedDefaults(t *testing.T) {
 	root := t.TempDir()
 	cfg := loadServiceConfigWith(t, root, "")
