@@ -9,16 +9,25 @@ set -eu
 forgejo_base="${MINOS_API_BASE%/}"
 forgejo_base="${forgejo_base%/api/v1}"
 
-api() {
+forgejo_request() {
   method="$1"
   path="$2"
   shift 2
-  curl -fsS \
+  curl -sS \
     -X "$method" \
-    -H "Authorization: token ${MINOS_FORGE_CREDENTIAL}" \
+    -H @/dev/fd/3 \
     -H "Accept: application/json" \
     "$@" \
-    "${forgejo_base}${path}"
+    "${forgejo_base}${path}" 3<<EOF
+Authorization: token $MINOS_FORGE_CREDENTIAL
+EOF
+}
+
+api() {
+  api_method="$1"
+  api_path="$2"
+  shift 2
+  forgejo_request "$api_method" "$api_path" -f "$@"
 }
 
 # api_with_status is for decisions where HTTP absence is materially different
@@ -29,14 +38,7 @@ api_with_status() {
   path="$2"
   shift 2
   api_status_file="$(mktemp)"
-  if api_status_code="$(curl -sS \
-    -o "$api_status_file" \
-    -w '%{http_code}' \
-    -X "$method" \
-    -H "Authorization: token ${MINOS_FORGE_CREDENTIAL}" \
-    -H "Accept: application/json" \
-    "$@" \
-    "${forgejo_base}${path}")"; then
+  if api_status_code="$(forgejo_request "$method" "$path" -o "$api_status_file" -w '%{http_code}' "$@")"; then
     api_status_body="$(cat "$api_status_file")"
     rm -f "$api_status_file"
     return 0

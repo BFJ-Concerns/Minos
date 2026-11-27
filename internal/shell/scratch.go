@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 const salvageTailBytes = 64 * 1024
@@ -475,16 +478,38 @@ func publishFailureDigest(ctx context.Context, cfg ServiceConfig) error {
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, failurePublishTimeout)
 	defer cancel()
-	credential, err := adapter.CloneCredential(publishCtx)
+	repository := forge.Repository{}
+	remote := processGroupCommandContext(publishCtx, "git", "-C", cfg.Runs.FailuresRepo, "remote", "get-url", "--push", "origin")
+	if rawURL, err := remote.Output(); err == nil {
+		if origin, err := url.Parse(strings.TrimSpace(string(rawURL))); err == nil && (origin.Scheme == "https" || origin.Scheme == "http") {
+			parts := strings.Split(strings.Trim(origin.Path, "/"), "/")
+			if len(parts) >= 2 {
+				repository = forge.Repository{Owner: parts[len(parts)-2], Name: strings.TrimSuffix(parts[len(parts)-1], ".git")}
+			}
+		}
+	}
+	credential, err := adapter.CloneCredential(publishCtx, repository)
 	if err != nil {
 		return fmt.Errorf("failure-ledger clone credential: %w", err)
 	}
-	authorisation := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(credential.Username+":"+credential.Password))
+	if credential.Anonymous {
+		return fmt.Errorf("failure-ledger push requires an authenticated forge credential")
+	}
+	authConfig, err := os.CreateTemp("", "minos-git-auth-*.conf")
+	if err != nil {
+		return fmt.Errorf("create failure-ledger git credential config: %w", err)
+	}
+	defer os.Remove(authConfig.Name())
+	authorisation := base64.StdEncoding.EncodeToString([]byte(credential.Username + ":" + credential.Password))
+	_, writeErr := fmt.Fprintf(authConfig, "[http]\n\textraHeader = Authorization: Basic %s\n", authorisation)
+	if err := errors.Join(writeErr, authConfig.Close()); err != nil {
+		return fmt.Errorf("write failure-ledger git credential config: %w", err)
+	}
 	env := append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=http.extraHeader",
-		"GIT_CONFIG_VALUE_0="+authorisation,
+		"GIT_CONFIG_KEY_0=include.path",
+		"GIT_CONFIG_VALUE_0="+authConfig.Name(),
 		"GIT_AUTHOR_NAME="+cfg.Service.CommitAuthorName,
 		"GIT_AUTHOR_EMAIL="+cfg.Service.CommitAuthorEmail,
 		"GIT_COMMITTER_NAME="+cfg.Service.CommitAuthorName,

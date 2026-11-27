@@ -148,12 +148,11 @@ needs; it is not required.
    (default `Minos`), and the sweep's completion marker is read under
    that context only. A status's Details link lands on the review Minos
    posted for the reviewed head, or on the pull request itself when it
-   posted none. For a Forgejo forge, `[forges.<key>] web-base`
-   sets the link's host and optional path prefix as an absolute HTTP(S)
-   URL; unset, the link derives the web host from `api-base` by stripping
-   a trailing `/api/v1`. GitHub links always derive the web host from the
-   API base (`https://github.com` for the public API, the Enterprise host
-   otherwise) and ignore `web-base`.
+   posted none. On either forge, `[forges.<key>] web-base` sets the link's
+   host and optional path prefix as an absolute HTTP(S) URL. When unset,
+   Forgejo strips a trailing `/api/v1` from `api-base`. GitHub uses
+   `https://github.com` for the public API and the Enterprise web host
+   for Enterprise Server.
 
    The status is review information, not a merge gate: do not make this
    context a required status check in branch protection. It can be missing
@@ -278,13 +277,14 @@ needs; it is not required.
    to pull request, pull request review and issue comment events; one
    webhook pointing at `/hooks/github` with the secret), install it on each
    repository Minos reviews, and write the credential file as JSON:
-   `{"app-id": "<App id>", "installation-id": "<installation id>",
-   "private-key-file": "/etc/minos/github-app.pem"}` beside the downloaded
-   private key. The adaptation mints an installation token from it for each
-   invocation and caches the token until it nears expiry; the box needs
-   `openssl` for the App JWT. The App's login is its slug with the `[bot]`
-   suffix (`minos-review[bot]`) — the login GitHub shows on every write the
-   App makes, and the one the guards compare against. Set it as
+   `{"app-id": "<App id>", "private-key-file": "/etc/minos/github-app.pem"}`
+   beside the downloaded private key. The adaptation asks GitHub which
+   installation serves each repository and caches its token until it nears
+   expiry. One forge entry can serve repositories under several installation
+   owners. Existing credential files may still carry `installation-id`.
+   The box needs `openssl` to sign the App JWT. GitHub shows the App's
+   slug with the `[bot]` suffix (`minos-review[bot]`) on every write the
+   App makes. Minos checks writes against that login. Set it as
    `service.bot-login` when GitHub is the only forge; when another forge's
    account holds `service.bot-login`, set it as `bot-login` in
    `[forges.<key>]` instead, which overrides the service's login on that
@@ -365,10 +365,10 @@ setup cannot fetch the admitted target SHA because the forge no longer
 advertises it (typically because the base branch moved), the failure cause
 carries that refusal; the next sweep pass re-derives from current forge state.
 Workspace setup resolves clone URLs and credentials through the forge-neutral
-`minos forge repository-metadata` and `minos forge clone-credential` operations
-rather than reading the forge API directly; each adaptation implements both,
-and the credential reaches git only as a `GIT_CONFIG_*` authorisation header,
-never on argv.
+`minos forge repository-metadata OWNER REPO` and
+`minos forge clone-credential OWNER REPO` operations. Git reads the
+repository's authorisation header from an owner-only temporary configuration
+file. Uninstalled public GitHub forks can be cloned anonymously.
 
 After the lead has finished its forge writes, `run-body` streams its report,
 Claude transcripts, Codex rollout JSONLs and Ensemble run records as a zstd tar
@@ -396,9 +396,11 @@ Each digest is limited to 256 KiB and reads only the run-local report and
 failure log, Claude transcripts, Codex rollouts and exact Ensemble record tree.
 The sweep fetches and rebases its append-only commit onto `origin/main` before
 pushing. The push authenticates through the selected forge adaptation's
-`clone-credential` operation using `runs.failures-credential-file` — a
-separate credential from the reviewed-forge file — and reaches git as a
-Basic authorisation header via `GIT_CONFIG_*`, never on argv.
+`clone-credential` operation using the separate
+`runs.failures-credential-file`. For GitHub, Minos resolves the installation
+for the repository in the ledger checkout's HTTP(S) push URL for `origin`.
+Git reads the authorisation header from an owner-only temporary
+configuration file.
 
 The receiver handles new events immediately. The sweep periodically starts any
 open, non-draft pull request whose current head carries no completion marker.
