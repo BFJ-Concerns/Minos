@@ -364,11 +364,11 @@ func removeCommandRecord(cfg ServiceConfig, forgeName string, guard forge.Guard)
 // answers nothing. When the read-back fails or the head has already moved,
 // nothing is recorded and the commands stay waiting, which costs one more
 // review and never a review command answered with none.
-func recordCommandedRun(ctx context.Context, cfg ServiceConfig, forgeName string, adapter *forge.Adapter, guard forge.Guard, waiting []forge.PullRequestComment) {
+func recordCommandedRun(ctx context.Context, cfg ServiceConfig, forgeName string, adapter *forge.Adapter, guard forge.Guard, waiting []forge.PullRequestComment, commitStatus bool) {
 	if len(waiting) == 0 {
 		return
 	}
-	snapshot, err := adapter.Snapshot(ctx, guard.Repository, guard.PullRequest)
+	snapshot, err := pullRequestSnapshot(ctx, adapter, guard.Repository, guard.PullRequest, commitStatus)
 	if err != nil {
 		log.Printf("%s/%s#%d: read back the results at a commanded run's start: %v", guard.Repository.Owner, guard.Repository.Name, guard.PullRequest, err)
 		return

@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/BFJ-Concerns/Minos/internal/forge"
@@ -151,7 +150,9 @@ func TestAdmissionCompletionStatuses(t *testing.T) {
 			cfg := ServiceConfig{}
 			cfg.Service.BotLogin = "Minos"
 			cfg.Service.StatusContext = "Minos"
-			got := assessPullRequestAdmission(cfg, RepoConfig{}, snapshot)
+			var repo RepoConfig
+			repo.Review.CommitStatus = true
+			got := assessPullRequestAdmission(cfg, repo, snapshot)
 			if got.completedRun != test.want {
 				t.Fatalf("admission completedRun = %t, want %t", got.completedRun, test.want)
 			}
@@ -164,14 +165,22 @@ func TestContinuationSuccessorSetupDeathKeepsSweepPriority(t *testing.T) {
 	cfg, _, facts := state.service(t)
 	writeServiceConfig(t, cfg)
 	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_COMMIT_STATUS", "true")
 	t.Setenv("MINOS_FORGE", facts.Forge)
 	t.Setenv("MINOS_OWNER", facts.Owner)
 	t.Setenv("MINOS_REPO_NAME", facts.Repo)
 	t.Setenv("MINOS_PR", facts.PR)
 	facts.HeadSHA, facts.BaseSHA = state.headSHA(), state.targetSHA()
-	var stdout strings.Builder
-	if err := ForgeCommand(t.Context(), []string{"status", facts.HeadSHA, facts.BaseSHA, "continuation"}, &stdout); err != nil {
+	// A pending status may still be present from a run before outcomes
+	// were the only statuses published.
+	adapter, err := newBehaviouralForge(cfg, facts.Forge)
+	if err != nil {
 		t.Fatal(err)
+	}
+	guard := forge.Guard{Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo}, PullRequest: 1,
+		HeadSHA: facts.HeadSHA, TargetSHA: facts.BaseSHA}
+	if result := adapter.SetProductStatus(t.Context(), guard, product.Continuation()); result.Outcome != forge.WriteApplied {
+		t.Fatalf("seed continuation status: %#v", result)
 	}
 	if priority, err := currentContinuationPriority(t.Context(), cfg, facts); err != nil || priority != 0 {
 		t.Fatalf("predecessor continuation priority = %d, err=%v", priority, err)

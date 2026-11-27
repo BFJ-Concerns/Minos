@@ -204,9 +204,16 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    label is missing. A repository's own `[markers]` table replaces the
    service-level one whole.
 
-   Every commit status Minos writes carries `service.status-context`
-   (default `Minos`), and the sweep's completion marker is read under
-   that context only. A status's Details link lands on the review Minos
+   Commit statuses are off by default, including after an update.
+   To enable them, set `commit-status = true` under `[review]` in the
+   repository's file or set the service-wide value under
+   `[repositories.review]` in `service.toml`. A repository can override
+   the service-wide setting. Change any branch protection rule that
+   requires this status before updating, since it may stop receiving a
+   result. When the setting is off, the sweep ignores previous statuses.
+
+   Every enabled commit status carries `service.status-context`
+   (default `Minos`). A status's Details link lands on the review Minos
    posted for the reviewed head, or on the pull request itself when it
    posted none. On either forge, `[forges.<key>] web-base` sets the link's
    host and optional path prefix as an absolute HTTP(S) URL; set it on a
@@ -220,11 +227,20 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    context a required status check in branch protection. It can be missing
    or stale on a head. A run that fails before the lead launches writes no
    status, a status write Minos cannot read back is reported as uncertain
-   and may or may not have replaced the previous status, and a lead that dies can leave `pending` behind until a
-   later run replaces it. When a continuation run makes no progress beyond
-   the run it continues, admission stops it instead of starting it again:
-   it writes `attention` on the head, removes the in-flight marker and
-   records the stall in `runs.failure-log`.
+   and may or may not have replaced the previous status. When a
+   continuation makes no progress, admission
+   stops it, removes the in-flight marker and records the stall in
+   `runs.failure-log`. It writes an attention status when statuses are
+   enabled and otherwise keeps the stop in the continuation handoff for
+   that head.
+
+   `review.request-changes-rounds` sets when a review body starts suggesting
+   that the author reconsider the approach. The default is three. A
+   positive integer under `[repositories.review]` sets a service-wide
+   value, and a repository can override it under `[review]`. Each distinct
+   head with a submitted request for changes by the review account counts
+   once on that pull request. The review still publishes all new blocking
+   findings.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset; it must not exceed `runs.memory-envelope-gib`.
@@ -481,7 +497,7 @@ one included:
   that the forge did not show when Minos read it back just after that run
   started. A terminal result is the summary comment written clean or
   changes requested, an approving or request-changes review, or a clean or
-  attention status. While it waits, it spends the current head's
+  attention status when commit statuses are enabled. While it waits, it spends the current head's
   completion marker, so the next pass starts a run, and every run started
   is started for it. A run already started when the command arrived,
   whose scope was fixed then, never answers it, and nor does a result
@@ -518,8 +534,8 @@ when the file exists. The sweep clears the file before reading the forge.
 If a run exits while a sweep is already active, the request stays pending
 and the watcher starts a fresh pass once the active sweep exits.
 
-A successful run exits after a `clean` marker, a continuation, or a recorded
-`clean` or `attention` forge status. A run that leaves its head eligible
+A successful run exits after recording a clean or changes-requested
+outcome, or handing off to a continuation. A run that leaves its head eligible
 exits with status 75 and waits for the timer. An operator's
 `systemctl --user stop` of a run unit also requests a sweep.
 
@@ -528,10 +544,11 @@ the run from claim to conclusion and launches one-shot judgement stages
 when a decision needs reading. An installation with either judgement
 module missing falls back to the resident lead.
 
-The scripted driver keeps the pull request's summary comment current. A
-clean or changes-requested summary records the result for the head it
-names. The commit status and reaction or label provide additional signals.
-An incomplete summary names the part of the run that stopped. The run
+Both run modes keep the pull request's summary comment current. A clean
+or changes-requested summary records the result for the head it names.
+The reaction or label and any enabled commit status provide additional
+signals. The scripted driver's incomplete summary names the part of the
+run that stopped. The run
 report holds the detailed diagnostics for the operator.
 
 To use the resident lead, set `MINOS_RUN_DRIVER=""` in `run-body.env`. The
@@ -629,10 +646,10 @@ per pull request. A later run compares the new head with that record to
 decide how much to review again. The record is a cache. Without it, Minos
 takes the last finished head the summary comment's record names, and
 compares against it where the commit is still in the clone. On a pull
-request with no summary comment, Minos looks among the newest 20 commits of
-the pull request's current history, other than the head, for one that
-carries Minos's `clean` status or a Minos request-changes review, and
-compares against the first it finds. When none of those commits qualifies, because the earlier head was
+request with no earlier result in the summary comment, Minos looks among
+the newest 20 commits of its current history, other than the head. It
+takes the newest such commit with a terminal Minos review or, when
+statuses are enabled, a clean Minos status. When none of those commits qualifies, because the earlier head was
 rewritten away or lies further back, the next head is reviewed in full. The
 sweep deletes the `.reviewed/` and `.commands/` records of a pull request
 that has closed, merged or gone from the forge, and the records of a

@@ -8,15 +8,16 @@ import (
 )
 
 type Facts struct {
-	Occasion string
-	Forge    string
-	Owner    string
-	Repo     string
-	PR       string
-	HeadSHA  string
-	BaseRef  string
-	BaseSHA  string
-	HeadRef  string
+	Occasion        string
+	Forge           string
+	Owner           string
+	Repo            string
+	PR              string
+	HeadSHA         string
+	BaseRef         string
+	BaseSHA         string
+	HeadRef         string
+	reviewRequested bool
 }
 
 func (f Facts) RepoSlug() string {

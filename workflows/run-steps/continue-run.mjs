@@ -24,7 +24,7 @@ export async function continueRun(run, stage) {
   };
   const path = run.env.MINOS_HANDOFF;
   if (!path) throw new Error("MINOS_HANDOFF is required for a continuation");
-  await applied(run, "status", [snapshot.head_sha, snapshot.target_sha, "continuation"]);
+  await applied(run, "status", [snapshot.head_sha, snapshot.target_sha, "continuation"], ["applied", "not-needed"]);
   writeFileSync(`${path}.tmp`, `${JSON.stringify(handoff)}\n`);
   renameSync(`${path}.tmp`, path);
   return true;

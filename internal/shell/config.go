@@ -575,6 +575,10 @@ func readRepoConfigFile(path string) (RepoConfig, toml.MetaData, error) {
 	return repo, metadata, nil
 }
 
+func missingRepositoryIdentity(path string) error {
+	return fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
+}
+
 // resolveRepositoryKnobs layers a repository file's knobs over the service
 // defaults. A key the file defines wins whole, even when it is empty — a
 // repository can switch off a service-wide list by defining it empty — and
@@ -587,6 +591,12 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if defined("work-in-progress-branch-prefixes") {
 		knobs.WorkInProgressBranchPrefixes = own.WorkInProgressBranchPrefixes
+	}
+	if defined("review", "commit-status") {
+		knobs.Review.CommitStatus = own.Review.CommitStatus
+	}
+	if defined("review", "request-changes-rounds") {
+		knobs.Review.RequestChangesRounds = own.Review.RequestChangesRounds
 	}
 	if defined("review", "threshold") {
 		knobs.Review.Threshold = own.Review.Threshold
@@ -637,6 +647,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 // leave a knob unset, so a threshold or filing kind is checked only when
 // present; the resolved repository level always carries both.
 func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
+	if rounds := knobs.Review.RequestChangesRounds; rounds != nil && *rounds < 1 {
+		return fmt.Errorf("%s: review.request-changes-rounds must be positive", where)
+	}
 	if err := knobs.Admission.validate(); err != nil {
 		return fmt.Errorf("%s: admission.%w", where, err)
 	}
@@ -742,6 +755,15 @@ func validPushInspectionOutcomes(outcomes []string) error {
 		return errors.New("must include full, the outcome every head can take")
 	}
 	return nil
+}
+
+const defaultRequestChangesRounds = 3
+
+func (knobs RepositoryKnobs) requestChangesRounds() int {
+	if knobs.Review.RequestChangesRounds == nil {
+		return defaultRequestChangesRounds
+	}
+	return *knobs.Review.RequestChangesRounds
 }
 
 const defaultReviewDepth = "standard"

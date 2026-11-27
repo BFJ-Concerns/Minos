@@ -1751,6 +1751,7 @@ func TestGitHubStatusOnlyCompletionSurvivesRetarget(t *testing.T) {
 			cfg.Service.StatusContext = "Minos"
 			cfg.Forges = map[string]ForgeConfig{"github": {Adaptation: state.adaptationPath, APIBase: state.server.URL, CredentialFile: state.credentialPath}}
 			repo := RepoConfig{Forge: "github", Owner: "acme", Repo: "widgets"}
+			repo.Review.CommitStatus = true
 			repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 			if outcome == product.Clean() {
 				repo.Markers.Clean = &marker

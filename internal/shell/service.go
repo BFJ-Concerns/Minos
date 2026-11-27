@@ -13,11 +13,11 @@ import (
 )
 
 func currentSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts) (forge.Snapshot, error) {
-	_, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
+	_, snapshot, err := currentForgeSnapshot(ctx, cfg, facts, true)
 	return snapshot, err
 }
 
-func currentForgeSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts) (*forge.Adapter, forge.Snapshot, error) {
+func currentForgeSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts, commitStatus bool) (*forge.Adapter, forge.Snapshot, error) {
 	adapter, err := newBehaviouralForge(cfg, facts.Forge)
 	if err != nil {
 		return nil, forge.Snapshot{}, err
@@ -26,8 +26,15 @@ func currentForgeSnapshot(ctx context.Context, cfg ServiceConfig, facts Facts) (
 	if err != nil {
 		return nil, forge.Snapshot{}, err
 	}
-	snapshot, err := adapter.Snapshot(ctx, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, pr)
+	snapshot, err := pullRequestSnapshot(ctx, adapter, forge.Repository{Owner: facts.Owner, Name: facts.Repo}, pr, commitStatus)
 	return adapter, snapshot, err
+}
+
+func pullRequestSnapshot(ctx context.Context, adapter *forge.Adapter, repository forge.Repository, pr int64, commitStatus bool) (forge.Snapshot, error) {
+	if commitStatus {
+		return adapter.Snapshot(ctx, repository, pr)
+	}
+	return adapter.SnapshotWithoutStatuses(ctx, repository, pr)
 }
 
 func currentContinuationPriority(ctx context.Context, cfg ServiceConfig, facts Facts) (int, error) {
@@ -108,7 +115,7 @@ type ReconcileResult struct {
 }
 
 func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts) (ReconcileResult, error) {
-	adapter, snapshot, err := currentForgeSnapshot(ctx, cfg, facts)
+	adapter, snapshot, err := currentForgeSnapshot(ctx, cfg, facts, repo.Review.CommitStatus)
 	if err != nil {
 		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "pull request snapshot unavailable"}, err
 	}
@@ -116,6 +123,9 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 }
 
 func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot) (ReconcileResult, error) {
+	if !repo.Review.CommitStatus {
+		snapshot.Statuses = nil
+	}
 	guard := forge.Guard{
 		Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
 		PullRequest: snapshot.PullRequest,
@@ -172,6 +182,9 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	}
 	record := readCommandRecord(cfg, facts.Forge, guard)
 	readStatuses := func(head string) ([]forge.Status, error) {
+		if !repo.Review.CommitStatus {
+			return nil, nil
+		}
 		return adapter.CommitStatuses(ctx, guard.Repository, head)
 	}
 	effect := commandsInForce(commands, snapshot, record, readStatuses, botLogin, cfg.Service.StatusContext)
@@ -199,6 +212,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	if effect.reviewRequested {
 		eligibility.completedRun = false
 		eligibility.reasons = slices.DeleteFunc(eligibility.reasons, func(reason string) bool { return reason == "completed-marker" })
+		facts.reviewRequested = true
 		repo.PushInspection.Outcomes = commandedOutcomes(repo.PushInspection.Outcomes, effect)
 	}
 	facts.HeadSHA = snapshot.HeadSHA
@@ -221,7 +235,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		return ReconcileResult{}, err
 	}
 	if outcome.Outcome == SpawnStarted || outcome.Outcome == SpawnContinued {
-		recordCommandedRun(ctx, cfg, facts.Forge, adapter, guard, effect.waiting)
+		recordCommandedRun(ctx, cfg, facts.Forge, adapter, guard, effect.waiting, repo.Review.CommitStatus)
 	}
 	return ReconcileResult{
 		Decision:     outcome.Outcome,
@@ -308,6 +322,9 @@ type pullRequestAdmissionEligibility struct {
 }
 
 func assessPullRequestAdmission(cfg ServiceConfig, repo RepoConfig, snapshot forge.Snapshot) pullRequestAdmissionEligibility {
+	if !repo.Review.CommitStatus {
+		snapshot.Statuses = nil
+	}
 	eligibility := pullRequestAdmissionEligibility{}
 	if workInProgressBranch(snapshot.HeadBranch, repo.WorkInProgressBranchPrefixes) {
 		eligibility.workInProgress = true

@@ -107,7 +107,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if len(args) != 1 {
 			return fmt.Errorf("usage: minos forge snapshot")
 		}
-		snapshot, err := adapter.Snapshot(ctx, guard.Repository, guard.PullRequest)
+		snapshot, err := pullRequestSnapshot(ctx, adapter, guard.Repository, guard.PullRequest, runCommitStatus())
 		if err != nil {
 			return err
 		}
@@ -150,16 +150,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return fmt.Errorf("unknown product state %q", args[3])
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		description := state.Description()
-		result := adapter.SetProductStatusWithDescription(ctx, guard, state, description)
-		if err := emitForgeResult(stdout, "status", result); err != nil {
-			return err
-		}
-		recordAppliedStatus(args[3])
-		if args[3] == "clean" || args[3] == "attention" {
-			recordReviewedChange(ctx, guard, args[3])
-		}
-		return nil
+		return publishRunStatus(ctx, stdout, adapter, guard, state)
 	case "summary":
 		if len(args) != 5 {
 			return fmt.Errorf("usage: minos forge summary HEAD TARGET inspecting|reviewing|clean|changes-requested|incomplete TEXT_FILE")
@@ -181,7 +172,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		if completion, finished := state.Completion(); finished {
-			recordReviewedChange(ctx, guard, completion.Name())
+			recordReviewedChange(ctx, guard, completion.Name(), true)
 		}
 		return nil
 	case "earlier":
@@ -239,7 +230,7 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			return fmt.Errorf("usage: minos forge approve HEAD TARGET")
 		}
 		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
-		snapshot, err := adapter.Snapshot(ctx, guard.Repository, guard.PullRequest)
+		snapshot, err := adapter.SnapshotWithoutStatuses(ctx, guard.Repository, guard.PullRequest)
 		if err != nil {
 			return err
 		}
@@ -368,21 +359,14 @@ func runForge() (*forge.Adapter, string, error) {
 	return adapter, cfg.Forges[forgeName].Adaptation, nil
 }
 
-// recordAppliedStatus keeps the last status this run applied to the forge
-// in the run directory — one word, replaced on every applied write — so
-// run-body can tell at exit whether the head is spent: clean and attention
-// leave a completion marker on the head, any other last status leaves it
-// eligible, and only a spent head's unit may succeed and trigger a sweep
-// pass. The forge write is the durable effect and has already been
-// reported; a record that cannot be written is said on stderr, and the
-// run then exits as if its head were not spent — the direction that
-// cannot loop. Outside a run there is no directory and nothing to record.
-func recordAppliedStatus(state string) {
+// recordRunPublication lets run-body distinguish a finished head from a
+// resident lead that stopped before recording its verdict on the forge.
+func recordRunPublication(file, state string) {
 	runDir := os.Getenv("MINOS_RUN_DIR")
 	if runDir == "" {
 		return
 	}
-	path := filepath.Join(runDir, appliedStatusFile)
+	path := filepath.Join(runDir, file)
 	staging := path + ".next"
 	if err := os.WriteFile(staging, []byte(state+"\n"), 0o600); err == nil {
 		err = os.Rename(staging, path)
@@ -390,15 +374,73 @@ func recordAppliedStatus(state string) {
 			return
 		}
 		_ = os.Remove(staging)
-		fmt.Fprintf(os.Stderr, "minos: the applied %s status could not be recorded at %s: %v; the run will exit as if its head were not spent\n", state, path, err)
+		fmt.Fprintf(os.Stderr, "minos: the applied %s outcome could not be recorded at %s: %v; the run will exit as if its head were not spent\n", state, path, err)
 		return
 	} else {
-		fmt.Fprintf(os.Stderr, "minos: the applied %s status could not be recorded at %s: %v; the run will exit as if its head were not spent\n", state, path, err)
+		fmt.Fprintf(os.Stderr, "minos: the applied %s outcome could not be recorded at %s: %v; the run will exit as if its head were not spent\n", state, path, err)
 	}
 }
 
 // appliedStatusFile is the run-directory file run-body reads at exit.
 const appliedStatusFile = "forge-status"
+const appliedSummaryFile = "forge-summary"
+
+func runCommitStatus() bool { return os.Getenv("MINOS_COMMIT_STATUS") == "true" }
+
+func publishRunStatus(ctx context.Context, stdout io.Writer, adapter *forge.Adapter, guard forge.Guard, state product.State) error {
+	name := state.Name()
+	resident := os.Getenv("MINOS_RESIDENT_LEAD") == "true"
+	var summaryApplied bool
+	if resident {
+		// The resident lead reports its outcome through this command. Keep
+		// the summary in step with that outcome even when statuses are off.
+		var summary product.SummaryState
+		var text string
+		switch name {
+		case "working":
+			summary, text = product.SummaryReviewing, "Review in progress."
+		case "clean":
+			summary, text = product.SummaryClean, "No blocking finding remains at this head."
+		case "attention":
+			summary, text = product.SummaryChangesRequested, "Blocking findings remain on this pull request."
+		case "incomplete":
+			summary, text = product.SummaryIncomplete, "The review of this head is incomplete."
+		}
+		if summary != "" {
+			result, err := writeSummary(ctx, adapter, guard, summary, text)
+			if err != nil {
+				return err
+			}
+			if result.Outcome != forge.WriteApplied {
+				return emitForgeResult(stdout, "summary", result)
+			}
+			summaryApplied = true
+			recordRunPublication(appliedSummaryFile, name)
+			if summary.Finished() {
+				recordReviewedChange(ctx, guard, name, true)
+			}
+		}
+	}
+	switch {
+	case !runCommitStatus():
+		return json.NewEncoder(stdout).Encode(map[string]string{"outcome": "not-needed", "reason": "commit status is disabled"})
+	case name == "working" || name == "continuation":
+		return json.NewEncoder(stdout).Encode(map[string]string{"outcome": "not-needed", "reason": "commit statuses report outcomes"})
+	}
+	result := adapter.SetProductStatus(ctx, guard, state)
+	if summaryApplied && result.Outcome != forge.WriteApplied && result.Reason != "head moved" {
+		fmt.Fprintf(os.Stderr, "forge status %s: %s\n", result.Outcome, result.Reason)
+		return json.NewEncoder(stdout).Encode(map[string]string{"outcome": "not-needed", "reason": "the summary records the outcome"})
+	}
+	if err := emitForgeResult(stdout, "status", result); err != nil {
+		return err
+	}
+	recordRunPublication(appliedStatusFile, name)
+	if !resident && os.Getenv("MINOS_RUN_DRIVER") == "" && (name == "clean" || name == "attention") {
+		recordReviewedChange(ctx, guard, name, false)
+	}
+	return nil
+}
 
 func namedProductState(name string) (product.State, bool) {
 	for _, state := range product.States() {
@@ -417,6 +459,9 @@ func postReview(ctx context.Context, adapter *forge.Adapter, guard forge.Guard, 
 	record, err := product.FormatRecord(map[string]string{"head": guard.HeadSHA, product.RecordTargetKey: guard.TargetSHA})
 	if err != nil {
 		return forge.WriteResult{}, err
+	}
+	if verdict == forge.ReviewRequestChanges {
+		text += requestChangesRoundAdvice(ctx, adapter, guard)
 	}
 	if leadModel := os.Getenv("MINOS_LEAD_MODEL"); leadModel != "" {
 		text += "\n\nReviewed by: `" + leadModel + "`."

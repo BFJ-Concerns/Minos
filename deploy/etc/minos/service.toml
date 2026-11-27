@@ -71,6 +71,10 @@ signature-header = "X-Forgejo-Signature"
 # allow-forks = false
 # [repositories.review]
 # threshold = "High"
+# Publish informational commit statuses. Off unless enabled, including after an update.
+# commit-status = false
+# Suggest reconsidering the approach from this many request-changes heads.
+# request-changes-rounds = 3
 # A confirmed request for a safeguard against a failure nobody has observed
 # never gates; set true, it goes to the filing destination marked as a
 # safeguard request, and unset or false it is filed nowhere.

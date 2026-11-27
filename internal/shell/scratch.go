@@ -241,6 +241,9 @@ func validHandoffRunDirs(cfg ServiceConfig, factsByUnit map[string]Facts) map[st
 			log.Printf("reject preservation handoff %s: %v", path, err)
 			continue
 		}
+		if handoff.Stalled {
+			continue
+		}
 		embeddedFacts, recognised := factsForHandoff(cfg, unit, handoff)
 		if !recognised {
 			continue

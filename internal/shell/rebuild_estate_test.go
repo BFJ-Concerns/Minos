@@ -343,6 +343,7 @@ func TestRebuildEstateIncompleteStatusBindsTheHeadNotTheTarget(t *testing.T) {
 	cfg, _, facts := state.service(t)
 	writeServiceConfig(t, cfg)
 	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_COMMIT_STATUS", "true")
 	t.Setenv("MINOS_FORGE", facts.Forge)
 	t.Setenv("MINOS_OWNER", facts.Owner)
 	t.Setenv("MINOS_REPO_NAME", facts.Repo)
@@ -422,6 +423,7 @@ func newEarlierHeadFixture(t *testing.T) *earlierHeadFixture {
 	f.commit("base.txt", "base\n", "base")
 	runGit(t, workspace, "checkout", "--quiet", "-b", "topic")
 	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_COMMIT_STATUS", "true")
 	t.Setenv("MINOS_FORGE", facts.Forge)
 	t.Setenv("MINOS_PR", facts.PR)
 	t.Setenv("MINOS_OWNER", facts.Owner)
@@ -640,6 +642,7 @@ func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 	cfg, _, facts := state.service(t)
 	writeServiceConfig(t, cfg)
 	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_COMMIT_STATUS", "true")
 	t.Setenv("MINOS_FORGE", facts.Forge)
 	t.Setenv("MINOS_PR", facts.PR)
 	t.Setenv("MINOS_OWNER", facts.Owner)
@@ -647,7 +650,7 @@ func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 
 	head := state.headSHA()
 	target := state.targetSHA()
-	for _, desired := range []string{"working", "working", "attention"} {
+	for _, desired := range []string{"incomplete", "incomplete", "attention"} {
 		var stdout strings.Builder
 		if err := ForgeCommand(t.Context(), []string{"status", head, target, desired}, &stdout); err != nil {
 			t.Fatalf("status %q: %v\n%s", desired, err, stdout.String())
@@ -671,7 +674,7 @@ func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 		t.Fatalf("status with new head: %v\n%s", err, stdout.String())
 	}
 
-	// The repeated `working` and the `attention` re-pinned to the new target
+	// The repeated `incomplete` and the `attention` re-pinned to the new target
 	// are identical desired statuses on the same head, so neither posts; the
 	// moved head is a fresh commit with no status, so its write posts.
 	posts := state.statusPostFacts()
@@ -685,7 +688,7 @@ func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 		state       string
 		description string
 	}{
-		{head: head, target: details, state: "pending", description: "Reviewing changes"},
+		{head: head, target: details, state: "error", description: "Review incomplete"},
 		{head: head, target: details, state: "failure", description: "Changes need attention"},
 		{head: newHead, target: details, state: "failure", description: "Changes need attention"},
 	} {

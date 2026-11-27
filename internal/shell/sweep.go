@@ -23,7 +23,10 @@ type sweepCandidate struct {
 	priority int
 }
 
-var inspectHandoffSnapshot = currentSnapshot
+var inspectHandoffSnapshot = func(ctx context.Context, cfg ServiceConfig, facts Facts) (forge.Snapshot, error) {
+	_, snapshot, err := currentForgeSnapshot(ctx, cfg, facts, false)
+	return snapshot, err
+}
 
 func SweepCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
@@ -74,10 +77,18 @@ func SweepCommand(ctx context.Context, args []string) error {
 		}
 		for _, facts := range pullRequests {
 			priority := 1
-			if inspected, err := currentContinuationPriority(ctx, cfg, facts); err != nil {
-				log.Printf("%s#%s: inspect continuation priority: %v", facts.RepoSlug(), facts.PR, err)
-			} else {
-				priority = inspected
+			if repo.Review.CommitStatus {
+				if inspected, err := currentContinuationPriority(ctx, cfg, facts); err != nil {
+					log.Printf("%s#%s: inspect continuation priority: %v", facts.RepoSlug(), facts.PR, err)
+				} else {
+					priority = inspected
+				}
+			}
+			if priority != 0 {
+				handoff, err := readRunHandoff(handoffPath(cfg.Runs.Dir, UnitName(facts)), facts)
+				if err == nil && handoff.Head == facts.HeadSHA && !handoff.Stalled {
+					priority = 0
+				}
 			}
 			candidates = append(candidates, sweepCandidate{repo: repo, facts: facts, priority: priority})
 		}

@@ -28,7 +28,7 @@ export function movedHead(error) {
 // it says the head moved.
 export async function setStatus(run, state, head = run.head, target = run.target) {
   try {
-    await applied(run, "status", [head, target, state]);
+    await applied(run, "status", [head, target, state], ["applied", "not-needed"]);
   } catch (error) {
     if (movedHead(error)) throw error;
     return error.message;

@@ -87,6 +87,7 @@ func newCommandJourney(t *testing.T) *commandJourney {
 	journey.cfg.Service.StatusContext = "Minos"
 	journey.cfg.Forges = map[string]ForgeConfig{"github": {Adaptation: state.adaptationPath, APIBase: state.server.URL, CredentialFile: state.credentialPath}}
 	journey.repo = RepoConfig{Forge: "github", Owner: "acme", Repo: "widgets"}
+	journey.repo.Review.CommitStatus = true
 	journey.repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	journey.repo.PushInspection.Outcomes = []string{"no-review", "increment", "full"}
 	journey.facts = Facts{Forge: "github", Owner: "acme", Repo: "widgets", PR: "7"}
@@ -617,6 +618,7 @@ func TestReviewAloneAnswersACommand(t *testing.T) {
 // the same head and state as the one the record knew still answers.
 func TestSummaryCommentAnswersACommand(t *testing.T) {
 	journey := newCommandJourney(t)
+	journey.repo.Review.CommitStatus = false
 	summary := func(state product.SummaryState) {
 		t.Helper()
 		result, err := writeSummary(t.Context(), journey.adapter, journey.state.guard(), state, "Summary.")
@@ -643,6 +645,19 @@ func TestSummaryCommentAnswersACommand(t *testing.T) {
 	summary(product.SummaryInspecting)
 	if result := journey.reconcile(t); result.Decision != SpawnStarted || journey.launchedOutcomes(t) != `["no-review","increment","full"]` {
 		t.Fatalf("later head reconciliation = %#v", result)
+	}
+}
+
+func TestDisabledCommitStatusCannotAnswerAWaitingReviewCommand(t *testing.T) {
+	journey := newCommandJourney(t)
+	journey.comment("maintainer", "@minos-review review")
+	if result := journey.reconcile(t); result.Decision != SpawnStarted {
+		t.Fatalf("commanded reconciliation = %#v", result)
+	}
+	journey.status(t, product.Clean())
+	journey.repo.Review.CommitStatus = false
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || len(journey.launches) != 2 {
+		t.Fatalf("a status answered the waiting command with statuses disabled: %#v", result)
 	}
 }
 

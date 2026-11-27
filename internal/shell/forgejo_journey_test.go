@@ -1239,13 +1239,14 @@ func TestForgeStatusWritesCarryTheConfiguredContext(t *testing.T) {
 	cfg.Service.StatusContext = "Review Bot"
 	writeServiceConfig(t, cfg)
 	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_COMMIT_STATUS", "true")
 	t.Setenv("MINOS_FORGE", facts.Forge)
 	t.Setenv("MINOS_OWNER", facts.Owner)
 	t.Setenv("MINOS_REPO_NAME", facts.Repo)
 	t.Setenv("MINOS_PR", facts.PR)
 
 	var stdout strings.Builder
-	if err := ForgeCommand(t.Context(), []string{"status", state.headSHA(), state.targetSHA(), "working"}, &stdout); err != nil {
+	if err := ForgeCommand(t.Context(), []string{"status", state.headSHA(), state.targetSHA(), "incomplete"}, &stdout); err != nil {
 		t.Fatalf("status write: %v\n%s", err, stdout.String())
 	}
 	posts := state.statusPostFacts()
@@ -1355,6 +1356,7 @@ func TestForgeStatusReadBackIsScopedToPullRequest(t *testing.T) {
 			cfg, _, facts := state.service(t)
 			writeServiceConfig(t, cfg)
 			t.Setenv("MINOS_CONFIG", cfg.Root)
+			t.Setenv("MINOS_COMMIT_STATUS", "true")
 			t.Setenv("MINOS_FORGE", facts.Forge)
 			t.Setenv("MINOS_OWNER", facts.Owner)
 			t.Setenv("MINOS_REPO_NAME", facts.Repo)
@@ -1362,13 +1364,13 @@ func TestForgeStatusReadBackIsScopedToPullRequest(t *testing.T) {
 
 			head, target := state.headSHA(), state.targetSHA()
 			statuses := []map[string]any{{
-				"id": 8, "context": "Minos", "status": "pending", "description": product.Working().Description(),
+				"id": 8, "context": "Minos", "status": "error", "description": product.Incomplete().Description(),
 				"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/2",
 				"creator":    map[string]any{"login": "Minos"},
 			}}
 			if test.includeOwned {
 				statuses = append(statuses, map[string]any{
-					"id": 7, "context": "Minos", "status": "pending", "description": product.Working().Description(),
+					"id": 7, "context": "Minos", "status": "error", "description": product.Incomplete().Description(),
 					"target_url": fmt.Sprintf("%s/%s/%s/pulls/%s",
 						strings.TrimSuffix(cfg.Forges[facts.Forge].APIBase, "/api/v1"), facts.Owner, facts.Repo, facts.PR),
 					"creator": map[string]any{"login": "Minos"},
@@ -1377,7 +1379,7 @@ func TestForgeStatusReadBackIsScopedToPullRequest(t *testing.T) {
 			state.setStatuses(statuses)
 
 			var stdout strings.Builder
-			if err := ForgeCommand(t.Context(), []string{"status", head, target, "working"}, &stdout); err != nil {
+			if err := ForgeCommand(t.Context(), []string{"status", head, target, "incomplete"}, &stdout); err != nil {
 				t.Fatalf("status write: %v\n%s", err, stdout.String())
 			}
 			if posts := state.statusPostFacts(); len(posts) != test.wantPosts {
@@ -2070,6 +2072,7 @@ func configureForgeCommandFixture(t *testing.T, state *forgejoFixtureState) {
 	cfg, _, _ := state.service(t)
 	writeServiceConfig(t, cfg)
 	t.Setenv("MINOS_CONFIG", cfg.Root)
+	t.Setenv("MINOS_COMMIT_STATUS", "true")
 	t.Setenv("MINOS_FORGE", "forgejo")
 	t.Setenv("MINOS_OWNER", "minos-e2e-owner")
 	t.Setenv("MINOS_REPO_NAME", "subject")
@@ -2596,6 +2599,7 @@ func (s *forgejoFixtureState) service(t *testing.T) (ServiceConfig, RepoConfig, 
 	setTestRunCeilings(&cfg)
 	cfg.Service.BotLogin = "Minos"
 	cfg.Service.StatusContext = "Minos"
+	cfg.Repositories.Review.CommitStatus = true
 	cfg.Listener.Bind = ":0"
 	cfg.Runs.Dir = t.TempDir()
 	webhookSecret := filepath.Join(t.TempDir(), "webhook.secret")
@@ -2611,6 +2615,7 @@ func (s *forgejoFixtureState) service(t *testing.T) (ServiceConfig, RepoConfig, 
 	repo := RepoConfig{Forge: "forgejo", Owner: "minos-e2e-owner", Repo: "subject"}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	repo.RepositoryKnobs = resolveRepositoryKnobs(RepositoryKnobs{}, RepositoryKnobs{}, func(...string) bool { return false })
+	repo.Review.CommitStatus = true
 	facts := Facts{
 		Forge: "forgejo", Owner: repo.Owner, Repo: repo.Repo,
 		PR: pullRequestNumber, Occasion: "pr-opened",
@@ -3388,6 +3393,9 @@ dir = %q
 	if cfg.Service.StatusContext != "" {
 		body = strings.Replace(body, "[listener]\n", fmt.Sprintf("status-context = %q\n[listener]\n", cfg.Service.StatusContext), 1)
 	}
+	if cfg.Repositories.Review.CommitStatus {
+		body = strings.Replace(body, "[runs]\n", "[repositories.review]\ncommit-status = true\n[runs]\n", 1)
+	}
 	if err := os.WriteFile(filepath.Join(cfg.Root, "service.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -3403,7 +3411,7 @@ func TestForgeStatusRecordsTheLastAppliedStateInTheRunDirectory(t *testing.T) {
 	t.Setenv("MINOS_RUN_DIR", runDir)
 	head, target := state.headSHA(), state.targetSHA()
 	record := filepath.Join(runDir, appliedStatusFile)
-	for _, written := range []string{"working", "incomplete", "attention"} {
+	for _, written := range []string{"clean", "incomplete", "attention"} {
 		var stdout strings.Builder
 		if err := ForgeCommand(t.Context(), []string{"status", head, target, written}, &stdout); err != nil {
 			t.Fatalf("%s status write: %v\n%s", written, err, stdout.String())
@@ -3472,6 +3480,7 @@ func TestForgeStatusDetailsUsesForgeWebBase(t *testing.T) {
 			cfg.Forges[facts.Forge] = forge
 			writeServiceConfig(t, cfg)
 			t.Setenv("MINOS_CONFIG", cfg.Root)
+			t.Setenv("MINOS_COMMIT_STATUS", "true")
 			t.Setenv("MINOS_FORGE", facts.Forge)
 			t.Setenv("MINOS_OWNER", facts.Owner)
 			t.Setenv("MINOS_REPO_NAME", facts.Repo)
@@ -3479,7 +3488,7 @@ func TestForgeStatusDetailsUsesForgeWebBase(t *testing.T) {
 			// Configuration must win over an inherited run's web host, even unset.
 			t.Setenv("MINOS_WEB_BASE", "https://ambient.example")
 			var stdout strings.Builder
-			args := []string{"status", state.headSHA(), state.targetSHA(), "working"}
+			args := []string{"status", state.headSHA(), state.targetSHA(), "incomplete"}
 			if err := ForgeCommand(t.Context(), args, &stdout); err != nil {
 				t.Fatalf("status write: %v\n%s", err, stdout.String())
 			}

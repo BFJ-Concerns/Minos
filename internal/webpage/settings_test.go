@@ -495,3 +495,38 @@ func TestSettingsIndexShowsEachConfigurationFaultOnce(t *testing.T) {
 		t.Fatalf("settings refusal answered %d and listed the fault %d times, row %q", refused.Code, count, row)
 	}
 }
+
+func TestSettingsPagesSaveAndInheritReviewPublicationSettings(t *testing.T) {
+	root, read, write := configurationRoot(t)
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	const repository = "/repositories/forgejo/bfj/estate/settings"
+	service := visit(site, "/settings", session)
+	assertMonitoringPage(t, service.Code, service.Body.String(), "review.commit-status", "review.request-changes-rounds")
+
+	for _, test := range []struct{ page, key, value string }{
+		{"/settings", "review.commit-status", "true"},
+		{"/settings", "review.request-changes-rounds", "5"},
+		{repository, "review.commit-status", "false"},
+	} {
+		saved := submit(site, test.page, url.Values{"setting": {test.key}, "value": {test.value}}, session)
+		if saved.Code != http.StatusSeeOther {
+			t.Fatalf("saving %s answered %d: %s", test.key, saved.Code, saved.Body)
+		}
+	}
+	cfg, err := shell.LoadServiceConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := shell.FindRepoConfig(cfg, shell.Facts{Forge: "forgejo", Owner: "bfj", Repo: "estate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Repositories.Review.CommitStatus || repo.Review.CommitStatus || repo.Review.RequestChangesRounds == nil || *repo.Review.RequestChangesRounds != 5 {
+		t.Fatalf("service and repository settings loaded as %#v and %#v", cfg.Repositories.Review, repo.Review)
+	}
+	bad := submit(site, repository, url.Values{"setting": {"review.request-changes-rounds"}, "value": {"0"}}, session)
+	if bad.Code != http.StatusUnprocessableEntity || !strings.Contains(bad.Body.String(), "review.request-changes-rounds must be positive") {
+		t.Fatalf("zero threshold answered %d: %s", bad.Code, bad.Body)
+	}
+}

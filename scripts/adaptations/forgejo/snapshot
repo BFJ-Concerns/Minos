@@ -46,7 +46,10 @@ if [ -n "$dependency_error" ]; then
   dependencies='[]'
 fi
 
-statuses="$(commit_statuses "$owner" "$repo" "$(printf '%s' "$pr_json" | jq -r '.head.sha')")"
+statuses='[]'
+if [ "${4:-}" != without-statuses ]; then
+  statuses="$(commit_statuses "$owner" "$repo" "$(printf '%s' "$pr_json" | jq -r '.head.sha')")"
+fi
 
 reviews="$(pull_request_reviews "$owner" "$repo" "$pr")"
 

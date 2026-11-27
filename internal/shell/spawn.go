@@ -109,6 +109,15 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	} else if !os.IsNotExist(statErr) {
 		return SpawnResult{}, fmt.Errorf("inspect continuation handoff: %w", statErr)
 	}
+	if handoff != nil && handoff.Stalled {
+		if handoff.Head == facts.HeadSHA && !facts.reviewRequested {
+			return SpawnResult{Outcome: SpawnAttention, Detail: "continuation made no progress"}, nil
+		}
+		if err := os.Remove(handoffFile); err != nil {
+			return SpawnResult{}, fmt.Errorf("discard stalled continuation handoff: %w", err)
+		}
+		handoff = nil
+	}
 	progressDecision := continuationProgressUnknown
 	if handoff != nil {
 		progressDecision = compareContinuationProgress(handoff)
@@ -240,6 +249,8 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_RUN_BODY":                   repo.Adaptation.RunBody,
 		"MINOS_REVIEW_THRESHOLD":           repo.Review.Threshold,
 		"MINOS_FILE_SAFEGUARD_REQUESTS":    strconv.FormatBool(repo.Review.FileSafeguardRequests),
+		"MINOS_COMMIT_STATUS":              strconv.FormatBool(repo.Review.CommitStatus),
+		"MINOS_REQUEST_CHANGES_ROUNDS":     strconv.Itoa(repo.requestChangesRounds()),
 		"MINOS_REVIEW_DEPTH":               repo.Review.Depth,
 		"MINOS_COMMIT_AUTHOR_NAME":         cfg.Service.CommitAuthorName,
 		"MINOS_COMMIT_AUTHOR_EMAIL":        cfg.Service.CommitAuthorEmail,
@@ -327,7 +338,7 @@ func clearPredecessorAttempt(runDir string) error {
 	}
 	defer root.Close()
 	for _, stale := range []string{
-		"lead-complete", appliedStatusFile, "memory-pressure",
+		"lead-complete", appliedStatusFile, appliedSummaryFile, "memory-pressure",
 		"report.md", "failure.log", "failures.log", "judgements/push-inspection.json",
 		"memory-baseline.json", "memory-final.json", "memory-peak",
 		archivePendingFile, "timing-record.json",
@@ -364,8 +375,10 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, repo RepoCo
 		Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
 		PullRequest: pullRequest, HeadSHA: facts.HeadSHA, TargetSHA: facts.BaseSHA,
 	}
-	if result := adapter.SetProductStatus(ctx, guard, product.Attention()); result.Outcome != forge.WriteApplied {
-		return SpawnResult{}, fmt.Errorf("set stalled continuation attention: %s: %s", result.Outcome, result.Reason)
+	if repo.Review.CommitStatus {
+		if result := adapter.SetProductStatus(ctx, guard, product.Attention()); result.Outcome != forge.WriteApplied {
+			return SpawnResult{}, fmt.Errorf("set stalled continuation attention: %s: %s", result.Outcome, result.Reason)
+		}
 	}
 	if inFlight := repo.Markers.InFlight; inFlight != nil {
 		if result := adapter.RemoveMarker(ctx, guard, *inFlight); result.Outcome != forge.WriteApplied {
@@ -377,8 +390,23 @@ func stopStalledContinuation(ctx context.Context, cfg ServiceConfig, repo RepoCo
 			return SpawnResult{}, fmt.Errorf("mark stalled continuation terminal: %w", err)
 		}
 	}
-	if err := os.Remove(handoffFile); err != nil {
-		return SpawnResult{}, fmt.Errorf("consume stalled continuation handoff: %w", err)
+	if repo.Review.CommitStatus {
+		if err := os.Remove(handoffFile); err != nil {
+			return SpawnResult{}, fmt.Errorf("consume stalled continuation handoff: %w", err)
+		}
+	} else {
+		handoff.Stalled = true
+		data, err := json.Marshal(handoff)
+		if err != nil {
+			return SpawnResult{}, err
+		}
+		staging := handoffFile + ".next"
+		if err := os.WriteFile(staging, data, 0o600); err != nil {
+			return SpawnResult{}, fmt.Errorf("record stalled continuation handoff: %w", err)
+		}
+		if err := os.Rename(staging, handoffFile); err != nil {
+			return SpawnResult{}, fmt.Errorf("keep stalled continuation handoff: %w", err)
+		}
 	}
 	return SpawnResult{Outcome: SpawnAttention, Detail: cause}, nil
 }

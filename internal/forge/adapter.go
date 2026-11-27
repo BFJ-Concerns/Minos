@@ -35,7 +35,17 @@ func NewAdapter(runner Runner, serviceLogin, statusContext string) (*Adapter, er
 }
 
 func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullRequest int64) (Snapshot, error) {
-	out, err := a.runner.Run(ctx, RunRequest{Operation: "snapshot", Arguments: []string{repository.Owner, repository.Name, strconv.FormatInt(pullRequest, 10)}})
+	return a.snapshot(ctx, repository, pullRequest, nil)
+}
+
+// SnapshotWithoutStatuses reads pull-request evidence without querying commit statuses.
+func (a *Adapter) SnapshotWithoutStatuses(ctx context.Context, repository Repository, pullRequest int64) (Snapshot, error) {
+	return a.snapshot(ctx, repository, pullRequest, []string{"without-statuses"})
+}
+
+func (a *Adapter) snapshot(ctx context.Context, repository Repository, pullRequest int64, options []string) (Snapshot, error) {
+	args := append([]string{repository.Owner, repository.Name, strconv.FormatInt(pullRequest, 10)}, options...)
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "snapshot", Arguments: args})
 	if err != nil {
 		return Snapshot{}, err
 	}
