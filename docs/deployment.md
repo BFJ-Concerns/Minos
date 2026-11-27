@@ -1,3 +1,6 @@
+---
+description: Install, configure and operate a Minos deployment, from host prerequisites and forge credentials to run liveness, status serving and review briefs
+---
 # Deployment
 
 Minos runs on Linux under a functioning systemd user manager (systemd 250 or
@@ -8,10 +11,11 @@ client utilities, ssh-keygen, tar, zstd, sha256sum and GNU find installed
 (openssl signs the GitHub App token), plus Go wherever the service binary is
 built. `scripts/expected-tool-versions` records recommended minimum version
 ranges. Newer stable versions satisfy those ranges without a warning. The
-default routing uses both `claude-opus-5-5` and
-`gpt-6.1-sol`: a Claude Code subscription or gateway credential for the Claude
-engine, and a Codex (ChatGPT) account for the Codex engine. A host with only
-one engine provisioned runs every role on it. Reviews never build or test the
+default routing uses both engines: `claude-opus-5-5` on Claude Code, and
+`gpt-6.2-astra` and `gpt-6.1-sol` on Codex. That takes a Claude Code
+subscription or gateway credential for the Claude engine, and a Codex
+(ChatGPT) account for the Codex engine. A host with only one engine
+provisioned runs every role on it. Reviews never build or test the
 reviewed repository, so no repository toolchains are needed.
 
 Minos adds no sandbox of its own: the lead holds the engine and forge
@@ -19,6 +23,8 @@ credentials and reads untrusted pull-request content with nothing between it
 and its host. Isolating the deployment — a dedicated container or VM — is
 recommended so that a misbehaving run can reach only what Minos itself
 needs; it is not required.
+
+## Install and configure
 
 1. Build and install `cmd/minos` as `/usr/local/bin/minos`.
 2. Install the whole of `scripts/adaptations/` under
@@ -70,6 +76,10 @@ needs; it is not required.
    file — copy and rename it to end in `.toml`. The filename itself carries
    no identity; `forge`, `owner` and `repo` inside the file do.
 
+   `service.toml` and every repository file are read strictly: a key Minos
+   does not know stops the load with `unknown TOML keys:` and the file and
+   keys it found.
+
    The `.env` files (`run-body.env`, `archive.env`) are sourced as shell
    programs with `set -a` (automatic export), not parsed as generic dotenv
    files. Shell expansion and commands execute during loading; values must
@@ -78,8 +88,8 @@ needs; it is not required.
    In `run-body.env`:
 
    - set `MINOS_CLAUDE` to the absolute path of the installed Claude
-     executable — install Claude Code natively, not as an npm package,
-     whose shim a lead can migrate away from mid-run. The lead uses this
+     executable — install Claude Code natively, not as an npm package.
+     The lead uses this
      path directly; Ensemble workers resolve `claude` and `codex` by
      command name through the inherited PATH (the `environment.d` file
      from step 2), so both the absolute variable and PATH must be correct;
@@ -115,7 +125,8 @@ needs; it is not required.
    the workspace at setup.
 
    The filing destination controls where confirmed advisory findings,
-   unverified observations from outside the change, and
+   unverified material — observations from outside the change and findings
+   a verifier left unsettled, filed as open questions — and
    configuration diagnostics — brief misconfigurations and unreadable guidance
    sources — are delivered: `kind` is one of `file`
    (path required; repository optional, defaulting to the reviewed
@@ -125,8 +136,10 @@ needs; it is not required.
    The `pull-request-comment` kind deduplicates against the service
    account's existing review bodies on the pull request, then posts one
    comment-review with the remaining advisory entries; when none remain,
-   nothing is posted — there is no all-clear comment. Observations are
-   about code outside the change, so this kind never posts them. A
+   nothing is posted — there is no all-clear comment. This kind never posts
+   unverified material: observations and unsettled findings reach no
+   surface on a repository whose destination is `pull-request-comment`.
+   The `none` kind discards everything it is given. A
    file-kind destination is a separate write path committed as
    `service.commit-author-name` (default: the bot login) and
    `service.commit-author-email` (default: the bot login at
@@ -139,8 +152,10 @@ needs; it is not required.
    `attention` on a request-changes outcome. Each is a reaction or a
    label. Unset, `in-flight` defaults to the eyes reaction and `clean` to
    the +1 reaction; no attention marker is written unless configured. A
-   label must already be defined on the repository or its organisation;
-   Minos never creates labels, and refuses the marker write when the
+   label must already be defined: on Forgejo, on the repository or its
+   organisation; on GitHub, on the repository itself, since an
+   organisation-level label does not count there. Minos never creates
+   labels, and refuses the marker write when the
    label is missing. A repository's own `[markers]` table replaces the
    service-level one whole.
 
@@ -149,17 +164,22 @@ needs; it is not required.
    that context only. A status's Details link lands on the review Minos
    posted for the reviewed head, or on the pull request itself when it
    posted none. On either forge, `[forges.<key>] web-base` sets the link's
-   host and optional path prefix as an absolute HTTP(S) URL. When unset,
-   Forgejo strips a trailing `/api/v1` from `api-base`. GitHub uses
-   `https://github.com` for the public API and the Enterprise web host
-   for Enterprise Server.
+   host and optional path prefix as an absolute HTTP(S) URL; set it on a
+   GitHub forge whose web host is not the one Minos derives. When unset,
+   the link's host comes from `api-base`: Forgejo strips a trailing
+   `/api/v1`, and GitHub uses `https://github.com` for
+   `https://api.github.com` and strips a trailing `/api/v3` from any other
+   API base, which gives the web host of a GitHub Enterprise Server.
 
    The status is review information, not a merge gate: do not make this
    context a required status check in branch protection. It can be missing
    or stale on a head. A run that fails before the lead launches writes no
-   status, a status write the forge does not confirm leaves the previous
-   status in place, and a lead that dies can leave `pending` behind until a
-   later run replaces it.
+   status, a status write Minos cannot read back is reported as uncertain
+   and may or may not have replaced the previous status, and a lead that dies can leave `pending` behind until a
+   later run replaces it. When a continuation run makes no progress beyond
+   the run it continues, admission stops it instead of starting it again:
+   it writes `attention` on the head, removes the in-flight marker and
+   records the stall in `runs.failure-log`.
 
    `runs.max-concurrent` caps how many run units may be live at once, and
    defaults to one when unset; it must not exceed `runs.memory-envelope-gib`.
@@ -168,21 +188,22 @@ needs; it is not required.
    The shipped slice holds `MemoryHigh=6G` and `MemoryMax=8G`, so no run feels any pressure
    until the runs *together* approach the envelope — a lone run may use all
    of it — reclaim then pushes them back, and only combined demand the
-   envelope cannot hold kills, taking the biggest consumer. Each unit also
+   envelope cannot hold reaches the kernel's out-of-memory handling inside
+   the slice. Each unit also
    carries its own `MemoryMax` at the whole envelope as the backstop for a
    box missing the slice unit. Size the cap against the machine's memory
    and cores. `minos install-units` (step 5) renders the installed slice
    from this knob — `MemoryMax` at the envelope, `MemoryHigh` two GiB below
-   it — so after changing the envelope re-run it and reload the user
-   manager. `runs.duration-ceiling` sets each run's hard
+   it but never under 1 GiB — so after changing the envelope re-run it and reload the user
+   manager. At startup the receiver logs a warning when the installed
+   slice's `MemoryMax` differs from the configured envelope.
+   `runs.duration-ceiling` sets each run's hard
    duration limit (a Go duration of at least `1us`, default `12h`).
    `runs.pressure-threshold-percent` sets the continuation threshold as a
    percentage of the run ceiling (1–100, default 85); the watch signals after
    two consecutive samples of anonymous memory plus swap at that threshold.
-   A review's unreclaimable footprint, its workers included, is typically
-   about 1 GiB and rarely above 5 GiB, so the default envelope holds a lone
-   run with room to spare; with a higher concurrency cap, raise it toward
-   the runs' combined peak. Each run paces `ensemble.concurrency-claude` and
+   With a higher concurrency cap, raise the envelope toward the runs'
+   combined peak, measured as below. Each run paces `ensemble.concurrency-claude` and
    `concurrency-codex` workers of its own (the loader defaults both to 2
    when neither is set; the shipped example comments both at 2).
    `ensemble.agent-ceiling` optionally caps a workflow's agents across
@@ -202,18 +223,26 @@ needs; it is not required.
    the leg that merges findings one fix would resolve before they are
    verified. A finding a verifier raises while checking another is
    verified on the `proposer`'s routing when that runs on the other engine,
-   so it too is checked by the family that did not raise it. A configured role overrides only the fields it sets.
+   so it too is checked by the family that did not raise it. A configured
+   role overrides only the fields it sets, and a role that sets `model` must
+   also set `engine`, the model's family: a model alone stops the
+   configuration from loading.
 
    Size every capacity decision — this cap, the slice envelope, the box
    itself — by **anonymous memory plus swap peak, never the journal's cgroup
-   memory peak**. The journal's figure includes reclaimable page cache and
-   pegs at `MemoryMax`, so it overstates the real footprint by an order of
-   magnitude. Measure anonymous demand from the unit cgroup's
+   memory peak**. The journal's figure includes reclaimable page cache, so
+   it can sit at `MemoryMax` well above the memory the run actually needs.
+   Measure anonymous demand from the unit cgroup's
    `memory.stat` (`anon`) plus `memory.swap.current` at peak — the same
    metric the run's pressure watch reads.
 
    `MINOS_LEAD_SILENCE_TIMEOUT` optionally overrides the supervisor's
-   3600-second no-output backstop. Keep the lifecycle's fallback wake shorter
+   3600-second backstop. The timer measures changes to files in the run
+   directory outside the run's private home: a run whose files there have
+   not changed for that long is stopped as a supervision failure. A Claude
+   lead's session lives in the private home, so its output does not count;
+   a Codex lead's output is written to `codex-lead.jsonl` and
+   `codex-lead.stderr` in the run directory, so its output does. Keep the lifecycle's fallback wake shorter
    than this value.
 
    Choose one Claude authentication mode in `run-body.env`:
@@ -246,8 +275,9 @@ needs; it is not required.
    from trusted as the run's only workspace — so any seed content in that
    file is not preserved; put seed configuration in other files within the
    seed directory. Each run also gets a private disk-backed `TMPDIR` beneath the
-   storage root's `tmp/` directory, alongside `runs/` (the shared tmpfs `/tmp`
-   cannot hold concurrent runs' artefacts). The lead and Ensemble workers
+   storage root's `tmp/` directory, alongside `runs/`, so workers' large
+   temporary files land on that disk rather than in `/tmp`, and are removed
+   with the run. The lead and Ensemble workers
    therefore inherit both
    engines' configured authentication without an interactive login. Gateway
    settings reach the Claude workers through the
@@ -267,8 +297,9 @@ needs; it is not required.
    verification), `write:repository` (cloning, branch reads, commit
    statuses, requested reviewers, and reviews), and `write:issue`
    (reactions, labels, dependency lookups, and issue filing). The account
-   named by `service.bot-login` must match the token's authenticated identity; the
-   claim adapter rejects a mismatch. The Forgejo instance must expose the
+   Minos uses for this forge — the forge table's `bot-login` where it is
+   set, otherwise `service.bot-login` — must match the token's
+   authenticated identity; the claim adapter rejects a mismatch. The Forgejo instance must expose the
    issue-dependencies API (`/api/v1/repos/.../issues/.../dependencies`); a
    missing or disabled endpoint produces "dependency state unavailable" and
    defers review until the next sweep pass.
@@ -285,8 +316,8 @@ needs; it is not required.
    beside the downloaded private key. The adaptation asks GitHub which
    installation serves each repository and caches its token until it nears
    expiry. One forge entry can serve repositories under several installation
-   owners. Existing credential files may still carry `installation-id`.
-   The box needs `openssl` to sign the App JWT. GitHub shows the App's
+   owners. The adaptation reads only `app-id` and `private-key-file`, and
+   ignores any other field, such as an `installation-id`. The box needs `openssl` to sign the App JWT. GitHub shows the App's
    slug with the `[bot]` suffix (`minos-review[bot]`) on every write the
    App makes. Minos checks writes against that login. Set it as
    `service.bot-login` when GitHub is the only forge; when another forge's
@@ -304,11 +335,6 @@ needs; it is not required.
    memory envelope, so runs share that envelope rather than a copied
    default. It installs the timer, sweep request path and
    `minos-sweep-after-run@.service` template verbatim.
-
-   Before upgrading an installation that filed operator alerts, remove
-   `alert-forge`, `alert-owner` and `alert-repo` from the `[service]` table
-   in `service.toml`. Reinstall the user units and reload systemd to remove
-   the failure hook from `minos-sweep.service`.
 6. Optionally, configure a forge webhook so a review starts as soon as a
    pull request changes rather than on the sweep's next pass; the sweep
    finds every pull request needing review without one. Point it at `/hooks/<forge key>` —
@@ -317,12 +343,13 @@ needs; it is not required.
    must match the key used in `[forges.<key>]` in `service.toml`; a
    mismatch returns "unknown forge".
 
+## How runs and the sweep behave
+
 Run units, run directories and continuation handoffs include the configured
 forge key in their names (for example `minos-run-forgejo-owner-repo-pr1`), so
 the same owner and repository on different forges have separate run
 names. Long repository prefixes keep a digest of the full identity so the
 run unit, its exit hook and its archive have room for their suffixes.
-Deploy with no live runs or preserved handoffs that use older names.
 
 A run that exits cleanly requests a sweep pass so the freed slot can refill
 before the periodic timer fires. Its `OnSuccess=` hook starts an instance of
@@ -357,7 +384,9 @@ A run that fails before the lead launches — workspace setup, configuration
 loading, lifecycle instruction — writes no status to the forge. The run body
 attempts to append the failure to `runs.failure-log`; when the log path is
 unset or unwritable, stderr carries the evidence instead. The run exits after
-recording the failure. When workspace
+recording the failure. A run whose lead ends with a failing exit and no
+terminal marker is appended to the same log as a `lead-supervision` failure.
+When workspace
 setup cannot fetch the admitted target SHA because the forge no longer
 advertises it (typically because the base branch moved), the failure cause
 carries that refusal; the next sweep pass re-derives from current forge state.
@@ -376,16 +405,26 @@ dispatched worker's timings from the Ensemble records — and after the tarball
 is promoted it delivers that record a second time as a sidecar beside it —
 the tarball's name with `.tar.zst` replaced by `.timings.json` — readable
 without extracting anything. This presentation archive and its sidecar are
-best-effort and cannot change the run result. Before each reconciliation pass,
+best-effort and cannot change the run result. Until the archive command
+succeeds, the run directory carries a `.archive-pending` file and is kept for
+the sweep to archive again; a run that cannot write that file exits with
+status 74 and keeps its directory. Before each reconciliation pass,
 the sweep records a digest for each dead run with crash evidence and removes its
 scratch directory once the configured archive destination accepts its evidence.
-Without an archive command, the sweep removes the directory after recording
-the digest.
+A dead run already marked `.archive-pending` is archived again without a
+second digest. Without an archive command, the sweep removes the directory
+after recording the digest.
 With `runs.failures-repo` configured, the sweep appends to the checkout's
 existing regular `FAILURES.md` and attempts to commit and push it.
-`provision-failure-checkout` clones the repository and configures Git, so
-`FAILURES.md` must already exist in the repository. Without a checkout, the
-sweep appends to `runs.failure-log` and limits access to the file's owner
+`FAILURES.md` must already exist in the repository. Create the checkout with
+`provision-failure-checkout HTTPS_CLONE_URL DESTINATION CREDENTIAL_FILE`: it
+clones the repository and checks with a dry-run push that it can push to
+`main`. Its credential file is a plain access token on the first line, sent as
+`Authorization: token …`. That is the Forgejo token file as it stands; a
+GitHub App credential file does not work here, so give it a token that can
+clone and push the ledger repository. Later pushes authenticate through the
+forge adaptation as described below. Without
+`runs.failures-repo`, the sweep appends to `runs.failure-log` and limits access to the file's owner
 because a digest can contain transcript excerpts. Both destinations must be outside
 `runs.dir`. A failed append or archive leaves the run directory for retry.
 `runs.failures-forge` selects the forge whose credential authenticates
@@ -409,27 +448,57 @@ attention marker — a reaction or a label, in the repository's configured
 form — left on a head the author has since replaced: reviews and statuses are
 SHA-bound evidence, but the PR-wide marker is not, so it is removed before
 another reconciliation decision is made. A label marker must already be
-defined on the repository or its organisation; a missing one refuses the
+defined (on the repository, or on Forgejo its organisation); a missing one
+refuses the
 marker write with a reason naming the label and repository.
+
+When a run sets a `clean` or `attention` status on a head, Minos records
+which files the pull request changed and how, in `.reviewed/` under
+`runs.dir`, one file per pull request. A later run compares the new head with
+that record to decide how much to review again. The record is a cache.
+Without it, Minos looks among the newest 20 commits of the pull request's
+current history, other than the head, for one that carries Minos's `clean`
+status or a Minos request-changes review, and compares against the first it
+finds. When none of those commits qualifies, because the earlier head was
+rewritten away or lies further back, the next head is reviewed in full. The
+sweep deletes the record of a pull request that has closed, merged or gone from the forge, and
+the records of a repository that no longer has a file under `repos/`.
 
 ## Reading run liveness
 
-The obvious liveness signals invert during a correct yield, so a *correctly
-behaving* lead is the case most likely to be misread as dead. While the lead
+The obvious liveness signals invert during a correct yield, so a correctly
+behaving lead can look dead. While the lead
 waits on a background workflow it has ended its turn: the run tree's scratch
 mtimes go stale, no lead processes are doing visible work, and the journal
 prints nothing — exactly the picture a dead run would show. Do not judge
 liveness from scratch mtime, process activity, or journal silence.
 
-For a **Claude lead**, the reliable discriminator is the lead session's own
-job state plus the unit: in the run's private home, the job directory's
-`state.json` (`$MINOS_RUN_DIR/home/.claude/jobs/<job>/state.json`) shows
-whether a wake is armed — a lead waiting on `session_cron` with
-`selfWake: true` is armed and healthy, and `inFlight` names any background
-task still owned — and the per-pull-request systemd unit must be `active`. An
-armed waiting lead with an active unit is a live run, however stale its
-scratch looks; a unit that has exited, or a job state with nothing in flight
-and no armed wake and no terminal marker, is the dead case.
+Find the run first. Its unit is named for the forge key, repository and pull
+request, and its directory under `runs.dir` is the unit name with a random
+suffix:
+
+```sh
+systemctl --user list-units 'minos-run-*'
+ls -d /var/lib/minos/runs/minos-run-forgejo-owner-repo-pr1-*   # runs.dir as shipped
+```
+
+A unit that is neither `activating` nor `active` is not a live run,
+whatever its files say; Minos itself counts both states as live.
+
+For a **Claude lead**, the run body asks Claude Code itself: it runs
+`claude agents --json --all` with the run's private home and reads the
+`state` of the background session it launched (named
+`minos-<owner>-<repo>-pr<n>`). `running` and `blocked` keep the run going,
+except a lead blocked before its first change to the run tree; `failed` and
+`stopped` end it. An operator can read the same roster:
+
+```sh
+run=/var/lib/minos/runs/minos-run-forgejo-owner-repo-pr1-XXXXXXXX
+HOME="$run/home" CLAUDE_CONFIG_DIR="$run/home/.claude" claude agents --json --all
+```
+
+A lead session waiting on a background workflow between turns is live while
+its unit is active.
 
 For a **Codex lead**, the run body observes process liveness (`kill -0`) and
 exit status: a Codex lead that is still running is live; one that has exited
@@ -476,8 +545,8 @@ curl -H "Authorization: Bearer $(cat /etc/minos/status.token)" \
   http://localhost:8919/status | jq
 ```
 
-The token is the whole gate, and the projection names repositories, branches
-and heads — keep it to the LAN and treat it as a credential.
+The token is the whole gate, and the projection names repositories, pull
+requests and heads — keep it to the LAN and treat it as a credential.
 
 The projection's `sweep` field carries the sweep-deferral document. At the
 end of each completed pass the sweep writes `.sweep-deferrals.json` atomically
@@ -584,7 +653,12 @@ Recognised fields:
 - `extent` — `diff` (the default) or `full`. A full-extent brief grounds the
   review on all tracked files within the brief's directory scope, not just
   the changed files; it does not escape the scope to the whole tree.
-- `sweep` — `per-file` (the default) or `whole-tree`.
+- `sweep` — `per-file` (the default) or `whole-tree`. It matters only for a
+  full-extent brief. With `per-file`, a planning leg divides the files in
+  the brief's scope into review units and each unit gets its own reviewer;
+  with `whole-tree`, one reviewer reads the whole scope. `extent` decides
+  what is read, `sweep` how many reviewers share it. Choose `whole-tree`
+  when the brief's concern can only be judged across the scope at once.
 
 ### Engagement rules
 
@@ -593,7 +667,10 @@ deterministically skipped — it has no trigger to engage on. Add at least one
 of those to make it run.
 
 A brief engages when any of its triggers is satisfied: changed files within
-its path scope, a declared `relevance`, or a matched `occasion`. A scoped
+its path scope, a matched `occasion`, or a `relevance` the change matches.
+Declaring `relevance` is not enough on its own: when neither of the other
+triggers fires, a planning leg judges whether the change meets the
+relevance description, and the brief is skipped when it does not. A scoped
 brief whose scope is untouched still engages when its relevance or occasion
 matches — path scope limits the files the review reads, not whether the
 brief runs at all.
@@ -613,7 +690,10 @@ a `[[guidance-sources]]` array in the repository's TOML file, each entry
 naming a `path` and an optional `repository` (owner/name on the same forge).
 When no sources are configured, the fallback reads the first non-empty file
 from `AGENTS.md`, `CLAUDE.md`, `README.md` in the reviewed repository — the
-first hit wins and later candidates are not combined. A configured source in a
+first hit wins and later candidates are not combined. Each guidance document
+must be at most 256 KiB (262,144 bytes): a larger one passes setup but stops
+the review workflows' input from being built, so the run cannot review. A
+configured source in a
 secondary repository is cloned read-only beside the workspace; the clone's
 push URL is disabled. A configured source that is missing or empty is recorded
 as a misconfiguration and reported to the lead, never silently skipped; when
