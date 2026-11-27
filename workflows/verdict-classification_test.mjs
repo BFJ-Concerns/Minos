@@ -112,6 +112,18 @@ test("an unknown class or malformed undergrade is refused wherever it appears", 
   assert.match(refusedUndergrade.reason, /undergrade must be a non-empty string/);
 });
 
+test("a gating finding carrying a never-gating class is refused", () => {
+  const digest = completeDigest([finding()]);
+  for (const className of ["declared-out-of-scope", "speculative-hardening", "already-raised"]) {
+    const classed = decision(digest, {
+      findings: [{ key: digest.findings[0].key, gating: true, class: className }],
+    });
+    const refused = validateVerdictDecision(classed, digest);
+    assert.equal(refused.ok, false);
+    assert.match(refused.reason, /a gating finding carries no never-gating class/);
+  }
+});
+
 test("a defect label is a non-empty string whose members gate alike", () => {
   const digest = completeDigest([
     finding(),

@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
+
+# The pull request's conversation comments as one JSON array, oldest first,
+# each with its author's login and its body. Review comments are not among
+# them: those are read thread by thread. A bot's REST login already carries
+# its "[bot]" suffix, so it compares equal to the service login.
+owner="$1"
+repo="$2"
+pr="$3"
+
+collect "/repos/${owner}/${repo}/issues/${pr}/comments" | jq -c 'sort_by((.created_at // ""), (.id // 0)) | map({
+  user: (.user.login // ""),
+  body: (.body // "")
+})'
