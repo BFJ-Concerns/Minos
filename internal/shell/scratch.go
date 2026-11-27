@@ -68,26 +68,52 @@ func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[str
 		if !dead {
 			continue
 		}
-		appended, err := appendFailureDigest(runDir, cfg.Runs.FailuresRepo)
+		label, appended, err := prepareResidueArchive(cfg, runDir, entry.Name())
 		if err != nil {
 			sweepErrors = append(sweepErrors, fmt.Errorf("preserve %s after salvage failed: %w", entry.Name(), err))
 			continue
-		}
-		if !appended {
-			log.Printf("run %s: no salvage evidence found; no FAILURES.md digest appended", entry.Name())
-		}
-		_ = archiveRunEvidence(ctx, cfg.Runs.ArchiveCommand, runDir, entry.Name())
-		_, removeErr := removeRunDirIfStillDead(ctx, cfg, factsByUnit, runDir, entry.Name())
-		if removeErr != nil {
-			sweepErrors = append(sweepErrors, removeErr)
 		}
 		if appended {
 			if err := publishFailureDigest(ctx, cfg); err != nil {
 				sweepErrors = append(sweepErrors, fmt.Errorf("publish salvaged failure for %s: %w", entry.Name(), err))
 			}
 		}
+		if err := archiveRunEvidence(ctx, cfg.Root, cfg.Runs.ArchiveCommand, runDir, label); err != nil {
+			sweepErrors = append(sweepErrors, fmt.Errorf("preserve %s for archive retry: %w", entry.Name(), err))
+			continue
+		}
+		_, removeErr := removeRunDirIfStillDead(ctx, cfg, factsByUnit, runDir, entry.Name())
+		if removeErr != nil {
+			sweepErrors = append(sweepErrors, removeErr)
+		}
 	}
 	return errors.Join(sweepErrors...)
+}
+
+// The driver leaves an archive request after a terminal run. Salvage also
+// leaves one after recording crash evidence, so archive retries do not
+// append another copy to the ledger.
+func prepareResidueArchive(cfg ServiceConfig, runDir, name string) (string, bool, error) {
+	path := filepath.Join(runDir, archivePendingFile)
+	if data, err := os.ReadFile(path); err == nil {
+		if label := strings.TrimSpace(string(data)); label != "" {
+			return label, false, nil
+		}
+		return name, false, nil
+	} else if !os.IsNotExist(err) {
+		return "", false, err
+	}
+	appended, err := appendFailureDigest(runDir, cfg.Runs.FailuresRepo)
+	if err != nil {
+		return "", false, err
+	}
+	if err := os.WriteFile(path, []byte(name+"\n"), 0o600); err != nil {
+		return "", false, err
+	}
+	if !appended {
+		log.Printf("run %s: no salvage evidence found; no FAILURES.md digest appended", name)
+	}
+	return name, appended, nil
 }
 
 func confirmRunDirDead(ctx context.Context, cfg ServiceConfig, factsByUnit map[string]Facts, runDir, name string) (bool, error) {
@@ -425,7 +451,7 @@ func readTail(path string, maximum int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(file, maximum))
 }
 
-func archiveRunEvidence(ctx context.Context, command, runDir, label string) error {
+func archiveRunEvidence(ctx context.Context, configRoot, command, runDir, label string) error {
 	if command == "" {
 		return fmt.Errorf("archive command is not configured")
 	}
@@ -433,6 +459,9 @@ func archiveRunEvidence(ctx context.Context, command, runDir, label string) erro
 	defer cancel()
 	cmd := processGroupCommandContext(archiveCtx, command, runDir, label)
 	cmd.Env = os.Environ()
+	if configRoot != "" && os.Getenv("MINOS_ARCHIVE_CONFIG") == "" {
+		cmd.Env = append(cmd.Env, "MINOS_ARCHIVE_CONFIG="+filepath.Join(configRoot, "archive.env"))
+	}
 	cmd.Stdout = io.Discard
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

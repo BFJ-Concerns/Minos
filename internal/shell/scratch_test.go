@@ -487,7 +487,7 @@ func TestArchiveRunEvidenceHonoursCallerDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	if err := archiveRunEvidence(ctx, helper, root, "fixture"); err == nil {
+	if err := archiveRunEvidence(ctx, "", helper, root, "fixture"); err == nil {
 		t.Fatal("archive helper ignored caller deadline")
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
@@ -610,4 +610,59 @@ func configureFailureForge(t *testing.T, cfg *ServiceConfig) {
 	cfg.Forges = map[string]ForgeConfig{"ledger": {Adaptation: adaptation, APIBase: "http://forge.invalid"}}
 	cfg.Service.BotLogin = "Review Bot"
 	cfg.Service.StatusContext = "Minos"
+}
+
+func TestSweepRunResidueRetriesFailedArchivesWithoutRepeatingFailureDigest(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+
+	cfg := scratchTestConfig(t)
+	cfg.Root = t.TempDir()
+	t.Setenv("MINOS_ARCHIVE_CONFIG", "")
+	t.Setenv("EXPECTED_ARCHIVE_CONFIG", filepath.Join(cfg.Root, "archive.env"))
+	archive := filepath.Join(t.TempDir(), "archive")
+	calls := filepath.Join(t.TempDir(), "calls")
+	t.Setenv("ARCHIVE_CALLS", calls)
+	writeScript(t, archive, `#!/bin/sh
+set -eu
+test "$MINOS_ARCHIVE_CONFIG" = "$EXPECTED_ARCHIVE_CONFIG"
+printf '%s\n' "$2" >>"$ARCHIVE_CALLS"
+test -f "$1/accept"
+`)
+	cfg.Runs.ArchiveCommand = archive
+	crashed := filepath.Join(cfg.Runs.Dir, "minos-run-crashed-pr1")
+	terminal := filepath.Join(cfg.Runs.Dir, "minos-run-terminal-pr2")
+	writeTestFile(t, filepath.Join(crashed, "report.md"), "crash evidence\n")
+	writeTestFile(t, filepath.Join(terminal, "report.md"), "terminal evidence\n")
+	writeTestFile(t, filepath.Join(terminal, archivePendingFile), "owner-repo-pr2\n")
+
+	for _, accept := range []bool{false, true} {
+		if accept {
+			writeTestFile(t, filepath.Join(crashed, "accept"), "")
+			writeTestFile(t, filepath.Join(terminal, "accept"), "")
+		}
+		if err := sweepRunResidue(t.Context(), cfg, nil); (err == nil) != accept {
+			t.Fatalf("salvage with archive acceptance %t: %v", accept, err)
+		}
+		for _, path := range []string{crashed, terminal} {
+			if _, err := os.Stat(path); (!accept && err != nil) || (accept && !os.IsNotExist(err)) {
+				t.Fatalf("archive acceptance %t: stat %s = %v", accept, filepath.Base(path), err)
+			}
+		}
+	}
+	log, err := os.ReadFile(filepath.Join(cfg.Runs.FailuresRepo, "FAILURES.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(log), "crash evidence") != 1 || strings.Contains(string(log), "terminal evidence") {
+		t.Fatalf("unexpected failure digest:\n%s", log)
+	}
+	attempts, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(attempts), strings.Repeat("minos-run-crashed-pr1\nowner-repo-pr2\n", 2); got != want {
+		t.Fatalf("archive attempts = %q, want %q", got, want)
+	}
 }

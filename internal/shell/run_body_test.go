@@ -1237,6 +1237,8 @@ func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run-body failed because archiving failed: %v\n%s", err, out)
 	}
+	assertRegularFile(t, filepath.Join(fixture.runDir, archivePendingFile))
+
 	if got := strings.Count(string(out), "minos: could not archive run evidence"); got != 1 {
 		t.Fatalf("archive diagnostics = %d, want one\n%s", got, out)
 	}
