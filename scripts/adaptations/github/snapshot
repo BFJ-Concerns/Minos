@@ -17,6 +17,7 @@ head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
 
 statuses="$(commit_statuses "$owner" "$repo" "$head_sha")"
 reviews="$(collect "/repos/${owner}/${repo}/pulls/${pr}/reviews")"
+summary="$(summary_comment "$owner" "$repo" "$pr" "$MINOS_GITHUB_LOGIN")"
 
 # Use the source branch name, including when it belongs to a fork.
 head_branch="$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
@@ -27,7 +28,7 @@ esac
 # GitHub has no dependency link between pull requests: a stack is a child
 # based on its parent's branch, reviewed as its own increment, so the
 # dependency facts are always available and always empty.
-printf '%s\n' "$pr_json" "$base_json" "$statuses" "$reviews" | jq -cs \
+printf '%s\n' "$pr_json" "$base_json" "$statuses" "$reviews" "$summary" | jq -cs \
   --arg login "$MINOS_GITHUB_LOGIN" \
   --arg head_branch "$head_branch" \
   '
@@ -38,8 +39,8 @@ printf '%s\n' "$pr_json" "$base_json" "$statuses" "$reviews" | jq -cs \
     if . == "CHANGES_REQUESTED" then "REQUEST_CHANGES"
     elif . == "COMMENTED" then "COMMENT"
     else . end;
-  if length != 4 then error("expected four forge payloads") else . end |
-  . as [$pr, $base, $statuses, $reviews] |
+  if length != 5 then error("expected five forge payloads") else . end |
+  . as [$pr, $base, $statuses, $reviews, $summary] |
   {
     authenticated_user: $login,
     repository: $pr.base.repo.full_name,
@@ -59,6 +60,7 @@ printf '%s\n' "$pr_json" "$base_json" "$statuses" "$reviews" | jq -cs \
     statuses: $statuses,
     labels: [($pr.labels // [])[] | .name] | sort,
     reviews: [$reviews[] | {id, state: (.state | protocol_review_state), commit_id, body:(.body // ""), user:(.user.login // ""), submitted_at:(.submitted_at // "")}],
+    summary: $summary,
     dependencies_available: true,
     dependency_error: "",
     open_dependencies: []

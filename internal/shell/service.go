@@ -205,7 +205,8 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason), DeferralReason: reason, DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
 	}
 	if eligibility.completedRun {
-		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
+		completed := ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}
+		return completed, settleCompletedMarkers(ctx, adapter, guard, repo.Markers, eligibility.terminalOutcome)
 	}
 	if eligibility.dependencyDeferred {
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason), DeferralReason: eligibility.dependencyReason, DeferralReasons: eligibility.reasons}, nil
@@ -233,27 +234,72 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	}, nil
 }
 
-// staleTerminalMarker reports whether the current head lacks the Minos
-// result a terminal marker stands for. A PR-wide marker — reaction or label
-// — has no head identity of its own; a current status or terminal review in
-// that state is its warrant, and the marker itself is never read.
+// staleTerminalMarker reports whether the current head's completion
+// state (headCompletion) is not the one a terminal marker stands for. A
+// PR-wide marker — reaction or label — has no head identity of its own;
+// the head's completion is its warrant, and the marker itself is never
+// read.
 func staleTerminalMarker(snapshot forge.Snapshot, botLogin, statusContext string, want product.State) bool {
-	if status, found := latestOwnedStatus(snapshot, botLogin, statusContext); found {
-		if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal && state == want {
-			return false
+	state, completed := headCompletion(snapshot, botLogin, statusContext)
+	return !completed || state != want
+}
+
+// headCompletion is the current head's completion marker. The summary
+// comment speaks first: a record that names this head with a finished
+// state completes it. Where the comment says nothing finished of this
+// head, the head is completed by a terminal Minos review of it, or else by
+// the latest Minos status on it when that status is terminal. Those two
+// are all a head carries when the run that finished it wrote no summary
+// comment, as the resident lead writes none, and such a head reads as
+// finished for as long as it stands.
+// Admission and marker reconciliation both read this, so a head is never
+// deferred as one outcome while carrying the other's marker.
+func headCompletion(snapshot forge.Snapshot, botLogin, statusContext string) (product.State, bool) {
+	if record, found := snapshot.SummaryRecord(); found {
+		if state, completed := record.Completion(snapshot.HeadSHA); completed {
+			return state, true
 		}
 	}
 	if review, found := currentReview(snapshot, botLogin); found {
-		if state, terminal := terminalState(review); terminal && state == want {
-			return false
+		if state, terminal := terminalState(review); terminal {
+			return state, true
 		}
 	}
-	return true
+	if status, found := latestOwnedStatus(snapshot, botLogin, statusContext); found {
+		if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal {
+			return state, true
+		}
+	}
+	return product.State{}, false
+}
+
+// settleCompletedMarkers gives a completed head the markers its verdict
+// calls for: no in-flight marker, and the terminal marker of the outcome
+// when one is configured. The run writes both itself; this repairs a head
+// whose run recorded its verdict and then failed a marker write, without
+// another review. Both writes are idempotent, so a head already carrying
+// the right markers costs only the guards' reads. The other outcome's
+// terminal marker is removed by the stale-marker pass above.
+func settleCompletedMarkers(ctx context.Context, adapter *forge.Adapter, guard forge.Guard, markers Markers, outcome string) error {
+	if markers.InFlight != nil {
+		if result := adapter.RemoveMarker(ctx, guard, *markers.InFlight); result.Outcome != forge.WriteApplied {
+			return fmt.Errorf("remove in-flight marker from completed head: %s: %s", result.Outcome, result.Reason)
+		}
+	}
+	terminal := markers.Attention
+	if outcome == product.Clean().Name() {
+		terminal = markers.Clean
+	}
+	if terminal != nil {
+		if result := adapter.AddMarker(ctx, guard, *terminal); result.Outcome != forge.WriteApplied {
+			return fmt.Errorf("add %s marker to completed head: %s: %s", outcome, result.Outcome, result.Reason)
+		}
+	}
+	return nil
 }
 
 // pullRequestAdmissionEligibility holds the non-writing admission chain. The
-// completion marker is head-bound: a terminal Minos review of the current
-// head, or a clean/attention Minos status on it. The sweep never writes
+// completion marker is head-bound (headCompletion). The sweep never writes
 // statuses itself — the terminal status is the lead's own best-effort write
 // (the 2026-08-30 Decision rejects code-owned status reconciliation).
 type pullRequestAdmissionEligibility struct {
@@ -271,17 +317,8 @@ func assessPullRequestAdmission(cfg ServiceConfig, repo RepoConfig, snapshot for
 		eligibility.workInProgress = true
 		eligibility.reasons = append(eligibility.reasons, fmt.Sprintf("work-in-progress branch %q", snapshot.HeadBranch))
 	}
-	if review, reviewed := currentReview(snapshot, cfg.BotLogin(repo.Forge)); reviewed {
-		if state, terminal := terminalState(review); terminal {
-			eligibility.terminalOutcome = state.Name()
-		}
-	}
-	if eligibility.terminalOutcome == "" {
-		if status, found := latestOwnedStatus(snapshot, cfg.BotLogin(repo.Forge), cfg.Service.StatusContext); found {
-			if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal {
-				eligibility.terminalOutcome = state.Name()
-			}
-		}
+	if state, completed := headCompletion(snapshot, cfg.BotLogin(repo.Forge), cfg.Service.StatusContext); completed {
+		eligibility.terminalOutcome = state.Name()
 	}
 	eligibility.completedRun = eligibility.terminalOutcome != ""
 	if eligibility.completedRun {

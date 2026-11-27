@@ -10,9 +10,13 @@ import (
 // RecordTargetKey names the target field of the review-binding record.
 const RecordTargetKey = "target"
 
+// recordToken is one `key=value` token of a record, the grammar every
+// record Minos writes into forge text shares.
+const recordToken = `[a-z][a-z0-9-]*=[A-Za-z0-9._/@-]+`
+
 // recordLine is the review-binding record's grammar: the head and target a
 // review covered, as an HTML comment the review body carries.
-var recordLine = regexp.MustCompile(`^<!-- Minos:( [a-z][a-z0-9-]*=[A-Za-z0-9._/@-]+)+ -->$`)
+var recordLine = regexp.MustCompile(`^<!-- Minos:( ` + recordToken + `)+ -->$`)
 
 // FormatRecord renders the review-binding record, refusing a token the grammar
 // cannot carry.

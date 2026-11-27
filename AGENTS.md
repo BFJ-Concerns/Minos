@@ -2,10 +2,10 @@
 
 Minos is a pull-request review service. An authenticated webhook or the
 periodic sweep starts a run. The shipped `run-body.env` sets
-`MINOS_RUN_DRIVER`, so `run-body` starts the scripted driver. When the
-setting is absent or either companion judgement module is missing,
-`run-body` starts a resident lead on Claude Code by default or on Codex
-(`MINOS_LEAD_ENGINE`).
+`MINOS_RUN_DRIVER`, so `run-body` starts the scripted driver, and stops
+with a recorded failure when one of the driver's judgement modules is
+missing. When the setting is absent, `run-body` starts a resident lead on
+Claude Code by default or on Codex (`MINOS_LEAD_ENGINE`).
 
 ## Layout
 
@@ -21,7 +21,8 @@ setting is absent or either companion judgement module is missing,
 - `internal/forge/` — the forge protocol: the adapter that runs a forge's
   adaptation scripts and the write guards and markers built on it.
 - `internal/product/` — the status vocabulary Minos writes on a pull
-  request and the head-and-target record a review body carries.
+  request, the head-and-target record a review body carries and the
+  summary comment's record, which binds a state to a head.
 - `workflows/` — the Ensemble review workflows, their Node modules and tests.
 - `workflows/review-briefs/` — the Markdown prompts the review legs
   receive; its `README.md` maps each file to its stage and slots.
@@ -31,6 +32,10 @@ setting is absent or either companion judgement module is missing,
 - `workflows/judgements/` — the one-shot judgement stages, each a prompt
   and a definition of one name; its `README.md` says what a stage is, how
   one runs and how one is replayed on a recorded input.
+- `workflows/summary-comment.mjs` and `workflows/publication-templates/` —
+  the summary comment's text: the named parts it is made of and the
+  Markdown template that places them; the directory's `README.md` maps
+  each template to its composer and slots.
 - `runtime/` — the vendored Ensemble runtime (below).
 - `scripts/adaptations/` — one directory of forge scripts per forge
   (`forgejo`, `github`).
@@ -113,9 +118,20 @@ setting is absent or either companion judgement module is missing,
   reactions and `Minos` status. The status is a best-effort write,
   informational only — it never serves as a required check. Scratch data
   may disappear with the run.
+- Each pull request has one summary comment: a conversation comment the
+  service creates at the first claim and edits in place ever after
+  (`minos forge summary`, each adaptation's `guarded-write-summary`). Its
+  first line is the summary record (`internal/product/summary.go`), which
+  names a head and its state — inspecting, reviewing, clean, changes
+  requested or incomplete — and carries the last head a run finished on
+  while a later one is in hand. The command writes the record; a run names
+  a state and composes the text below it.
 - Webhooks and the sweep both reconcile current forge state. The
-  completion marker is head-bound — a terminal Minos review of the current
-  head, or a clean/attention status on it — and any head movement is the
+  completion marker is head-bound — the summary record saying clean or
+  changes requested of the current head, or, on a head finished by a run
+  that writes no summary comment, a terminal Minos review of the head or a
+  clean/attention status on it (`headCompletion` in
+  `internal/shell/service.go`) — and any head movement is the
   author's, spending the marker. The run writes its own statuses.
   Admission also writes `attention` and stops a continuation that made no
   progress beyond its predecessor (`stopStalledContinuation` in

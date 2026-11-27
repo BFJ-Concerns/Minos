@@ -38,7 +38,7 @@ function fixture(t, {
   skip = false, outstanding = false, blocking = false, briefBlocks = false, advisory = false,
   refusedReview = false, refusedMarker = false, failedSettlement = false, incomplete = false,
   pressure = false, pressureOnPublish = false, moved = false, movedAtSnapshot, movedOnReview = false,
-  carry = false, killedFirstReview = false,
+  carry = false, killedFirstReview = false, refusedSummary = false,
 } = {}) {
   const runDir = operationRoot(t, "minos-course-");
   const workspace = join(runDir, "workspace");
@@ -111,6 +111,8 @@ function fixture(t, {
         return [...earlierThreads, ...postedThreads];
       }
       if (operation === "approve") return { outcome: "not-needed" };
+      if (operation === "summary" && refusedSummary)
+        return { outcome: "uncertain", reason: "summary write could not be discovered" };
       if (operation === "review") {
         if (movedOnReview) {
           headMoved = true;
@@ -190,7 +192,7 @@ test("the course posts only the validated blocking review and records its non-cl
   const f = fixture(t, { blocking: true, outstanding: true });
   assert.deepEqual(await f.drive(), { outcome: "changes-requested" });
   assert.deepEqual(f.calls.map(([op, ...args]) => op === "status" ? args[2] : op),
-    ["snapshot", "claim", "working", "earlier", "judge", "dispatch", "dispatch", "snapshot", "threads",
+    ["snapshot", "claim", "summary", "working", "earlier", "judge", "dispatch", "dispatch", "snapshot", "threads",
       "judge", "snapshot", "threads", "judge", "review", "attention", "marker", "marker"]);
   assert.deepEqual(f.calls.find(([op]) => op === "review").slice(1, 4), [f.run.head, target, "request-changes"]);
   assert.match(f.drafts[0][0].body, /Blocking/);
@@ -203,10 +205,25 @@ test("the course posts only the validated blocking review and records its non-cl
     [["lexer.go", f.run.head]]);
 });
 
+test("the claim makes the summary comment say the head is being inspected", async (t) => {
+  const f = fixture(t, { skip: true });
+  assert.deepEqual(await f.drive(), { outcome: "clean" });
+  assert.deepEqual(f.calls.find(([op]) => op === "summary"),
+    ["summary", f.run.head, target, "inspecting", join(f.runDir, "summary-comment.md")]);
+  assert.equal(f.read("summary-comment.md"),
+    `**Minos: looking at what changed.**\n\nHead \`${f.run.head.slice(0, 7)}\` against target \`${target.slice(0, 7)}\`.\n`);
+});
+
+test("a summary comment the forge did not take at the claim is reported and the course goes on", async (t) => {
+  const f = fixture(t, { skip: true, refusedSummary: true });
+  assert.deepEqual(await f.drive(), { outcome: "clean" });
+  assert.match(f.read("report.md"), /forge summary: summary write could not be discovered/);
+});
+
 test("a no-review run approves only a clean outcome and never restates earlier findings", async (t) => {
   const clean = fixture(t, { skip: true });
   assert.deepEqual(await clean.drive(), { outcome: "clean" });
-  assert.deepEqual(clean.calls.map(([op]) => op), ["snapshot", "claim", "status", "earlier", "judge", "snapshot", "threads", "approve", "status", "marker", "marker"]);
+  assert.deepEqual(clean.calls.map(([op]) => op), ["snapshot", "claim", "summary", "status", "earlier", "judge", "snapshot", "threads", "approve", "status", "marker", "marker"]);
   assert.deepEqual(clean.calls.slice(-3), [
     ["status", clean.run.head, target, "clean"], ["marker", clean.run.head, target, "clean", "add"],
     ["marker", clean.run.head, target, "in-flight", "remove"],
@@ -216,7 +233,7 @@ test("a no-review run approves only a clean outcome and never restates earlier f
 
   const blocked = fixture(t, { skip: true, outstanding: true });
   assert.deepEqual(await blocked.drive(), { outcome: "changes-requested" });
-  assert.deepEqual(blocked.calls.map(([op]) => op), ["snapshot", "claim", "status", "earlier", "judge", "snapshot", "threads", "judge", "status", "marker", "marker"]);
+  assert.deepEqual(blocked.calls.map(([op]) => op), ["snapshot", "claim", "summary", "status", "earlier", "judge", "snapshot", "threads", "judge", "status", "marker", "marker"]);
   assert.match(blocked.read("failure-log"), /earlier review remain outstanding/);
   assert.match(blocked.read("report.md"), /Fixture defect still stands/);
   const settlement = blocked.json("judgements/earlier-findings.json");

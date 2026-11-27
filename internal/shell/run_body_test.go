@@ -703,9 +703,10 @@ esac
 	}
 }
 
-func TestRunBodyKeepsTheLeadWhenAScriptedJudgementStageIsMissing(t *testing.T) {
-	for _, present := range []string{"verdict-classification.mjs", "earlier-findings.mjs"} {
-		t.Run(present, func(t *testing.T) {
+func TestRunBodyStopsWhenAScriptedJudgementStageIsMissing(t *testing.T) {
+	stages := []string{"push-inspection.mjs", "verdict-classification.mjs", "earlier-findings.mjs"}
+	for _, missing := range stages {
+		t.Run(missing, func(t *testing.T) {
 			fixture := newRunBodyFixture(t)
 			driver := filepath.Join(fixture.root, "run-driver.mjs")
 			if err := os.WriteFile(driver, []byte("throw new Error('driver started');\n"), 0o644); err != nil {
@@ -715,19 +716,28 @@ func TestRunBodyKeepsTheLeadWhenAScriptedJudgementStageIsMissing(t *testing.T) {
 			if err := os.Mkdir(judgements, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(judgements, present), nil, 0o644); err != nil {
-				t.Fatal(err)
+			for _, present := range stages {
+				if present == missing {
+					continue
+				}
+				if err := os.WriteFile(filepath.Join(judgements, present), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			fixture.appendConfig(t, map[string]string{"MINOS_RUN_DRIVER": driver})
 			output, err := fixture.execute(nil)
-			if err != nil {
-				t.Fatalf("resident lead exit = %v\n%s", err, output)
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+				t.Fatalf("run-body exit = %v, want 1\n%s", err, output)
 			}
-			if !strings.Contains(string(output), "scripted judgement stages are missing. Using the resident lead.") {
-				t.Fatalf("missing fallback diagnostic:\n%s", output)
+			cause := "scripted judgement stage " + filepath.Join(judgements, missing) + " is missing"
+			if !strings.Contains(string(output), cause) {
+				t.Fatalf("missing diagnostic %q:\n%s", cause, output)
 			}
-			assertContainsFile(t, fixture.record+".argv", "--bg")
-			assertFileEmpty(t, fixture.failureLog)
+			assertContainsFile(t, fixture.failureLog, "stage=configuration cause="+cause)
+			if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
+				t.Fatalf("resident lead was launched: %v", err)
+			}
 		})
 	}
 }
@@ -752,7 +762,7 @@ process.exitCode = 75;
 	if err := os.Mkdir(judgements, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"verdict-classification.mjs", "earlier-findings.mjs"} {
+	for _, name := range []string{"push-inspection.mjs", "verdict-classification.mjs", "earlier-findings.mjs"} {
 		if err := os.WriteFile(filepath.Join(judgements, name), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -770,6 +780,167 @@ process.exitCode = 75;
 	assertFileEmpty(t, fixture.failureLog)
 	if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
 		t.Fatalf("resident lead was launched: %v", err)
+	}
+}
+
+// scriptedDriverFixture installs a driver with the given body beside the
+// three judgement modules a scripted install needs.
+func scriptedDriverFixture(t *testing.T, body string) runBodyFixture {
+	t.Helper()
+	fixture := newRunBodyFixture(t)
+	driver := filepath.Join(fixture.root, "run-driver.mjs")
+	if err := os.WriteFile(driver, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	judgements := filepath.Join(fixture.root, "judgements")
+	if err := os.Mkdir(judgements, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"push-inspection.mjs", "verdict-classification.mjs", "earlier-findings.mjs"} {
+		if err := os.WriteFile(filepath.Join(judgements, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixture.appendConfig(t, map[string]string{"MINOS_RUN_DRIVER": driver})
+	return fixture
+}
+
+// silentStageDriver starts a stage that never writes, in a session of its
+// own, and a worker whose launcher exits at once, leaving it re-parented
+// outside the driver's tree. It records the driver's, the stage's and the
+// worker's process ids.
+const silentStageDriver = `
+import { execFileSync, spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+const runDir = process.env.MINOS_RUN_DIR;
+const stage = spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
+const worker = execFileSync("sh", ["-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!"], { encoding: "utf8" }).trim();
+writeFileSync(join(runDir, "driver-pids"), ` + "`${process.pid} ${stage.pid} ${worker}\n`" + `);
+`
+
+func TestRunBodyStopsAScriptedDriversSilentStageAndLetsTheDriverClose(t *testing.T) {
+	fixture := scriptedDriverFixture(t, silentStageDriver+`
+stage.once("close", () => {
+  writeFileSync(join(runDir, "closing-ran"), "yes\n");
+  writeFileSync(join(runDir, "lead-complete"), "non-clean\n");
+  process.exitCode = 75;
+});
+`)
+	output, err := fixture.execute(map[string]string{"MINOS_LEAD_SILENCE_TIMEOUT": "1"})
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 75 {
+		t.Fatalf("scripted run exit = %v, want 75 from the driver's own ending\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "no run activity for 1 seconds; stopping the driver's stage") {
+		t.Fatalf("missing stage-stop diagnostic:\n%s", output)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "closing-ran"), "yes")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "stage-stopped"), "no run activity for 1 seconds")
+	assertProcessesGone(t, recordedPIDs(t, filepath.Join(fixture.runDir, "driver-pids")))
+}
+
+func TestRunBodyStopsEverythingADriverStartedWhenTheDriverOutlivesItsStoppedStage(t *testing.T) {
+	fixture := scriptedDriverFixture(t, silentStageDriver+`
+process.on("SIGTERM", () => {});
+const helper = spawn("sleep", ["300"], { stdio: "ignore" });
+writeFileSync(join(runDir, "helper-pid"), `+"`${helper.pid}\n`"+`);
+setInterval(() => {}, 1000);
+`)
+	// The archive hook runs after the stop: everything the driver started
+	// must already be gone when it looks.
+	archive := filepath.Join(fixture.root, "archive-run")
+	writeScript(t, archive, `#!/usr/bin/env sh
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  alive=""
+  for pid in $(cat "$1/driver-pids" "$1/helper-pid"); do
+    if kill -0 "$pid" 2>/dev/null; then alive="$alive $pid"; fi
+  done
+  [ -n "$alive" ] || break
+  sleep 0.1
+done
+printf '%s\n' "${alive:-none}" >"$1/alive-at-archive"
+`)
+	output, err := fixture.execute(map[string]string{"MINOS_LEAD_SILENCE_TIMEOUT": "1", "MINOS_ARCHIVE_RUN": archive})
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("scripted run exit = %v, want 1\n%s", err, output)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "alive-at-archive"), "none")
+	assertFailureLine(t, fixture.failureLog, "stage=run-driver",
+		"cause=scripted driver did not end within 1 seconds of its silent stage being stopped")
+	pids := recordedPIDs(t, filepath.Join(fixture.runDir, "driver-pids"))
+	assertProcessesGone(t, append(pids, recordedPIDs(t, filepath.Join(fixture.runDir, "helper-pid"))...))
+}
+
+func TestRunBodyStopsARunsStrayWorkersWhenTheDriverEndsByItself(t *testing.T) {
+	for _, ending := range []struct{ name, body string }{
+		{"failing", "process.exit(1);"},
+		{"completing", `writeFileSync(join(process.env.MINOS_RUN_DIR, "lead-complete"), "clean\n");`},
+	} {
+		t.Run(ending.name, func(t *testing.T) {
+			fixture := scriptedDriverFixture(t, `
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+const worker = execFileSync("sh", ["-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!"], { encoding: "utf8" }).trim();
+writeFileSync(join(process.env.MINOS_RUN_DIR, "driver-pids"), worker + "\n");
+`+ending.body+"\n")
+			archive := filepath.Join(fixture.root, "archive-run")
+			writeScript(t, archive, `#!/usr/bin/env sh
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  pid="$(cat "$1/driver-pids")"
+  kill -0 "$pid" 2>/dev/null || { echo none >"$1/alive-at-archive"; exit 0; }
+  sleep 0.1
+done
+echo "$pid" >"$1/alive-at-archive"
+`)
+			// The exit status each ending gives is other tests' concern.
+			_, _ = fixture.execute(map[string]string{"MINOS_ARCHIVE_RUN": archive})
+			assertContainsFile(t, filepath.Join(fixture.runDir, "alive-at-archive"), "none")
+		})
+	}
+}
+
+func TestRunBodyCarriesARepinnedTargetIntoTheRun(t *testing.T) {
+	repinned := strings.Repeat("c", 40)
+	fixture := scriptedDriverFixture(t, `
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+const runDir = process.env.MINOS_RUN_DIR;
+writeFileSync(join(runDir, "driver-target"), process.env.MINOS_TARGET_SHA + "\n");
+writeFileSync(join(runDir, "lead-complete"), "clean\n");
+`)
+	writeScript(t, fixture.setupStub, "#!/usr/bin/env sh\nset -eu\nprintf '%s\\n' "+repinned+" >\"$MINOS_RUN_DIR/target-sha\"\n")
+	output, err := fixture.execute(nil)
+	if err != nil {
+		t.Fatalf("scripted run: %v\n%s", err, output)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "driver-target"), repinned)
+	if !strings.Contains(string(output), "target re-pinned from target-sha to "+repinned) {
+		t.Fatalf("missing re-pin line:\n%s", output)
+	}
+}
+
+func TestRunBodyRefusesAMalformedRepinnedTarget(t *testing.T) {
+	fixture := scriptedDriverFixture(t, "throw new Error('driver started');\n")
+	writeScript(t, fixture.setupStub, "#!/usr/bin/env sh\nset -eu\nprintf 'not-a-sha\\n' >\"$MINOS_RUN_DIR/target-sha\"\n")
+	output, err := fixture.execute(nil)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("run-body exit = %v, want 1\n%s", err, output)
+	}
+	assertFailureLine(t, fixture.failureLog, "stage=workspace-setup", "cause=setup recorded an unreadable re-pinned target")
+}
+
+func assertProcessesGone(t *testing.T, pids []int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for processesExist(pids) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if processesExist(pids) {
+		t.Fatalf("processes the driver started still exist: %v", pids)
 	}
 }
 

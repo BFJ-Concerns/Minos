@@ -20,7 +20,7 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|threads|comments|claim|status|earlier|review|approve|marker|file-issue|repository-metadata|clone-credential")
+		return fmt.Errorf("usage: minos forge snapshot|threads|comments|claim|status|summary|earlier|review|approve|marker|file-issue|repository-metadata|clone-credential")
 	}
 	// Repository metadata and the clone credential are not about the pull
 	// request, so they need the run's forge but none of its coordinates.
@@ -147,6 +147,24 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 			recordReviewedChange(ctx, guard, args[3])
 		}
 		return nil
+	case "summary":
+		if len(args) != 5 {
+			return fmt.Errorf("usage: minos forge summary HEAD TARGET inspecting|reviewing|clean|changes-requested|incomplete TEXT_FILE")
+		}
+		state, ok := product.NamedSummaryState(args[3])
+		if !ok {
+			return fmt.Errorf("unknown summary state %q", args[3])
+		}
+		guard.HeadSHA, guard.TargetSHA = args[1], args[2]
+		text, err := os.ReadFile(args[4])
+		if err != nil {
+			return err
+		}
+		result, err := writeSummary(ctx, adapter, guard, state, string(text))
+		if err != nil {
+			return err
+		}
+		return emitForgeResult(stdout, "summary", result)
 	case "earlier":
 		if len(args) != 3 || args[1] == "" || args[2] == "" {
 			return fmt.Errorf("usage: minos forge earlier HEAD TARGET")

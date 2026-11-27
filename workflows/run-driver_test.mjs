@@ -179,6 +179,31 @@ test("a run's forge call returns the JSON minos forge printed, and a refused one
   });
 });
 
+test("a run keeps what a successful forge command said on stderr", async (t) => {
+  const run = scriptedRun(t, {
+    forgeScript: `printf '{"outcome":"applied"}\\n'; [ "$2" = review ] && echo "forge review: inline comments folded into the body: no diff" >&2; exit 0\n`,
+    dispatchScript: "exit 0\n",
+  });
+
+  await run.forge("status", "abc", "def", "clean");
+  await run.forge("review", "abc", "def", "comment", "body.md");
+  const note = "minos forge review: forge review: inline comments folded into the body: no diff";
+  assert.deepEqual(run.forgeNotes, [note]);
+  assert.equal(readFileSync(join(run.runDir, "forge.log"), "utf8"), `${note}\n`);
+});
+
+test("a forge note that cannot be logged costs only the log, never the forge call", async (t) => {
+  const run = scriptedRun(t, {
+    forgeScript: `printf '{"outcome":"applied"}\\n'; echo "forge review: inline comments folded" >&2; exit 0\n`,
+    dispatchScript: "exit 0\n",
+  });
+  mkdirSync(join(run.runDir, "forge.log"));
+
+  assert.deepEqual(await run.forge("review", "abc", "def", "comment", "body.md"), { outcome: "applied" });
+  assert.equal(run.forgeNotes[0], "minos forge review: forge review: inline comments folded");
+  assert.match(run.forgeNotes[1], /^could not keep the note above in forge\.log: EISDIR/);
+});
+
 test("a run's dispatch launches the stage from the clone and returns its result, and a stage with none throws", async (t) => {
   const run = scriptedRun(t, {
     forgeScript: "exit 0\n",
@@ -191,6 +216,17 @@ test("a run's dispatch launches the stage from the clone and returns its result,
     { launched: "review judgement.js run-judgement", from: run.workspace },
   );
   await assert.rejects(run.dispatch("review-brief", "review-briefs.js"), /stage review-brief ended without a result; review-brief\.log/);
+});
+
+test("a stage the run supervisor stopped fails naming the supervisor's reason", async (t) => {
+  const run = scriptedRun(t, { forgeScript: "exit 0\n", dispatchScript: "kill -KILL $$\n" });
+  writeFileSync(join(run.runDir, "stage-stopped"), "no run activity for 3600 seconds\n");
+
+  await assert.rejects(run.dispatch("review", "review.js"), (error) => {
+    assert.match(error.message, /stage review ended without a result; review\.log has its diagnostics \(stopped by the run supervisor: no run activity for 3600 seconds\)/);
+    assert.equal(error.killed, true);
+    return true;
+  });
 });
 
 test("a run cannot open without the coordinates run-body exports", () => {

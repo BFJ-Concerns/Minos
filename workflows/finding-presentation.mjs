@@ -3,7 +3,8 @@
 // the issue-log filing above all — renders through this module, so what a
 // review body says, what a finding comment carries, how an issue-log entry
 // reads and which material may be published cannot drift between
-// producers.
+// producers. The summary comment's parts (summary-comment.mjs) are
+// composed apart and take this module's wording helpers.
 //
 // Payload text is author-facing. Operator material — confidence values,
 // probe questions and unit concerns, worker labels — belongs in the run
@@ -95,11 +96,11 @@ function severityRollUp(findings) {
     .join(", ");
 }
 
-function plural(count, noun) {
+export function plural(count, noun) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-function short(sha) {
+export function short(sha) {
   return typeof sha === "string" && sha.length >= 7 ? sha.slice(0, 7) : String(sha);
 }
 

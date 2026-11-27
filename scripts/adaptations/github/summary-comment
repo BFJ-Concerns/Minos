@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
+
+# The summary comment the login keeps on the pull request, as {id, body},
+# or null when it keeps none.
+owner="$1"; repo="$2"; pr="$3"; login="$4"
+
+summary_comment "$owner" "$repo" "$pr" "$login"
