@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import { issueLogEntry } from "./finding-presentation.mjs";
 
-import { appendFilingEntries, deliverFilingEntries, filingMarker, markedFilingEntry, validFilingDestination } from "./filing-destination.mjs";
+import { SAFEGUARD_REQUESTS_HEADING, appendFilingEntries, deliverFilingEntries, filingMarker, markedFilingEntry, validFilingDestination } from "./filing-destination.mjs";
 
 // The filing drives real git against a bare "origin" the test owns and a
 // fixture forge that answers the repository lookup, so what these tests
@@ -299,6 +299,31 @@ test("the marker keys on repository, kind, site and title so one defect files on
   const { text, written } = appendFilingEntries("", [advisory, advisory], "Filed by Minos from o/r#1, 2026-09-12", reviewedRepository);
   assert.equal(written, 1, "a duplicate within one batch files once");
   assert.match(text, /^# Issues\n\n- \*\*Advisory/);
+});
+
+test("safeguard requests sit in a file under their own heading, after the defects and before any later section", () => {
+  const attribution = "Filed by Minos from o/r#1, 2026-09-12";
+  const marked = (entry) => markedFilingEntry(entry, attribution, reviewedRepository);
+  const later = { ...advisory, title: "A later defect", line: 77 };
+  const laterRequest = { ...safeguardRequest, title: "Bound the queue", line: 90 };
+
+  const opened = appendFilingEntries("", [safeguardRequest, advisory], attribution, reviewedRepository);
+  assert.equal(opened.written, 2);
+  assert.equal(opened.text, `# Issues\n\n${marked(advisory)}\n\n${SAFEGUARD_REQUESTS_HEADING}\n\n${marked(safeguardRequest)}\n`);
+
+  const grown = appendFilingEntries(opened.text, [laterRequest, later, safeguardRequest], attribution, reviewedRepository);
+  assert.equal(grown.written, 2, "an entry already in the section files once");
+  assert.equal(grown.text,
+    `# Issues\n\n${marked(advisory)}\n\n${marked(later)}\n\n${SAFEGUARD_REQUESTS_HEADING}\n\n` +
+    `${marked(safeguardRequest)}\n\n${marked(laterRequest)}\n`);
+
+  const withLaterSection = `${opened.text}\n## Done\n\n- A settled entry.\n`;
+  assert.equal(appendFilingEntries(withLaterSection, [laterRequest], attribution, reviewedRepository).text,
+    `# Issues\n\n${marked(advisory)}\n\n${SAFEGUARD_REQUESTS_HEADING}\n\n${marked(safeguardRequest)}\n\n` +
+    `${marked(laterRequest)}\n\n## Done\n\n- A settled entry.\n`);
+
+  const defectsOnly = appendFilingEntries("# Issues\n\n- An existing entry.\n", [advisory], attribution, reviewedRepository);
+  assert.ok(!defectsOnly.text.includes(SAFEGUARD_REQUESTS_HEADING), "no heading opens without a request under it");
 });
 
 test("a marked entry is the issue-log entry followed by its marker", () => {
@@ -628,6 +653,16 @@ if (args.join(" ") === "forge snapshot") {
       },
     };
   }
+
+  await t.test("a safeguard request is posted under its own heading after the defects", async (t) => {
+    const f = await fixture(t);
+    const outcome = await f.deliver([safeguardRequest, advisory]);
+    assert.equal(outcome.written, 2);
+    const attribution = `Filed by ${identity.name} from owner/repository#17, 2026-09-12`;
+    assert.equal(f.state().calls[0].body,
+      `${markedFilingEntry(advisory, attribution, reviewedRepository)}\n\n${SAFEGUARD_REQUESTS_HEADING}\n\n` +
+      `${markedFilingEntry(safeguardRequest, attribution, reviewedRepository)}\n`);
+  });
 
   await t.test("first delivery posts both marked renderings once and repeat delivery posts nothing", async (t) => {
     const f = await fixture(t);
