@@ -33,6 +33,7 @@ function enumeratedArgs(
     routing,
     concernRouting,
     fileSafeguardRequests = "",
+    depth = "",
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "minos-review-inputs-"));
@@ -73,6 +74,7 @@ function enumeratedArgs(
         ...(routing === undefined ? { MINOS_ROUTING: "" } : { MINOS_ROUTING: JSON.stringify(routing) }),
         MINOS_CONCERN_ROUTING: concernRouting === undefined ? "" : JSON.stringify(concernRouting),
         MINOS_FILE_SAFEGUARD_REQUESTS: fileSafeguardRequests,
+        MINOS_REVIEW_DEPTH: depth,
       },
       stdio: ["ignore", "pipe", "pipe"],
     }));
@@ -453,6 +455,24 @@ test("the input builder hands the specialists and verifiers the safeguard-reques
   }
   assert.throws(() => enumeratedArgs("aaa111", "bbb222", { fileSafeguardRequests: "yes" }),
     /MINOS_FILE_SAFEGUARD_REQUESTS must be one of false, true/);
+});
+
+test("the input builder hands the exploration leg and the specialists the depth passages the repository's setting chooses", async () => {
+  const passage = (slot, value) => readFileSync(new URL(`./review-briefs/${slot}/${value}.md`, import.meta.url), "utf8").trim();
+  for (const [setting, depth] of [["", "standard"], ["light", "light"], ["thorough", "thorough"]]) {
+    const args = enumeratedArgs("aaa111", "bbb222", { depth: setting });
+    const { calls } = await runScript(args, responder({ exploration: explorationFixture({ plan: [unit("correct", "logic")] }) }));
+    const exploration = calls.find((call) => call.opts.label?.startsWith("explor"));
+    const specialist = calls.find((call) => call.opts.label?.startsWith("specialist-"));
+    assert.ok(exploration.prompt.includes(passage("exploration-depth", depth)), `the dispatched exploration leg under ${JSON.stringify(setting)} reads ${depth}.md`);
+    assert.ok(specialist.prompt.includes(passage("specialist-depth", depth)), `the dispatched specialist under ${JSON.stringify(setting)} reads ${depth}.md`);
+    for (const other of ["light", "thorough"].filter((value) => value !== depth)) {
+      assert.ok(!exploration.prompt.includes(passage("exploration-depth", other)), `the exploration leg under ${depth} leaves out ${other}.md`);
+      assert.ok(!specialist.prompt.includes(passage("specialist-depth", other)), `the specialist under ${depth} leaves out ${other}.md`);
+    }
+  }
+  assert.throws(() => enumeratedArgs("aaa111", "bbb222", { depth: "deep" }),
+    /MINOS_REVIEW_DEPTH must be one of light, standard, thorough/);
 });
 
 test("the input builder refuses concern routing it cannot honour, and the workflow refuses input without it", async () => {

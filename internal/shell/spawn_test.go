@@ -772,6 +772,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	repo.Review.Threshold = "Medium"
 	repo.Review.FileSafeguardRequests = true
+	repo.Review.Depth = "thorough"
 	repo.PushInspection.Outcomes = []string{"increment", "full"}
 	repo.Routing.Verifier = RoleRouting{Engine: "codex", Model: "gpt-6-astra", Effort: "low"}
 	repo.Routing.Concerns = map[string]RoleRouting{"security": {Engine: "claude", Effort: "high"}}
@@ -824,6 +825,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_RUN_BODY=/opt/minos/run-body/run-body",
 		"MINOS_REVIEW_THRESHOLD=Medium",
 		"MINOS_FILE_SAFEGUARD_REQUESTS=true",
+		"MINOS_REVIEW_DEPTH=thorough",
 		"MINOS_COMMIT_AUTHOR_NAME=Reviewer Bot",
 		"MINOS_COMMIT_AUTHOR_EMAIL=reviewer@example.invalid",
 		"MINOS_STATUS_CONTEXT=Review Bot",
@@ -1396,5 +1398,44 @@ func TestUnitNameBoundsLongNamesAndKeepsRepositoryPrefix(t *testing.T) {
 	})
 	if got := counts[facts.RepoSlug()]; got != 2 {
 		t.Fatalf("running pull requests in long-named repository = %d, want 2", got)
+	}
+}
+
+// A repository that sets no review keys runs with the shipped values in its
+// environment, loaded the way the service loads it, so an input builder
+// reads the documented defaults and not an empty variable.
+func TestSpawnRunExportsTheShippedReviewDefaults(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			systemdArgs = append([]string(nil), args...)
+		}
+		return nil, nil
+	}
+
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, "")
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Forges = map[string]ForgeConfig{"local": {APIBase: "http://forge.local"}}
+	writeRepoConfig(t, root, "repo.toml", repoConfig(""))
+	repos, err := LoadRepoConfigs(cfg)
+	if err != nil || len(repos) != 1 {
+		t.Fatalf("repos = %+v, error = %v", repos, err)
+	}
+	facts := Facts{Forge: "local", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head", BaseSHA: "target", BaseRef: "main", HeadRef: "feature"}
+	if _, err := SpawnRun(t.Context(), cfg, repos[0], facts); err != nil {
+		t.Fatal(err)
+	}
+	environment := systemdEnvironment(t, systemdArgs)
+	for name, want := range map[string]string{
+		"MINOS_REVIEW_THRESHOLD":        "High",
+		"MINOS_FILE_SAFEGUARD_REQUESTS": "false",
+		"MINOS_REVIEW_DEPTH":            "standard",
+	} {
+		if got, present := environment[name]; !present || got != want {
+			t.Fatalf("run environment %s = %q, present = %t; want %q", name, got, present, want)
+		}
 	}
 }
