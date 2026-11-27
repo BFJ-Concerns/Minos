@@ -32,7 +32,7 @@
 // leaves the head eligible for a periodic sweep.
 
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -116,7 +116,10 @@ function reportToStderr(message) {
 
 // Runs `minos forge ARGS` and returns the JSON it printed. A command the
 // forge did not carry out throws; where it still printed its result, as a
-// refused write does, the error carries that as `result`.
+// refused write does, the error carries that as `result`. What a command
+// that succeeded said on stderr (a review whose inline comments were folded
+// into its body, say) is kept in forge.log and in `run.forgeNotes`, which
+// the report lists.
 function forge(run, args) {
   return new Promise((settle, reject) => {
     execFile(run.env.MINOS_BIN, ["forge", ...args], { cwd: run.workspace, env: run.env, maxBuffer: Infinity }, (error, stdout, stderr) => {
@@ -126,7 +129,15 @@ function forge(run, args) {
       } catch {
         result = undefined;
       }
-      if (!error && result !== undefined) return settle(result);
+      if (!error && result !== undefined) {
+        const said = stderr.trim();
+        if (said) {
+          const note = `minos forge ${args[0]}: ${said}`;
+          run.forgeNotes.push(note);
+          appendFileSync(join(run.runDir, "forge.log"), `${note}\n`);
+        }
+        return settle(result);
+      }
       const failure = new Error(`minos forge ${args[0]}: ${(stderr || (error && error.message) || "printed no JSON").trim()}`);
       failure.result = result;
       reject(failure);
@@ -201,6 +212,7 @@ export function openRun(env = process.env) {
     workspace: need("MINOS_WORKSPACE"),
     orientation: need("MINOS_ORIENTATION"),
     judgementAnswers: new Map(),
+    forgeNotes: [],
     forge: (...args) => forge(run, args),
     dispatch: (name, workflow, runner) => dispatch(run, name, workflow, runner),
     judge: (stage, input) => judge(run, stage, input),

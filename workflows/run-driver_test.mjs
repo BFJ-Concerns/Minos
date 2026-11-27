@@ -179,6 +179,19 @@ test("a run's forge call returns the JSON minos forge printed, and a refused one
   });
 });
 
+test("a run keeps what a successful forge command said on stderr", async (t) => {
+  const run = scriptedRun(t, {
+    forgeScript: `printf '{"outcome":"applied"}\\n'; [ "$2" = review ] && echo "forge review: inline comments folded into the body: no diff" >&2; exit 0\n`,
+    dispatchScript: "exit 0\n",
+  });
+
+  await run.forge("status", "abc", "def", "clean");
+  await run.forge("review", "abc", "def", "comment", "body.md");
+  const note = "minos forge review: forge review: inline comments folded into the body: no diff";
+  assert.deepEqual(run.forgeNotes, [note]);
+  assert.equal(readFileSync(join(run.runDir, "forge.log"), "utf8"), `${note}\n`);
+});
+
 test("a run's dispatch launches the stage from the clone and returns its result, and a stage with none throws", async (t) => {
   const run = scriptedRun(t, {
     forgeScript: "exit 0\n",

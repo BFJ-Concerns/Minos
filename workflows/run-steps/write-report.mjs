@@ -38,6 +38,7 @@ export async function writeReport(run, settled, ending, closingProblems = []) {
     ...earlierFindings.map(({ key, outcome, reason }) => `  - ${key} — ${outcome}. ${reason}`),
     ...(publication ? [`- Triage delivery — ${publication.filing.outcome}`] : []),
     ...skipped,
+    ...(run.forgeNotes?.length ? ["", "## Forge notes", "", ...run.forgeNotes.map((note) => `- ${note}`)] : []),
     "", "## Timings", "", ...timings,
     ...(problems.length ? ["", "## Anomalies", "", ...problems.map((problem) => `- ${problem}`)] : []),
   ];
@@ -48,12 +49,15 @@ async function timingLines(run, problems) {
   const path = join(run.runDir, "timing-record.json");
   try {
     await runCommand(run, join(dirname(run.env.MINOS_SETUP_WORKSPACE), "collect-timings"), [run.runDir, path]);
-    const { commands, phases } = JSON.parse(readFileSync(path, "utf8"));
+    const { commands, phases, workers = [] } = JSON.parse(readFileSync(path, "utf8"));
     return [
       ...commands.map(({ name, attempt, duration_ms }) => `- ${name}${attempt > 1 ? `@${attempt}` : ""} — ${seconds(duration_ms)}`),
-      ...phases.filter(({ straggler }) => straggler).map(({ record, phase, longest_arm }) =>
-        `- ${record} / ${phase} waited on ${longest_arm.label} (${seconds(longest_arm.ms)}).`),
       ...(commands.length ? [] : ["No stage spans were recorded."]),
+      ...phases.flatMap(({ record, phase, arms, wall_ms, straggler, longest_arm }) => [
+        `- ${record} / ${phase ?? "no phase"} — ${arms} ${arms === 1 ? "worker" : "workers"}, ${seconds(wall_ms)} wall`
+          + (straggler ? `; waited on ${longest_arm.label} (${seconds(longest_arm.ms)})` : ""),
+        ...workers.filter((worker) => worker.record === record && worker.phase === phase).map(workerLine),
+      ]),
     ];
   } catch (error) {
     problems.push(`Could not assemble the recorded timings. ${error.message}`);
@@ -61,6 +65,14 @@ async function timingLines(run, problems) {
   }
 }
 
+// One dispatched worker: its label, where it ran, how it ended and for how
+// long, read from its Ensemble record.
+function workerLine({ label, id, engine, model, status, execution_ms, started_at, ended_at }) {
+  const ranFor = execution_ms ?? (started_at && ended_at ? Date.parse(ended_at) - Date.parse(started_at) : null);
+  const where = [engine, model].filter(Boolean).join(" ");
+  return `  - ${label ?? id ?? "unlabelled worker"}${where ? ` (${where})` : ""} — ${status ?? "status unknown"}, ${seconds(ranFor)}`;
+}
+
 function seconds(ms) {
-  return `${(ms / 1000).toFixed(1)} s`;
+  return Number.isFinite(ms) ? `${(ms / 1000).toFixed(1)} s` : "time unknown";
 }
