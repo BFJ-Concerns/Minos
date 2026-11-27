@@ -268,6 +268,16 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	if cfg.Ensemble.AgentCeiling > 0 {
 		env["ENSEMBLE_AGENT_CEILING"] = strconv.Itoa(cfg.Ensemble.AgentCeiling)
 	}
+	// The kept description travels as its record's path, and only a whole
+	// record's: setup copies it into the run, whose reviewers are shown it.
+	if repo.Description.Enabled {
+		path := repositoryDescriptionPath(cfg, repo)
+		if kept, readErr := readRepositoryDescription(path); readErr != nil {
+			log.Printf("%s: the run is not shown the repository description: %v", unit, readErr)
+		} else if kept != nil {
+			env["MINOS_REPOSITORY_DESCRIPTION"] = path
+		}
+	}
 	if handoff != nil && handoff.Progress != nil {
 		progress, marshalErr := json.Marshal(handoff.Progress)
 		if marshalErr != nil {

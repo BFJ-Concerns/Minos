@@ -817,3 +817,66 @@ func gitOutput(t *testing.T, directory string, arguments ...string) string {
 	}
 	return strings.TrimSpace(string(output))
 }
+
+// Setup copies the description the service keeps into the run and names
+// the copy in the orientation, where the run's input builders read it; a
+// record that is gone by the time setup runs leaves the run without one.
+func TestSetupWorkspaceHandsTheRunACopyOfTheRepositoryDescription(t *testing.T) {
+	repository, head := createGitRepository(t, "README.md", "# Widgets\n")
+	server := newSetupForge(t, head, repository, "")
+	commit := strings.Repeat("1", 40)
+	record := filepath.Join(t.TempDir(), "kept.json")
+	if err := keepRepositoryDescription(record, commit, "A widget library."); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := t.TempDir()
+	orientation := filepath.Join(runDir, "orientation.json")
+	cmd := setupWorkspaceCommand(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), orientation, head)
+	cmd.Env = append(cmd.Env, "MINOS_REPOSITORY_DESCRIPTION="+record)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("setup-workspace failed: %v\n%s", err, output)
+	}
+	var named struct {
+		RepositoryDescription string `json:"repositoryDescription"`
+	}
+	raw, err := os.ReadFile(orientation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &named); err != nil {
+		t.Fatal(err)
+	}
+	copied := filepath.Join(runDir, "repository-description.json")
+	if named.RepositoryDescription != copied {
+		t.Fatalf("orientation names %q; want the run's own copy %s", named.RepositoryDescription, copied)
+	}
+	kept, err := readRepositoryDescription(copied)
+	if err != nil || kept == nil || kept.Commit != commit || kept.Description != "A widget library." {
+		t.Fatalf("the run's copy holds %+v (%v)", kept, err)
+	}
+	if _, err := exec.LookPath("node"); err == nil {
+		reader, err := filepath.Abs(filepath.Join("..", "..", "workflows", "repository-description.mjs"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		script := `const { descriptionFromOrientation } = await import(process.argv[1]);
+const orientation = JSON.parse((await import("node:fs")).readFileSync(process.argv[2], "utf8"));
+process.stdout.write(descriptionFromOrientation(orientation).description);`
+		out, err := exec.CommandContext(t.Context(), "node", "--input-type=module", "--eval", script, reader, orientation).CombinedOutput()
+		if err != nil || string(out) != "A widget library." {
+			t.Fatalf("the run's input builders read %q (%v)", out, err)
+		}
+	}
+
+	runDir = t.TempDir()
+	orientation = filepath.Join(runDir, "orientation.json")
+	cmd = setupWorkspaceCommand(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), orientation, head)
+	cmd.Env = append(cmd.Env, "MINOS_REPOSITORY_DESCRIPTION="+filepath.Join(t.TempDir(), "removed.json"))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("setup-workspace failed for a record removed before setup: %v\n%s", err, output)
+	}
+	if raw, err := os.ReadFile(orientation); err != nil || strings.Contains(string(raw), "repositoryDescription") {
+		t.Fatalf("orientation %s (%v); want no description named", raw, err)
+	}
+}
