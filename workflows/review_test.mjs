@@ -394,7 +394,42 @@ test("a finding from a concern routed to the verifier's engine is verified by th
     "verify-1-claude": ["claude", "claude-opus-5-5", ["specialist-1-logic-codex:1"]],
     "verify-1-codex": ["codex", "gpt-6.2-astra", ["specialist-2-security-claude:1"]],
   });
-  assert.ok(result.proposedFindings.every((entry) => entry.rawVerifier !== null));
+});
+
+test("both routes' verdicts reach the result when findings from two engines are verified apart", async (t) => {
+  const args = enumeratedArgs("aaa111", "bbb222", { concernRouting: { security: { engine: "claude" } } });
+  const plan = [unit("correct", "logic"), unit("secure", "security")];
+  const { result } = await runScript(args, responder({
+    exploration: explorationFixture({ plan }),
+    verify: (label, prompt) => verifierResult(prompt, () => ({ reason: `checked by ${label}` })),
+  }));
+  assert.deepEqual(
+    result.proposedFindings.map((entry) => [entry.id, entry.verifyLabel, entry.rawVerifier?.reason]).sort(),
+    [
+      ["specialist-1-logic-codex:1", "verify-1-claude", "checked by verify-1-claude"],
+      ["specialist-2-security-claude:1", "verify-1-codex", "checked by verify-1-codex"],
+    ],
+  );
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.equal(verdict.confirmedFindings.length, 2);
+});
+
+test("a merged group is verified by the family that did not propose its primary, wherever the primary is listed", async () => {
+  const args = enumeratedArgs("aaa111", "bbb222", { concernRouting: { security: { engine: "claude" } } });
+  const plan = [unit("secure", "security"), unit("correct", "logic")];
+  const { calls } = await runScript(args, responder({
+    exploration: explorationFixture({ plan }),
+    merge: (_label, prompt) => {
+      const ids = findingsFromVerifierPrompt(prompt).map((entry) => entry.id);
+      assert.deepEqual(ids, ["specialist-1-security-claude:1", "specialist-2-logic-codex:1"]);
+      return { groups: [{ findingIds: ids, primary: ids[1], sharedCause: "One guard covers both." }] };
+    },
+  }));
+  const verified = calls
+    .filter((call) => call.opts.label?.startsWith("verify-"))
+    .map((call) => [call.opts.label, call.opts.engine, findingsFromVerifierPrompt(call.prompt).map((entry) => entry.id)]);
+  assert.deepEqual(verified, [["verify-1-claude", "claude", ["specialist-2-logic-codex:1"]]]);
 });
 
 test("the input builder refuses concern routing it cannot honour, and the workflow refuses input without it", async () => {
