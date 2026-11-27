@@ -10,6 +10,8 @@ import (
 	"github.com/BFJ-Concerns/Minos/internal/shell"
 )
 
+const version = "0.1.0"
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "minos: %v\n", err)
@@ -30,10 +32,16 @@ func exitStatus(err error) int {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos receive|sweep|run|forge|install-units")
+		return fmt.Errorf("usage: minos --version|receive|sweep|run|forge|install-units")
 	}
 	ctx := context.Background()
 	switch args[0] {
+	case "--version":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: minos --version")
+		}
+		_, err := fmt.Fprintln(os.Stdout, version)
+		return err
 	case "receive":
 		return shell.ReceiveCommand(ctx, args[1:])
 	case "sweep":
