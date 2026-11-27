@@ -325,6 +325,43 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	}
 }
 
+// The description is off for a repository until enabled: unset at both
+// levels it is off, a service-wide true turns it on for a repository that
+// says nothing, and a repository's own false keeps it off under that.
+func TestRepositoryDescriptionIsOffUntilEnabled(t *testing.T) {
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, "")
+	writeRepoConfig(t, root, "bare.toml", repoConfig(""))
+	writeRepoConfig(t, root, "enabled.toml", repoConfig("[description]\nenabled = true\n"))
+	repos, err := LoadRepoConfigs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := map[string]bool{}
+	for _, repo := range repos {
+		enabled[filepath.Base(repo.Path)] = repo.Description.Enabled
+	}
+	if enabled["bare.toml"] || !enabled["enabled.toml"] {
+		t.Fatalf("description enabled = %v, want off unless the repository enables it", enabled)
+	}
+
+	root = t.TempDir()
+	cfg = loadServiceConfigWith(t, root, "[repositories.description]\nenabled = true\n")
+	writeRepoConfig(t, root, "inherits.toml", repoConfig(""))
+	writeRepoConfig(t, root, "declines.toml", repoConfig("[description]\nenabled = false\n"))
+	repos, err = LoadRepoConfigs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled = map[string]bool{}
+	for _, repo := range repos {
+		enabled[filepath.Base(repo.Path)] = repo.Description.Enabled
+	}
+	if !enabled["inherits.toml"] || enabled["declines.toml"] {
+		t.Fatalf("description enabled = %v, want the service's true inherited and a repository's false kept", enabled)
+	}
+}
+
 func TestRepositoryKnobsUnsetAtBothLevelsTakeTheShippedDefaults(t *testing.T) {
 	root := t.TempDir()
 	cfg := loadServiceConfigWith(t, root, "")
