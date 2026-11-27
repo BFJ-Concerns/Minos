@@ -9,8 +9,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-
-	"github.com/BurntSushi/toml"
 )
 
 // A setting changed away from the deployer's editor is written to the file
@@ -147,11 +145,11 @@ func RepositorySettingLevel(root string, repo RepoConfig, key []string) (Setting
 		{SetForRepository, repo.Path, key},
 		{SetServiceWide, filepath.Join(root, "service.toml"), ServiceWideKey(key)},
 	} {
-		metadata, err := toml.DecodeFile(level.path, &map[string]any{})
+		decoded, err := decodeTOMLFile(level.path)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", level.path, err)
+			return "", err
 		}
-		if metadata.IsDefined(level.key...) {
+		if _, defined := lookupTOMLPath(decoded, level.key); defined {
 			return level.level, nil
 		}
 	}

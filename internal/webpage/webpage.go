@@ -61,6 +61,8 @@ var pages = []Page{
 	livePage,
 	recentPage,
 	findingsPage,
+	serviceSettingsPage,
+	repositorySettingsPage,
 }
 
 // ErrNotFound, wrapped by a Show or Change, answers 404: the path names a
