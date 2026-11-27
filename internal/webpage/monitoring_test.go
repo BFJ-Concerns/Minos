@@ -131,6 +131,7 @@ func TestOperatorFindingsUseAuthorRepliesAndCurrentThreadState(t *testing.T) {
 	page := visit(site, url+"?page=2", session)
 	assertMonitoringPage(t, page.Code, page.Body.String(), "Finding responses for acme/widget", "#9", "#8",
 		`<td class="numeric">1</td><td class="numeric">1</td><td class="numeric">2</td>`,
+		"Findings posted in review bodies are outside these counts.", "Marked rejected",
 		"Thread state unavailable", "Newer pull requests", "Older pull requests", "?page=3")
 	if missing := visit(site, "/repositories/forgejo/acme/other/findings", session); missing.Code != http.StatusNotFound {
 		t.Fatalf("unenrolled repository returned %d", missing.Code)

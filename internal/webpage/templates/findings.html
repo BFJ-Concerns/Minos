@@ -1,10 +1,10 @@
 {{define "content"}}
 <p><a href="/">Repositories</a></p>
 <h1>Finding responses for {{.Repository.Owner}}/{{.Repository.Repo}}</h1>
-<p class="muted">{{.Repository.Forge}} · Inline findings on open, closed and merged pull requests.</p>
+<p class="muted">{{.Repository.Forge}} · Inline review threads on open, closed and merged pull requests. Findings posted in review bodies are outside these counts.</p>
 {{if .Pulls}}
 <table class="finding-counts">
-<thead><tr><th scope="col">Pull request</th><th scope="col" class="numeric">Fixed</th><th scope="col" class="numeric">Rejected</th><th scope="col" class="numeric">Outstanding</th></tr></thead>
+<thead><tr><th scope="col">Pull request</th><th scope="col" class="numeric">Resolved</th><th scope="col" class="numeric">Marked rejected</th><th scope="col" class="numeric">Open</th></tr></thead>
 <tbody>
 {{range .Pulls}}
 <tr>
@@ -12,13 +12,13 @@
 {{if .Unavailable}}
 <td colspan="3" class="muted">Thread state unavailable</td>
 {{else}}
-<td class="numeric">{{.Fixed}}</td><td class="numeric">{{.Rejected}}</td><td class="numeric">{{.Outstanding}}</td>
+<td class="numeric">{{.Resolved}}</td><td class="numeric">{{.Rejected}}</td><td class="numeric">{{.Open}}</td>
 {{end}}
 </tr>
 {{end}}
 </tbody>
 </table>
-<p class="muted">A resolved thread counts as fixed unless the pull request author explicitly rejected it. A reply beginning with <q>Rejected</q> or <q>I reject this finding</q> on its own line, or followed by a colon and reason, records a rejection.</p>
+<p class="muted">An author reply marks a thread rejected when its first line says <q>Rejected</q> or <q>I reject this finding</q>, optionally followed by a colon and reason. Other threads count by their current resolution state. Minos reads replies and checks the code when deciding whether a finding is settled.</p>
 {{else}}
 <p class="empty">There are no pull requests on this page.</p>
 {{end}}
