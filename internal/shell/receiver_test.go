@@ -94,6 +94,64 @@ run-body = "/opt/minos/run-body/run-body"
 	}
 }
 
+func TestReceiverReloadsServiceConfigForEachDelivery(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg := writeSweepFixtureConfig(t, state)
+	state.changePullRequest(func(pullRequest map[string]any) {
+		pullRequest["labels"] = []any{map[string]any{"name": "Ready"}}
+		pullRequest["head"].(map[string]any)["ref"] = "structural/rework"
+	})
+	if err := os.WriteFile(cfg.Forges["forgejo"].WebhookSecretFile, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(cfg.Root, "service.toml")
+	base, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		t.Fatalf("delivery reached %s", name)
+		return nil, nil
+	}
+
+	handler := receiverRoutes(t.Context(), cfg)
+	fixture := readFixture(t, "001-pull_request-opened.json")
+	for _, test := range []struct {
+		name, settings string
+		status         int
+		body           string
+	}{
+		{"label excludes", `
+[repositories.admission]
+labels = ["Hold"]
+`, http.StatusAccepted, "nothing\n"},
+		{"invalid config", "[repositories.admission", http.StatusInternalServerError, "service configuration unavailable\n"},
+		{"new defaults take effect", `
+[repositories]
+work-in-progress-branch-prefixes = ["structural/"]
+[repositories.admission]
+labels = ["Ready"]
+`, http.StatusAccepted, "deferred: work-in-progress branch \"structural/rework\"\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(configPath, []byte(string(base)+"\n"+test.settings), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, signedHookRequest("forgejo", "pull_request", fixture.Body))
+			if response.Code != test.status || response.Body.String() != test.body {
+				t.Fatalf("response = %d %q, want %d %q", response.Code, response.Body.String(), test.status, test.body)
+			}
+		})
+	}
+	if len(state.writeRequests) != 0 {
+		t.Fatalf("deferred deliveries wrote to the forge: %v", state.writeRequests)
+	}
+}
+
 func receiverTestConfig(t *testing.T) ServiceConfig {
 	t.Helper()
 	root := t.TempDir()
@@ -124,11 +182,15 @@ func receiverTestConfig(t *testing.T) ServiceConfig {
 
 func sendAuthenticatedHook(t *testing.T, cfg ServiceConfig, event, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
+	response := httptest.NewRecorder()
+	return response, handleHook(context.Background(), cfg, response, signedHookRequest("local", event, body))
+}
+
+func signedHookRequest(forgeName, event, body string) *http.Request {
 	mac := hmac.New(sha256.New, []byte("secret"))
 	_, _ = mac.Write([]byte(body))
-	request := httptest.NewRequest(http.MethodPost, "/hooks/local", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/hooks/"+forgeName, strings.NewReader(body))
 	request.Header.Set("X-Forgejo-Event", event)
 	request.Header.Set("X-Forgejo-Signature", hex.EncodeToString(mac.Sum(nil)))
-	response := httptest.NewRecorder()
-	return response, handleHook(context.Background(), cfg, response, request)
+	return request
 }

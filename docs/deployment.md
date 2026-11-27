@@ -116,7 +116,9 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
 
    `service.toml` and every repository file are read strictly: a key Minos
    does not know stops the load with `unknown TOML keys:` and the file and
-   keys it found.
+   keys it found. The receiver reloads service and repository settings for
+   each webhook delivery. Restart the receiver for changes to its listener
+   settings.
 
    The `.env` files (`run-body.env`, `archive.env`) are sourced as shell
    programs with `set -a` (automatic export), not parsed as generic dotenv
