@@ -592,6 +592,33 @@ test("specialist inapplicability is a skip-like disposition whose own findings n
   ]);
 });
 
+test("a skipped section that still proposed a confirmed finding shows both the skip and the count", async (t) => {
+  const { result } = await runScript(ARGS, responder({
+    specialist: () => specialistResult(
+      [],
+      { status: "inapplicable", reason: "the assigned scope contains no relevant behaviour" },
+      [],
+      [finding({ title: "outside the concern" })],
+    ),
+  }));
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.equal(verdict.confirmedFindings.length, 1);
+  assert.deepEqual(verdict.summarySections, [
+    { kind: "concern", name: "logic", skipped: "the assigned scope contains no relevant behaviour", findings: 1 },
+  ]);
+});
+
+test("a section that returns two confirmed findings counts both", async (t) => {
+  const { result } = await runScript(ARGS, responder({
+    specialist: () => specialistResult([finding(), finding({ title: "second transition", line: 9, explanation: "the other branch drops the error" })]),
+  }));
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.equal(verdict.confirmedFindings.length, 2);
+  assert.deepEqual(verdict.summarySections, [{ kind: "concern", name: "logic", findings: 2 }]);
+});
+
 test("the review plan dispatches exactly every requested specialist", async () => {
   const requested = Array.from({ length: 9 }, (_, index) => unit(`security-${index}`, "security", [`pkg/f${index}.go`]));
   const files = requested.map((entry) => ({ path: entry.scope[0], added: 1, deleted: 0 }));

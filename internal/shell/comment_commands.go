@@ -163,14 +163,16 @@ func pullRequestResults(snapshot forge.Snapshot, botLogin, statusContext string)
 			results = append(results, terminalResult{Token: "review:" + strconv.FormatInt(review.ID, 10), Head: review.CommitID})
 		}
 	}
-	return append(results, statusResults(snapshot.HeadSHA, snapshot.Statuses, botLogin, statusContext)...)
+	return append(results, statusResults(snapshot, snapshot.HeadSHA, snapshot.Statuses, botLogin, statusContext)...)
 }
 
 // statusResults names the clean and attention Minos statuses among one
-// head's statuses.
-func statusResults(head string, statuses []forge.Status, botLogin, statusContext string) []terminalResult {
+// head's statuses that were written for the snapshot's pull request: of
+// two pull requests on one commit, each one's status answers only its own
+// commands (pullRequestStatuses).
+func statusResults(snapshot forge.Snapshot, head string, statuses []forge.Status, botLogin, statusContext string) []terminalResult {
 	var results []terminalResult
-	for _, status := range statuses {
+	for _, status := range pullRequestStatuses(statuses, snapshot.Repository, snapshot.PullRequest) {
 		if status.Context != statusContext || status.Creator != botLogin {
 			continue
 		}
@@ -224,7 +226,7 @@ func commandsInForce(commands []issuedCommand, snapshot forge.Snapshot, record c
 		if err != nil {
 			log.Printf("read the statuses of %s for comment commands: %v", head, err)
 		}
-		earlier[head] = statusResults(head, statuses, botLogin, statusContext)
+		earlier[head] = statusResults(snapshot, head, statuses, botLogin, statusContext)
 		return earlier[head]
 	}
 	for _, command := range commands[lastSkip+1:] {

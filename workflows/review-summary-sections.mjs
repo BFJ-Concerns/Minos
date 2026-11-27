@@ -1,7 +1,10 @@
 import { BRIEF, CONCERN } from "./summary-comment.mjs";
 
 // Credit a confirmed group to every section that proposed a write-up in
-// it. Several matching write-ups in one section still count only once.
+// it. Several matching write-ups in one section still count only once. A
+// skipped section is credited too, since a unit that found its concern did
+// not apply may still propose a finding outside it; it carries a count only
+// when it has one, beside why it was skipped.
 export function reviewSummarySections(envelope, confirmed, { ran, skipped }) {
   const sections = new Map();
   const sectionByLabel = new Map();
@@ -27,14 +30,14 @@ export function reviewSummarySections(envelope, confirmed, { ran, skipped }) {
     const units = concernUnits.get(name);
     const skips = skippedByBrief.get(units[0].roleBrief) ?? [];
     if (skips.length === units.length) {
-      sections.set(name, { kind: section.kind, name, skipped: [...new Set(skips.map(({ reason }) => reason))].join(" / ") });
+      sections.set(name, { kind: section.kind, name, skipped: [...new Set(skips.map(({ reason }) => reason))].join(" / "), findings: 0 });
     }
   }
 
   for (const { brief } of ran) sections.set(brief, { kind: BRIEF, name: brief, findings: 0 });
   for (const { brief, reason } of skipped) {
     if (!concernBriefs.has(brief))
-      sections.set(brief, { kind: BRIEF, name: brief, skipped: reason });
+      sections.set(brief, { kind: BRIEF, name: brief, skipped: reason, findings: 0 });
   }
 
   const confirmedIds = new Set(confirmed.map(({ id }) => id));
@@ -48,5 +51,6 @@ export function reviewSummarySections(envelope, confirmed, { ran, skipped }) {
       if (section?.findings !== undefined) section.findings += 1;
     }
   }
-  return [...sections.values()];
+  return [...sections.values()].map((section) =>
+    section.skipped !== undefined && section.findings === 0 ? { kind: section.kind, name: section.name, skipped: section.skipped } : section);
 }

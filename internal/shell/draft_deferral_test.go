@@ -27,7 +27,7 @@ func TestSweepRecordsDraftDeferrals(t *testing.T) {
 			if scenario == "draft with every reason" {
 				setSweepFixtureWorkInProgressPrefix(t, cfg, "structural/")
 				state.changePullRequest(func(pr map[string]any) { pr["head"].(map[string]any)["ref"] = "structural/work" })
-				state.setStatuses([]map[string]any{{"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(), "creator": map[string]any{"login": "Minos"}}})
+				state.setStatuses([]map[string]any{{"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(), "target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1", "creator": map[string]any{"login": "Minos"}}})
 				wantReasons = append(wantReasons, `work-in-progress branch "structural/work"`, "completed-marker")
 			}
 			if scenario != "draft" {

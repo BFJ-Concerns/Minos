@@ -36,15 +36,21 @@ func TestTerminalCurrentReviewMarksCompletion(t *testing.T) {
 			name:    "review of an older head does not block",
 			reviews: []forge.Review{{User: "Minos", CommitID: "old-head"}},
 		},
+		{
+			name: "a later comment review leaves the request for changes standing",
+			reviews: []forge.Review{
+				{ID: 1, User: "Minos", CommitID: "head", State: "REQUEST_CHANGES"},
+				{ID: 2, User: "Minos", CommitID: "head", State: "COMMENT"},
+			},
+			want: true,
+		},
 		{name: "no reviews"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := forge.Snapshot{HeadSHA: "head", Reviews: test.reviews}
-			review, found := currentReview(snapshot, "Minos")
-			_, terminal := terminalState(review)
-			if got := found && terminal; got != test.want {
+			if _, got := currentTerminalReview(snapshot, "Minos"); got != test.want {
 				t.Fatalf("current terminal review = %t, want %t", got, test.want)
 			}
 		})
@@ -114,6 +120,7 @@ func TestAdmissionCompletionStatuses(t *testing.T) {
 		return forge.Status{
 			ID: id, Provider: "forgejo", Context: "Minos",
 			Creator: "Minos", State: state, Description: description,
+			TargetURL: "https://forge.invalid/owner/repo/pulls/7",
 		}
 	}
 	tests := []struct {
@@ -147,7 +154,7 @@ func TestAdmissionCompletionStatuses(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			snapshot := forge.Snapshot{Statuses: test.statuses, DependenciesAvailable: true}
+			snapshot := forge.Snapshot{Repository: "owner/repo", PullRequest: 7, Statuses: test.statuses, DependenciesAvailable: true}
 			cfg := ServiceConfig{}
 			cfg.Service.BotLogin = "Minos"
 			cfg.Service.StatusContext = "Minos"

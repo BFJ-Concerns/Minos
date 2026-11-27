@@ -348,8 +348,10 @@ async function deliverToPullRequestComment({ entries, attribution, reviewedRepos
       if (typeof value !== "string" || !/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(value))
         throw new Error(`${name} must contain a full commit SHA for pull-request-comment filing`);
     }
+    // The snapshot carries every conversation comment, so its size has no
+    // bound of its own.
     const command = (...args) => JSON.parse(execFileSync(binary, ["forge", ...args],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: Infinity }));
     const bodies = filedReviewBodies(command("snapshot"));
     const markers = new Set();
     const remaining = entries.filter((entry) => {

@@ -47,7 +47,7 @@ const HEADLINE = {
 // short, in words the author can read; it is shown only on an incomplete
 // head.
 function state({ state, head, target, condition }) {
-  const lines = [`**Minos: ${HEADLINE[state]}.**`, "", `Head \`${short(head)}\` against target \`${short(target)}\`.`];
+  const lines = [`**${capitalised(HEADLINE[state])}.**`, "", `Head \`${short(head)}\` against target \`${short(target)}\`.`];
   if (state === INCOMPLETE) {
     lines.push("", condition
       ? `This head has not been judged: ${sentence(condition)}`
@@ -58,14 +58,18 @@ function state({ state, head, target, condition }) {
 
 // The review's sections, one row each: a specialist concern or a brief,
 // with the count of findings it returned, that it found none, or why it
-// was skipped. A skipped section is never shown as one that found none.
+// was skipped. A skipped section is never shown as one that found none,
+// and one that was skipped and still returned a finding, as a specialist
+// may find something outside its concern, shows both.
 // Absent or empty, as before a review has run and on a head that needed
 // none, the part says nothing.
 function sections({ sections = [] }) {
   if (sections.length === 0) return "";
   const rows = sections.map(({ kind, name, findings, skipped }) => {
     const label = kind === BRIEF ? `Brief \`${cell(name)}\`` : cell(name);
-    const result = skipped !== undefined ? `skipped: ${cell(skipped)}` : findings === 0 ? "none" : String(findings);
+    const count = findings === undefined || findings === 0 ? undefined : String(findings);
+    const result = skipped === undefined ? count ?? "none"
+      : count === undefined ? `skipped: ${cell(skipped)}` : `${count} (skipped: ${cell(skipped)})`;
     return `| ${label} | ${result} |`;
   });
   return ["| Section | Findings |", "|---|---|", ...rows].join("\n");
@@ -99,6 +103,10 @@ function cell(text) {
   return String(text).replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|");
 }
 
+function capitalised(text) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function sentence(text) {
   const trimmed = String(text).trim();
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
@@ -109,18 +117,23 @@ export function shippedTemplate() {
   return readFileSync(new URL("./publication-templates/summary-comment.md", import.meta.url), "utf8");
 }
 
-function checkFacts(facts) {
-  const { state, head, target, sections = [], outstanding = [] } = facts ?? {};
+function checkHead({ state, head, target } = {}) {
   if (!STATES.includes(state)) throw new Error(`the summary comment has no state ${JSON.stringify(state)}`);
   for (const [name, sha] of [["head", head], ["target", target]])
     if (typeof sha !== "string" || sha === "") throw new Error(`the summary comment needs the ${name} it speaks of`);
+}
+
+function checkFacts(facts) {
+  checkHead(facts);
+  const { sections = [], outstanding = [] } = facts;
   if (!Array.isArray(sections) || !Array.isArray(outstanding))
     throw new Error("the summary comment's sections and outstanding findings are lists");
   for (const section of sections) {
     const counted = Number.isInteger(section?.findings) && section.findings >= 0;
     const skipped = typeof section?.skipped === "string" && section.skipped.trim() !== "";
-    if (![CONCERN, BRIEF].includes(section?.kind) || typeof section.name !== "string" || section.name === "" || counted === skipped)
-      throw new Error(`a summary section names a concern or a brief and either its count of findings or why it was skipped: ${JSON.stringify(section)}`);
+    const malformed = (section?.findings !== undefined && !counted) || (section?.skipped !== undefined && !skipped);
+    if (![CONCERN, BRIEF].includes(section?.kind) || typeof section.name !== "string" || section.name === "" || malformed || !(counted || skipped))
+      throw new Error(`a summary section names a concern or a brief and its count of findings, why it was skipped, or both: ${JSON.stringify(section)}`);
   }
   for (const finding of outstanding)
     if (typeof finding?.path !== "string" || !Number.isInteger(finding.line) || typeof finding.head !== "string")
@@ -141,4 +154,14 @@ export function composeSummary(facts, { template = shippedTemplate(), hidden = [
   const rendered = Object.fromEntries(Object.entries(PARTS).map(([name, render]) =>
     [name, hidden.includes(name) ? "" : render(facts)]));
   return fillPrompt(template, rendered).replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// The comment's text with no template: the state part alone, which says
+// what the comment records of the head. A write whose text cannot be
+// composed goes out with this, so a layout that fails never costs the
+// record its verdict (run-steps/forge-writes.mjs).
+export function plainSummary(facts) {
+  checkHead(facts);
+  const { state: name, head, target, condition } = facts;
+  return state({ state: name, head, target, condition: typeof condition === "string" ? condition : undefined });
 }

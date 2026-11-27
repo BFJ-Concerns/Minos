@@ -114,6 +114,9 @@ type githubFixtureState struct {
 	writes             []githubFixtureWrite
 	unreadablePath     string
 	refuseMutation     bool
+	// summaryWrites is how the fixture answers a conversation comment's
+	// post or edit (summaryWriteMode).
+	summaryWrites summaryWriteMode
 }
 
 func newGitHubFixtureState(t *testing.T) *githubFixtureState {
@@ -1164,7 +1167,13 @@ func (s *githubFixtureState) handleOperations(w http.ResponseWriter, r *http.Req
 		case r.Method == http.MethodPost && path == "/repos/acme/widgets/issues/7/comments":
 			at := s.tick()
 			record := map[string]any{"id": 800 + len(s.writes), "body": payload["body"], "user": map[string]any{"login": githubFixtureBotLogin}, "created_at": at, "updated_at": at}
-			s.issueComments = append(s.issueComments, record)
+			if s.summaryWrites != summaryWriteDropped {
+				s.issueComments = append(s.issueComments, record)
+			}
+			if s.summaryWrites == summaryWriteAnswerLost {
+				http.Error(w, `{"message":"gateway timeout"}`, http.StatusGatewayTimeout)
+				return true
+			}
 			w.WriteHeader(201)
 			writeFixtureJSON(s.t, w, record)
 			return true
@@ -1172,8 +1181,14 @@ func (s *githubFixtureState) handleOperations(w http.ResponseWriter, r *http.Req
 			id := strings.TrimPrefix(path, "/repos/acme/widgets/issues/comments/")
 			for _, comment := range s.issueComments {
 				if fmt.Sprint(comment["id"]) == id {
-					comment["body"] = payload["body"]
-					comment["updated_at"] = s.tick()
+					if s.summaryWrites != summaryWriteDropped {
+						comment["body"] = payload["body"]
+						comment["updated_at"] = s.tick()
+					}
+					if s.summaryWrites == summaryWriteAnswerLost {
+						http.Error(w, `{"message":"gateway timeout"}`, http.StatusGatewayTimeout)
+						return true
+					}
 					writeFixtureJSON(s.t, w, comment)
 					return true
 				}

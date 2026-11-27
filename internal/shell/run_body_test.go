@@ -696,7 +696,7 @@ esac
 	assertContainsFile(t, filepath.Join(fixture.runDir, "report.md"), "No file changed.")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "summary head-sha target-sha inspecting")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "summary head-sha target-sha clean")
-	assertContainsFile(t, filepath.Join(fixture.runDir, "summary-comment.md"), "no blocking findings")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "summary-comment.md"), "No blocking findings.")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "status head-sha target-sha clean")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "marker head-sha target-sha clean add")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "marker head-sha target-sha in-flight remove")

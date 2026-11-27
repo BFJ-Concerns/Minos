@@ -9,7 +9,7 @@ export async function conclude(run, settled) {
   const blocked = currentBlock || outstanding.length > 0;
   if (!blocked) await applied(run, "approve", [run.head, run.target], ["applied", "not-needed"]);
   const outcome = blocked ? CHANGES_REQUESTED : CLEAN;
-  await writeSummary(run, outcome, summaryFacts(settled));
+  const summaryLayoutProblem = await writeSummary(run, outcome, summaryFacts(settled));
 
   const status = blocked ? "attention" : "clean";
   const terminalStatusProblem = await setStatus(run, status);
@@ -28,6 +28,6 @@ export async function conclude(run, settled) {
   return {
     outcome,
     ...(blocked ? { terminalCause: cause } : {}),
-    terminalStatusProblem, terminalMarkerProblem,
+    summaryLayoutProblem, terminalStatusProblem, terminalMarkerProblem,
   };
 }

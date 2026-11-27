@@ -279,7 +279,7 @@ func recordedOutcome(ctx context.Context, adapter *forge.Adapter, repository for
 	if err != nil {
 		return "", err
 	}
-	latest, found := latestOwnedStatus(forge.Snapshot{Statuses: statuses}, cfg.BotLogin(os.Getenv("MINOS_FORGE")), cfg.Service.StatusContext)
+	latest, found := latestOwnedStatus(statuses, cfg.BotLogin(os.Getenv("MINOS_FORGE")), cfg.Service.StatusContext)
 	if !found {
 		return "none", nil
 	}

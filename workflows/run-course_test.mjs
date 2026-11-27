@@ -39,6 +39,7 @@ function fixture(t, {
   refusedReview = false, refusedMarker = false, failedSettlement = false, incomplete = false,
   pressure = false, pressureOnPublish = false, moved = false, movedAtSnapshot, movedOnReview = false,
   carry = false, killedFirstReview = false, refusedSummary, refusedStatus, movedOnSummary,
+  unrenderableSection = false,
 } = {}) {
   const runDir = operationRoot(t, "minos-course-");
   const workspace = join(runDir, "workspace");
@@ -183,7 +184,7 @@ function fixture(t, {
       const result = {
         ...verdict,
         summarySections: main
-          ? [{ kind: "concern", name: "logic", findings: blocking || advisory ? 1 : 0 }]
+          ? [unrenderableSection ? { kind: "concern", name: "logic" } : { kind: "concern", name: "logic", findings: blocking || advisory ? 1 : 0 }]
           : [
             { kind: "brief", name: ".review/parser.md", findings: briefBlocks ? 1 : 0 },
             { kind: "brief", name: ".review/lexer.md", skipped: "no lexing change" },
@@ -231,7 +232,7 @@ test("the claim makes the summary comment say the head is being inspected", asyn
     ["summary", f.run.head, target, "inspecting", join(f.runDir, "summary-comment.md")]);
   assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "clean"]);
   assert.equal(f.summaries[0].body,
-    `**Minos: looking at what changed.**\n\nHead \`${f.run.head.slice(0, 7)}\` against target \`${target.slice(0, 7)}\`.\n`);
+    `**Looking at what changed.**\n\nHead \`${f.run.head.slice(0, 7)}\` against target \`${target.slice(0, 7)}\`.\n`);
 });
 
 test("a summary comment the forge did not take at the claim is reported and the course goes on", async (t) => {
@@ -277,8 +278,9 @@ test("an incomplete review or unconfirmed write withdraws the run without a clea
     assert.equal(f.read("failure-log").trim().split("\n").length, 1);
     assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "reviewing", "incomplete"]);
     assert.match(f.summaries.at(-1).body, options.incomplete
-      ? /The specialist review did not complete/
-      : /Minos could not confirm publication of the findings/);
+      ? /the specialist review did not complete/
+      : /the publication of the findings could not be confirmed/);
+    assert.doesNotMatch(f.summaries.at(-1).body, /Minos/);
   }
 });
 
@@ -407,10 +409,18 @@ test("an unconfirmed terminal summary leaves the run incomplete before writing a
   assert.equal(ending.outcome, "incomplete");
   assert.equal(ending.step, "conclude");
   assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "incomplete"]);
-  assert.match(f.summaries.at(-1).body, /could not confirm the final result/);
+  assert.match(f.summaries.at(-1).body, /the final result could not be confirmed/);
   assert.doesNotMatch(f.summaries.at(-1).body, /summary write could not be discovered/);
   assert.match(f.read("report.md"), /summary write could not be discovered/);
   assert.equal(f.calls.some(([op, , , state]) => op === "status" && state === "clean"), false);
+});
+
+test("a summary whose text cannot be composed still records the verdict, with the plain headline", async (t) => {
+  const f = fixture(t, { blocking: true, unrenderableSection: true });
+  assert.equal((await f.drive()).outcome, "changes-requested");
+  assert.equal(f.summaries.at(-1).state, "changes-requested");
+  assert.equal(f.summaries.at(-1).body, `**Changes requested.**\n\nHead \`${f.run.head.slice(0, 7)}\` against target \`${target.slice(0, 7)}\`.\n`);
+  assert.match(f.read("report.md"), /summary comment was written without its layout: a summary section names a concern or a brief/);
 });
 
 test("a head move that the terminal summary write discovers leaves no later summary", async (t) => {
