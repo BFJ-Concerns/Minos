@@ -550,6 +550,32 @@ func TestSetupWorkspaceExplainsRefusedTargetFetch(t *testing.T) {
 	}
 }
 
+func TestSetupWorkspaceRepinsToTheCurrentTargetTipWhenThePinnedOneIsNotServed(t *testing.T) {
+	server, head, pinned, current, transportEnv := movedTargetForge(t)
+	snapshot, err := os.ReadFile(filepath.Join(server.dir, "snapshot.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.write(t, "snapshot.json", strings.Replace(string(snapshot), pinned, current, 1))
+	runDir := t.TempDir()
+	workspace := filepath.Join(runDir, "workspace")
+	cmd := setupWorkspaceCommandWithTarget(t, server.Bin, runDir, workspace, filepath.Join(runDir, "orientation.json"), head, pinned)
+	for key, value := range transportEnv {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("setup with an unserved pinned target: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "re-pinning to the target's current tip "+current) {
+		t.Fatalf("setup output lacks the re-pin: %s", output)
+	}
+	assertContainsFile(t, filepath.Join(runDir, "target-sha"), current)
+	if got := gitOutput(t, workspace, "cat-file", "-e", current+"^{commit}"); got != "" {
+		t.Fatalf("re-pinned target object lookup output = %q, want empty", got)
+	}
+}
+
 func TestSetupWorkspaceExplainsProtocolV2TargetRefusal(t *testing.T) {
 	server, head, target, transportEnv := missingTargetForge(t)
 	runDir := t.TempDir()
@@ -588,6 +614,14 @@ func missingTargetForge(t *testing.T) (*setupForge, string, string, map[string]s
 // the admitted target remains in the server's object store after main moves.
 func refusedTargetForge(t *testing.T) (*setupForge, string, string, map[string]string) {
 	t.Helper()
+	forge, head, target, _, environment := movedTargetForge(t)
+	return forge, head, target, environment
+}
+
+// movedTargetForge is refusedTargetForge that also names the target
+// branch's current tip, the commit the moved branch advertises.
+func movedTargetForge(t *testing.T) (*setupForge, string, string, string, map[string]string) {
+	t.Helper()
 	targetRepository, target := createGitRepository(t, "AGENTS.md", "target guidance\n")
 	if err := os.WriteFile(filepath.Join(targetRepository, "AGENTS.md"), []byte("moved guidance\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -596,7 +630,7 @@ func refusedTargetForge(t *testing.T) (*setupForge, string, string, map[string]s
 	headRepository, head := createGitRepository(t, "AGENTS.md", "head guidance\n")
 	ssh := filepath.Join(t.TempDir(), "ssh")
 	writeScript(t, ssh, "#!/usr/bin/env sh\nexec git -c uploadpack.allowAnySHA1InWant=false -c uploadpack.allowReachableSHA1InWant=false -c uploadpack.allowTipSHA1InWant=false upload-pack '"+targetRepository+"'\n")
-	return newSetupForgeForTarget(t, head, headRepository, target, "ssh://fixture/target", ""), head, target, map[string]string{
+	return newSetupForgeForTarget(t, head, headRepository, target, "ssh://fixture/target", ""), head, target, gitOutput(t, targetRepository, "rev-parse", "HEAD"), map[string]string{
 		"GIT_SSH_COMMAND": ssh, "GIT_SSH_VARIANT": "ssh",
 		"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.version", "GIT_CONFIG_VALUE_0": "0",
 	}

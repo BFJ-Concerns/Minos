@@ -32,7 +32,7 @@
 // leaves the head eligible for a periodic sweep.
 
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -116,7 +116,10 @@ function reportToStderr(message) {
 
 // Runs `minos forge ARGS` and returns the JSON it printed. A command the
 // forge did not carry out throws; where it still printed its result, as a
-// refused write does, the error carries that as `result`.
+// refused write does, the error carries that as `result`. What a command
+// that succeeded said on stderr (a review whose inline comments were folded
+// into its body, say) is kept in forge.log and in `run.forgeNotes`, which
+// the report lists; a forge.log that cannot be written costs only the log.
 function forge(run, args) {
   return new Promise((settle, reject) => {
     execFile(run.env.MINOS_BIN, ["forge", ...args], { cwd: run.workspace, env: run.env, maxBuffer: Infinity }, (error, stdout, stderr) => {
@@ -126,7 +129,21 @@ function forge(run, args) {
       } catch {
         result = undefined;
       }
-      if (!error && result !== undefined) return settle(result);
+      if (!error && result !== undefined) {
+        const said = stderr.trim();
+        if (said) {
+          const note = `minos forge ${args[0]}: ${said}`;
+          run.forgeNotes.push(note);
+          // The note is presentation: a log that cannot be written is
+          // reported beside it and never undoes the write that succeeded.
+          try {
+            appendFileSync(join(run.runDir, "forge.log"), `${note}\n`);
+          } catch (logError) {
+            run.forgeNotes.push(`could not keep the note above in forge.log: ${logError.message}`);
+          }
+        }
+        return settle(result);
+      }
       const failure = new Error(`minos forge ${args[0]}: ${(stderr || (error && error.message) || "printed no JSON").trim()}`);
       failure.result = result;
       reject(failure);
@@ -146,9 +163,12 @@ function dispatch(run, name, workflow, runner) {
     child.once("close", (code, signal) => {
       const result = join(run.runDir, `${name}-result.json`);
       if (code !== 0 || !existsSync(result)) {
-        const reason = signal ? `signal ${signal}` : `exit ${code}`;
+        const stopped = supervisorStop(run);
+        const reason = stopped ? `stopped by the run supervisor: ${stopped}` : signal ? `signal ${signal}` : `exit ${code}`;
         const failure = new Error(`stage ${name} ended without a result; ${name}.log has its diagnostics (${reason})`);
-        failure.killed = signal !== null || [130, 137, 143].includes(code);
+        // A stage the supervisor stopped for silence ends the run; only an
+        // interruption from elsewhere is worth the review's one retry.
+        failure.killed = !stopped && (signal !== null || [130, 137, 143].includes(code));
         return reject(failure);
       }
       try {
@@ -158,6 +178,15 @@ function dispatch(run, name, workflow, runner) {
       }
     });
   });
+}
+
+// The reason run-body gave for stopping a silent stage, if it stopped one.
+function supervisorStop(run) {
+  try {
+    return readFileSync(join(run.runDir, "stage-stopped"), "utf8").trim();
+  } catch {
+    return "";
+  }
 }
 
 // Puts one input to a judgement stage and returns its answer, keeping the
@@ -191,6 +220,7 @@ export function openRun(env = process.env) {
     workspace: need("MINOS_WORKSPACE"),
     orientation: need("MINOS_ORIENTATION"),
     judgementAnswers: new Map(),
+    forgeNotes: [],
     forge: (...args) => forge(run, args),
     dispatch: (name, workflow, runner) => dispatch(run, name, workflow, runner),
     judge: (stage, input) => judge(run, stage, input),
