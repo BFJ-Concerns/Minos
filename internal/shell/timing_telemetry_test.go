@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The timing telemetry is presentation-class residue for the operator:
@@ -175,12 +176,50 @@ func TestTimeOnExitAppendsOneEventPerExecutionAfterTheCommandExits(t *testing.T)
 		t.Fatalf("second event = %+v, want second-command with exit 7", second)
 	}
 	for _, event := range events {
-		if event.StartedAt == "" || event.EndedAt == "" || event.StartedAt > event.EndedAt {
-			t.Fatalf("event span %q..%q is not ordered", event.StartedAt, event.EndedAt)
+		for _, stamp := range []string{event.StartedAt, event.EndedAt} {
+			const layout = "2006-01-02T15:04:05Z"
+			if parsed, err := time.Parse(layout, stamp); err != nil || parsed.Format(layout) != stamp {
+				t.Fatalf("event timestamp %q is not UTC at second precision", stamp)
+			}
 		}
-		if event.DurationMs != nil && *event.DurationMs < 0 {
-			t.Fatalf("negative duration %d", *event.DurationMs)
+		if event.DurationMs == nil || *event.DurationMs < 0 {
+			t.Fatalf("event %q has a missing or negative duration", event.Name)
 		}
+	}
+}
+
+func TestTimeOnExitMeasuresElapsedTimeWithMisformattedDate(t *testing.T) {
+	dir := t.TempDir()
+	eventLog := filepath.Join(dir, "timings.ndjson")
+	marker := filepath.Join(dir, "command-finished")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TIMING_TEST_MARKER", marker)
+	// Rust coreutils renders .009876543 and .123456789 as 987 and 123
+	// with %3N, so subtracting the rendered epochs gives -864 ms.
+	writeScript(t, filepath.Join(dir, "date"), `#!/bin/sh
+case "$1" in
+  '+%s%3N')
+    if [ -e "$TIMING_TEST_MARKER" ]; then
+      echo 1795752000123
+    else
+      echo 1795752000987
+    fi
+    ;;
+  *) echo 2026-11-27T04:00:00Z ;;
+esac
+`)
+
+	output, err := runTimeOnExit(t, eventLog, "elapsed", "sh", "-c",
+		`sleep 0.05 && : >"$TIMING_TEST_MARKER"`)
+	if err != nil {
+		t.Fatalf("time-on-exit: %v\n%s", err, output)
+	}
+	events := readTimingEvents(t, eventLog)
+	if len(events) != 1 || events[0].DurationMs == nil {
+		t.Fatalf("want one event with a duration, got %+v", events)
+	}
+	if got := *events[0].DurationMs; got < 50 {
+		t.Fatalf("duration = %d ms, want at least 50 ms", got)
 	}
 }
 
