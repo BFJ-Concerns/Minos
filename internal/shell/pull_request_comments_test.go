@@ -37,9 +37,9 @@ func TestGitHubPullRequestCommentsReadEveryPageOldestFirst(t *testing.T) {
 		t.Fatalf("read %d comments, want 103", len(comments))
 	}
 	want := []forge.PullRequestComment{
-		{User: githubFixtureBotLogin, Body: "Summary."},
-		{User: "author", Body: "Not a defect: `Lost update` cannot happen under the lock."},
-		{User: "colleague", Body: "note 0"},
+		{User: githubFixtureBotLogin, Body: "Summary.", CreatedAt: "2026-11-01T09:00:00Z"},
+		{User: "author", Body: "Not a defect: `Lost update` cannot happen under the lock.", CreatedAt: "2026-11-01T10:00:00Z"},
+		{User: "colleague", Body: "note 0", CreatedAt: "2026-11-02T10:00:00Z"},
 	}
 	if !reflect.DeepEqual(comments[:3], want) || comments[102].Body != "note 100" {
 		t.Fatalf("pull-request comments = %#v ... %#v", comments[:3], comments[102])
@@ -83,9 +83,9 @@ func TestForgejoPullRequestCommentsPageUntilEmptyOldestFirst(t *testing.T) {
 		t.Fatalf("pull-request comments: %v", err)
 	}
 	want := []forge.PullRequestComment{
-		{User: "Minos", Body: "Summary."},
-		{User: "author", Body: "Rejected: `b.go:9` is carried."},
-		{User: "colleague", Body: ""},
+		{User: "Minos", Body: "Summary.", CreatedAt: "2026-11-01T10:00:00Z"},
+		{User: "author", Body: "Rejected: `b.go:9` is carried.", CreatedAt: "2026-11-01T11:00:00Z"},
+		{User: "colleague", Body: "", CreatedAt: "2026-11-01T12:00:00Z"},
 	}
 	if !reflect.DeepEqual(comments, want) {
 		t.Fatalf("pull-request comments = %#v", comments)
@@ -103,7 +103,7 @@ func TestForgejoPullRequestCommentsReadOnceFromAForgeThatIgnoresPaging(t *testin
 	if err != nil {
 		t.Fatalf("pull-request comments: %v", err)
 	}
-	if !reflect.DeepEqual(comments, []forge.PullRequestComment{{User: "author", Body: "Rejected."}}) || requests != 2 {
+	if !reflect.DeepEqual(comments, []forge.PullRequestComment{{User: "author", Body: "Rejected.", CreatedAt: "2026-11-01T10:00:00Z"}}) || requests != 2 {
 		t.Fatalf("pull-request comments = %#v after %d requests", comments, requests)
 	}
 }

@@ -59,7 +59,7 @@ printf '%s\n' "$pr_json" "$base_json" "$statuses" "$reviews" | jq -cs \
     target_repository: $pr.base.repo.full_name,
     statuses: $statuses,
     labels: [($pr.labels // [])[] | .name] | sort,
-    reviews: [$reviews[] | {id, state: (.state | protocol_review_state), commit_id, body:(.body // ""), user:(.user.login // "")}],
+    reviews: [$reviews[] | {id, state: (.state | protocol_review_state), commit_id, body:(.body // ""), user:(.user.login // ""), submitted_at:(.submitted_at // "")}],
     dependencies_available: true,
     dependency_error: "",
     open_dependencies: []

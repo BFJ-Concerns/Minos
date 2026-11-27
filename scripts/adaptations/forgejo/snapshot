@@ -77,7 +77,7 @@ printf '%s\n' "$user_json" "$repository_json" "$pr_json" "$base_json" "$statuses
     target_repository: $pr.base.repo.full_name,
     statuses: $statuses,
     labels: [($pr.labels // [])[] | .name] | sort,
-    reviews: [$reviews[] | {id, state, commit_id, body:(.body // ""), user:(.user.login // .user.username // "")}],
+    reviews: [$reviews[] | {id, state, commit_id, body:(.body // ""), user:(.user.login // .user.username // ""), submitted_at:(.submitted_at // "")}],
     dependencies_available: ($dependency_error == ""),
     dependency_error: $dependency_error,
     open_dependencies: [$dependencies[] | select(.state == "open") |
