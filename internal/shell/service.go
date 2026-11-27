@@ -179,7 +179,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 			DeferralReasons: append([]string{"comment commands unavailable"}, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
 		}, fmt.Errorf("work out comment commands: %w", err)
 	}
-	acknowledgeCommands(ctx, adapter, guard, effect.inForce)
+	acknowledgeCommands(ctx, adapter, guard, effect.acknowledge)
 	if effect.skipped {
 		return ReconcileResult{
 			Decision: ReconcileDecision(deferredDecisionPrefix + skippedByCommandReason), DeferralReason: skippedByCommandReason,

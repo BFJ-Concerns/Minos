@@ -26,7 +26,9 @@ import (
 //
 // Commands are read from the forge on every pass, so a webhook that never
 // arrived only delays one to the next sweep. A command is acknowledged with
-// the commandAcknowledgement reaction on its comment while it is in force.
+// the commandAcknowledgement reaction on its comment until a run that
+// started after it has finished, whether or not a newer command superseded
+// it.
 type commentCommand string
 
 const (
@@ -123,8 +125,10 @@ type commandEffect struct {
 	// full review was asked for, or the head already carries a result, over
 	// which an increment would be empty.
 	fullOnly bool
-	// inForce are the comments to acknowledge.
-	inForce []forge.PullRequestComment
+	// acknowledge are the command comments no run has overtaken, those a
+	// newer command superseded included: no run that left a result
+	// started after them.
+	acknowledge []forge.PullRequestComment
 }
 
 // headStatuses is one head's commit-status history.
@@ -137,27 +141,15 @@ type headStatuses struct {
 // A review command is answered once a run that started after it has left a
 // terminal Minos result: a request-changes or approving review on any head,
 // or a clean or attention status on the current head or on the earlier
-// head lastFinished names (its statuses read only when a review command
-// waits). On a head whose statuses are read, a result's run is taken to
+// head lastFinished names (its statuses read only where the pull request
+// carries a command). On a head whose statuses are read, a result's run is taken to
 // have started at the newest working status written before the result, so
 // a run already under way when the command was written does not answer it;
 // elsewhere, and where no working status was written, the result's own
 // time stands in.
 func commandsInForce(commands []issuedCommand, snapshot forge.Snapshot, lastFinished func() (headStatuses, error), botLogin, statusContext string) (commandEffect, error) {
 	var effect commandEffect
-	skipAt := -1
-	for index, command := range commands {
-		if command.command == commandSkip {
-			skipAt = index
-		}
-	}
-	pending := commands[skipAt+1:]
-	if skipAt >= 0 && len(pending) == 0 {
-		effect.skipped = true
-		effect.inForce = []forge.PullRequestComment{commands[skipAt].comment}
-		return effect, nil
-	}
-	if len(pending) == 0 {
+	if len(commands) == 0 {
 		return effect, nil
 	}
 	heads := []headStatuses{{head: snapshot.HeadSHA, statuses: snapshot.Statuses}}
@@ -172,14 +164,22 @@ func commandsInForce(commands []issuedCommand, snapshot forge.Snapshot, lastFini
 	if err != nil {
 		return commandEffect{}, err
 	}
-	for _, command := range pending {
-		if slices.ContainsFunc(starts, command.at.Before) {
-			continue
+	skipAt := -1
+	for index, command := range commands {
+		answered := slices.ContainsFunc(starts, command.at.Before)
+		if !answered {
+			effect.acknowledge = append(effect.acknowledge, command.comment)
 		}
-		effect.reviewRequested = true
-		effect.fullOnly = effect.fullOnly || command.command == commandFullReview || headReviewed
-		effect.inForce = append(effect.inForce, command.comment)
+		switch {
+		case command.command == commandSkip:
+			skipAt = index
+			effect.reviewRequested, effect.fullOnly = false, false
+		case !answered:
+			effect.reviewRequested = true
+			effect.fullOnly = effect.fullOnly || command.command == commandFullReview || headReviewed
+		}
 	}
+	effect.skipped = skipAt == len(commands)-1
 	return effect, nil
 }
 
@@ -277,7 +277,7 @@ func lastFinishedHeadStatuses(ctx context.Context, cfg ServiceConfig, forgeName 
 	return headStatuses{head: record.Head, statuses: statuses}, nil
 }
 
-// acknowledgeCommands reacts on each command comment in force. The
+// acknowledgeCommands reacts on each command comment not yet overtaken. The
 // acknowledgement is feedback to the commenter and nothing reads it back,
 // so a failed write is logged and admission goes on.
 func acknowledgeCommands(ctx context.Context, adapter *forge.Adapter, guard forge.Guard, comments []forge.PullRequestComment) {

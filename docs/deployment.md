@@ -459,11 +459,14 @@ or on GitHub the App's slug without `[bot]`; it opens the comment's first
 non-empty line, and the command is the rest of that line. Only a user the
 forge shows with write access commands. GitHub reports that access
 directly. Forgejo answers a permission query about another user only to a
-repository administrator, so where the service account is not one, the
-repository's owner and every collaborator count as writers.
+repository administrator: make the service account an administrator of
+each repository whose collaborators should command. Where it is not one,
+only the owner of a user-owned repository commands, and the receiver's log
+says why another user's command was ignored.
 
 Webhook deliveries and the sweep read the commands on every pass, once the
-admission rules pass, and react with `eyes` on each command in force:
+admission rules pass, and react with `eyes` on every command no run has
+yet overtaken, one a newer command superseded included:
 
 - The newest command decides between skip and review. While a skip is the
   newest, the pull request is deferred as `skipped by comment command`,

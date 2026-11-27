@@ -244,18 +244,15 @@ func TestForgejoCommenterMayCommandReadsWriteAccess(t *testing.T) {
 		user       string
 		permission int
 		body       string
-		// collaborator is the answer to the collaborator check Forgejo
-		// leaves a non-administrator; zero where it must not be asked.
-		collaborator int
-		want         bool
+		want       bool
 	}{
 		{name: "writer", user: "writer", permission: 200, body: `{"permission":"write"}`, want: true},
 		{name: "administrator", user: "admin", permission: 200, body: `{"permission":"admin"}`, want: true},
 		{name: "reader", user: "reader", permission: 200, body: `{"permission":"read"}`, want: false},
 		{name: "unknown user", user: "nobody", permission: 404, want: false},
 		{name: "owner past a refused query", user: "Owner", permission: 403, want: true},
-		{name: "collaborator past a refused query", user: "colleague", permission: 403, collaborator: 204, want: true},
-		{name: "stranger past a refused query", user: "stranger", permission: 403, collaborator: 404, want: false},
+		// Refused the query, the script cannot tell a writer from a reader.
+		{name: "collaborator past a refused query", user: "colleague", permission: 403, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := forgejoCommentsAdapter(t, func(w http.ResponseWriter, r *http.Request) {
@@ -263,11 +260,6 @@ func TestForgejoCommenterMayCommandReadsWriteAccess(t *testing.T) {
 				case "/api/v1/repos/owner/repo/collaborators/" + tc.user + "/permission":
 					w.WriteHeader(tc.permission)
 					_, _ = w.Write([]byte(tc.body))
-				case "/api/v1/repos/owner/repo/collaborators/" + tc.user:
-					if tc.collaborator == 0 {
-						t.Errorf("collaborator check asked for %s", tc.user)
-					}
-					w.WriteHeader(tc.collaborator)
 				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.String())
 					http.NotFound(w, r)
@@ -398,5 +390,23 @@ func TestReviewCommandAnsweredOnAnEarlierHeadStaysAnswered(t *testing.T) {
 				t.Fatalf("new head outcomes = %s, want %s", got, want)
 			}
 		})
+	}
+}
+
+func TestCommandSupersededBeforeAPassIsStillAcknowledged(t *testing.T) {
+	journey := newCommandJourney(t)
+	review := journey.comment("maintainer", "@minos-review review")
+	skip := journey.comment("maintainer", "@minos-review skip")
+	if result := journey.reconcile(t); result.DeferralReason != skippedByCommandReason || !journey.acknowledged(review) || !journey.acknowledged(skip) {
+		t.Fatalf("reconciliation = %#v, review acknowledged %t, skip acknowledged %t; want both acknowledged and the skip in effect", result, journey.acknowledged(review), journey.acknowledged(skip))
+	}
+	journey2 := newCommandJourney(t)
+	skip = journey2.comment("maintainer", "@minos-review skip")
+	review = journey2.comment("maintainer", "@minos-review full review")
+	if result := journey2.reconcile(t); result.Decision != SpawnStarted || !journey2.acknowledged(review) || !journey2.acknowledged(skip) {
+		t.Fatalf("reconciliation = %#v, skip acknowledged %t, review acknowledged %t; want both acknowledged and a run", result, journey2.acknowledged(skip), journey2.acknowledged(review))
+	}
+	if got := journey2.launchedOutcomes(t); got != `["full"]` {
+		t.Fatalf("outcomes = %s", got)
 	}
 }

@@ -99,7 +99,8 @@ default comment-review destination they are not posted anywhere.
 
 ### Commands in a comment
 
-Anyone the forge shows with write access to the repository can steer Minos
+Anyone the forge shows with write access to the repository (on Forgejo,
+where the service account administers the repository) can steer Minos
 from the pull request's conversation. The comment's first line is the
 service's login as a mention, followed by the command and nothing else
 (on GitHub the App's slug, without `[bot]`, is enough):
@@ -110,7 +111,7 @@ service's login as a mention, followed by the command and nothing else
 | `@minos full review` | Reviews the whole pull request rather than the increment since the last review |
 | `@minos skip` | Starts no review until a later review command; one already running carries on |
 
-Minos reacts with `eyes` on a command it has taken, and the command takes
+Minos reacts with `eyes` on each command it has read, and the newest takes
 effect on the next pass: at once where a webhook delivers the comment, by
 the next sweep otherwise. A command on a pull request outside the
 repository's admission rules, a draft included, is ignored until the pull
