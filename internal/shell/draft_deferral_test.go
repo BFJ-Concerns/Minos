@@ -75,6 +75,41 @@ func TestSweepRecordsDraftDeferrals(t *testing.T) {
 	}
 }
 
+func TestSweepRemovesStaleDefaultReactionAfterDraftHeadMoves(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg := writeSweepFixtureConfig(t, state)
+	state.reactions = []string{"+1"}
+	state.setReviews([]map[string]any{{
+		"id": 9, "state": "APPROVED", "commit_id": state.headSHA(),
+		"user": map[string]any{"login": "Minos"},
+	}})
+	state.changePullRequest(func(pr map[string]any) {
+		pr["draft"] = true
+		pr["head"].(map[string]any)["sha"] = "draft-head-after-approval"
+	})
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			t.Fatal("draft pull request started a run")
+		}
+		return nil, nil
+	}
+
+	if err := SweepCommand(t.Context(), []string{"--config", cfg.Root}); err != nil {
+		t.Fatal(err)
+	}
+	document := projectionJSON(t, sweepDeferralsPath(cfg))
+	if row := projectionRow(t, document, "deferrals"); row["reason"] != "draft" {
+		t.Fatalf("sweep deferral = %#v, want draft", row)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.reactions) != 0 || !reflect.DeepEqual(state.writeSequence, []string{"reaction-remove:+1"}) {
+		t.Fatalf("draft reactions = %v, forge writes = %v, want only stale approval removed", state.reactions, state.writeSequence)
+	}
+}
+
 func TestSweepStartsDraftWhenMarkedReady(t *testing.T) {
 	for _, test := range []struct {
 		name                 string

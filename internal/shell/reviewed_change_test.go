@@ -6,33 +6,44 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
-func TestReconcileRemovesClosedReviewedChange(t *testing.T) {
-	var cfg ServiceConfig
-	cfg.Runs.Dir = t.TempDir()
-	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}
-	guard := forge.Guard{Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo}, PullRequest: 1}
-	path := reviewedChangePath(cfg, facts.Forge, guard)
-	writeTestFile(t, path, "{}\n")
-	guard.PullRequest = 2
-	other := reviewedChangePath(cfg, facts.Forge, guard)
-	writeTestFile(t, other, "{}\n")
+func TestReconcilePrunesOnlyRetiredReviewedChanges(t *testing.T) {
+	for _, test := range []struct {
+		state      string
+		wantPruned bool
+	}{
+		{state: "open"},
+		{state: "closed", wantPruned: true},
+		{state: "merged", wantPruned: true},
+	} {
+		t.Run(test.state, func(t *testing.T) {
+			var cfg ServiceConfig
+			cfg.Runs.Dir = t.TempDir()
+			facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}
+			guard := forge.Guard{Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo}, PullRequest: 1}
+			path := reviewedChangePath(cfg, facts.Forge, guard)
+			writeTestFile(t, path, "{}\n")
+			guard.PullRequest = 2
+			other := reviewedChangePath(cfg, facts.Forge, guard)
+			writeTestFile(t, other, "{}\n")
 
-	for _, state := range []string{"closed", "merged"} {
-		result, err := reconcilePullRequestSnapshot(t.Context(), cfg, RepoConfig{}, facts, nil, forge.Snapshot{State: state, PullRequest: 1})
-		if err != nil || result.Decision != ReconcileNothing {
-			t.Fatalf("reconcile %s = %v, %v", state, result, err)
-		}
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("closed record survived: %v", err)
-	}
-	if _, err := os.Stat(other); err != nil {
-		t.Fatalf("another pull request lost its record: %v", err)
+			snapshot := forge.Snapshot{State: test.state, PullRequest: 1, Draft: true}
+			result, err := reconcilePullRequestSnapshot(t.Context(), cfg, RepoConfig{}, facts, nil, snapshot)
+			if err != nil || result.Decision != ReconcileNothing {
+				t.Fatalf("reconcile %s = %v, %v", test.state, result, err)
+			}
+			if _, err := os.Stat(path); (test.wantPruned && !os.IsNotExist(err)) || (!test.wantPruned && err != nil) {
+				t.Fatalf("stat reviewed record: %v, want pruned = %t", err, test.wantPruned)
+			}
+			if _, err := os.Stat(other); err != nil {
+				t.Fatalf("another pull request lost its record: %v", err)
+			}
+		})
 	}
 }
 
@@ -120,6 +131,45 @@ func TestSweepPrunesGoneAndUnenrolledReviewedChanges(t *testing.T) {
 	}
 }
 
+func TestSweepKeepsReviewedChangeWhenOpenListingFails(t *testing.T) {
+	state := newForgejoFixtureState(t)
+	cfg := writeSweepFixtureConfig(t, state)
+	var lookups atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/minos-e2e-owner/subject/pulls":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case "/api/v1/repos/minos-e2e-owner/subject/pulls/1":
+			lookups.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			state.server.Config.Handler.ServeHTTP(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	forgeConfig := cfg.Forges["forgejo"]
+	forgeConfig.APIBase = server.URL
+	cfg.Forges["forgejo"] = forgeConfig
+	writeServiceConfig(t, cfg)
+	path := reviewedChangePath(cfg, "forgejo", forge.Guard{
+		Repository: forge.Repository{Owner: "minos-e2e-owner", Name: "subject"}, PullRequest: 1,
+	})
+	writeTestFile(t, path, "{}\n")
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+
+	if err := SweepCommand(t.Context(), []string{"--config", cfg.Root}); err == nil {
+		t.Fatal("sweep accepted an unreadable open listing")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("reviewed record lost after the listing failed: %v", err)
+	}
+	if got := lookups.Load(); got != 0 {
+		t.Fatalf("pull request retirement lookups = %d after listing failure, want 0", got)
+	}
+}
+
 func TestSweepKeepsReviewedChangesWhenEnrolmentCannotBeRead(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg := writeSweepFixtureConfig(t, state)
@@ -140,16 +190,59 @@ func TestSweepKeepsReviewedChangesWhenEnrolmentCannotBeRead(t *testing.T) {
 	}
 }
 
-func TestGitHubReviewedChangeLookupConfirmsMissingPullRequest(t *testing.T) {
+func TestGitHubReviewedChangeLookupRequiresEvidenceOfRetirement(t *testing.T) {
 	state := newGitHubFixtureState(t)
-	adapter := state.adapter(t)
-	repo := state.guard().Repository
-	retired, err := adapter.PullRequestRetired(t.Context(), repo, 7)
-	if err != nil || retired {
-		t.Fatalf("open pull request retired = %t, %v", retired, err)
+	var anonymousLookups atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/widgets/pulls/9":
+			if r.Header.Get("Authorization") == "" {
+				t.Error("authenticated lookup reached the forge without credentials")
+			}
+			w.WriteHeader(http.StatusForbidden)
+		case "/repos/acme/widgets/pulls/10":
+			w.WriteHeader(http.StatusGone)
+		case "/repos/acme/absent/pulls/7":
+			anonymousLookups.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			state.server.Config.Handler.ServeHTTP(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	runner := state.runner()
+	runner.APIBase = server.URL
+	adapter, err := forge.NewAdapter(runner, githubFixtureBotLogin, "Minos")
+	if err != nil {
+		t.Fatal(err)
 	}
-	retired, err = adapter.PullRequestRetired(t.Context(), repo, 8)
-	if err != nil || !retired {
-		t.Fatalf("missing pull request retired = %t, %v", retired, err)
+	for _, test := range []struct {
+		name        string
+		repo        string
+		number      int64
+		wantRetired bool
+		wantError   bool
+	}{
+		{name: "open", repo: "widgets", number: 7},
+		{name: "missing", repo: "widgets", number: 8, wantRetired: true},
+		{name: "forbidden", repo: "widgets", number: 9, wantError: true},
+		{name: "gone", repo: "widgets", number: 10, wantRetired: true},
+		{name: "no installation", repo: "absent", number: 7, wantError: true},
+		{name: "closed", repo: "widgets", number: 7, wantRetired: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "closed" {
+				state.mu.Lock()
+				state.pullRequest["state"] = "closed"
+				state.mu.Unlock()
+			}
+			retired, err := adapter.PullRequestRetired(t.Context(), forge.Repository{Owner: "acme", Name: test.repo}, test.number)
+			if retired != test.wantRetired || (err != nil) != test.wantError {
+				t.Fatalf("retired = %t, error = %v, want retired = %t, error present = %t", retired, err, test.wantRetired, test.wantError)
+			}
+		})
+	}
+	if got := anonymousLookups.Load(); got != 0 {
+		t.Fatalf("pull request lookups without an installation = %d, want 0", got)
 	}
 }

@@ -435,19 +435,31 @@ func TestSweepRunResiduePreservesStructurallyValidHandoffWithoutCurrentFacts(t *
 	}
 }
 
-func TestSweepRunResidueRequiresProvisionedArchiveCommand(t *testing.T) {
+func TestSweepRunResidueRecordsCrashAndRemovesScratchWithoutArchiveCommand(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	cfg := scratchTestConfig(t)
 	cfg.Runs.ArchiveCommand = ""
-	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr16-dead")
-	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
-	if err := sweepRunResidue(t.Context(), cfg, nil); err == nil {
-		t.Fatal("sweep accepted an unprovisioned archive command")
+	cfg.Runs.FailuresRepo = ""
+	cfg.Runs.FailureLog = filepath.Join(t.TempDir(), "failures.log")
+	crashed := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr16-dead")
+	terminal := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr17-terminal")
+	writeTestFile(t, filepath.Join(crashed, "report.md"), "crash evidence\n")
+	writeTestFile(t, filepath.Join(terminal, "report.md"), "already recorded\n")
+	writeTestFile(t, filepath.Join(terminal, archivePendingFile), "terminal label\n")
+
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(runDir); err != nil {
-		t.Fatalf("run was removed without provisioned archiving: %v", err)
+	for _, runDir := range []string{crashed, terminal} {
+		if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+			t.Fatalf("run directory %s remained without an archive command: %v", runDir, err)
+		}
+	}
+	content, err := os.ReadFile(cfg.Runs.FailureLog)
+	if err != nil || !strings.Contains(string(content), "crash evidence") || strings.Contains(string(content), "already recorded") {
+		t.Fatalf("local failure log = %q, %v, want only crash evidence", content, err)
 	}
 }
 
@@ -726,6 +738,39 @@ func TestSweepRunResidueFallsBackToLocalFailureLog(t *testing.T) {
 	}
 	if _, err := os.Stat(crashed); !os.IsNotExist(err) {
 		t.Fatalf("crash evidence directory survived accepted archiving: %v", err)
+	}
+}
+
+func TestSalvageRejectsFailureDestinationsInsideRunScratch(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		wantError string
+	}{
+		{name: "local log", wantError: "runs.failure-log must be outside runs.dir"},
+		{name: "ledger checkout", wantError: "failures repository must be outside runs.dir"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := scratchTestConfig(t)
+			runDir := filepath.Join(cfg.Runs.Dir, "minos-run-crashed-pr1")
+			writeTestFile(t, filepath.Join(runDir, "report.md"), "crash evidence\n")
+			logPath := filepath.Join(runDir, "FAILURES.md")
+			writeTestFile(t, logPath, "existing failure\n")
+			if test.name == "local log" {
+				cfg.Runs.FailuresRepo = ""
+				cfg.Runs.FailureLog = logPath
+			} else {
+				cfg.Runs.FailuresRepo = runDir
+			}
+
+			appended, err := appendFailureDigest(runDir, cfg)
+			if appended || err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("append = %t, %v, want refusal containing %q", appended, err, test.wantError)
+			}
+			content, err := os.ReadFile(logPath)
+			if err != nil || string(content) != "existing failure\n" {
+				t.Fatalf("failure destination contents = %q, %v", content, err)
+			}
+		})
 	}
 }
 

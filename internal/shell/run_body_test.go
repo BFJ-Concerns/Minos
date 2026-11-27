@@ -1249,6 +1249,38 @@ func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
 	}
 }
 
+func TestRunBodyClearsPendingMarkerAfterSuccessfulArchive(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	archive := filepath.Join(fixture.root, "archive-stub")
+	writeScript(t, archive, "#!/bin/sh\nset -eu\ntest -s \"$1/.archive-pending\"\ntouch \"$1/archive-called\"\n")
+	fixture.appendConfig(t, map[string]string{"MINOS_ARCHIVE_RUN": archive})
+	fixture.run(t, map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
+
+	assertRegularFile(t, filepath.Join(fixture.runDir, "archive-called"))
+	if _, err := os.Stat(filepath.Join(fixture.runDir, archivePendingFile)); !os.IsNotExist(err) {
+		t.Fatalf("successful archive left its pending marker: %v", err)
+	}
+}
+
+func TestRunBodyExits74WhenArchiveMarkerCannotBeWritten(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	archive := filepath.Join(fixture.root, "archive-stub")
+	writeScript(t, archive, "#!/bin/sh\ntouch \"$1/archive-called\"\n")
+	fixture.appendConfig(t, map[string]string{"MINOS_ARCHIVE_RUN": archive})
+	if err := os.MkdirAll(filepath.Join(fixture.runDir, archivePendingFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := fixture.execute(map[string]string{"MINOS_TEST_COMPLETION_MARKER": "clean"})
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 74 {
+		t.Fatalf("run-body error = %v, want exit 74\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "archive-called")); !os.IsNotExist(err) {
+		t.Fatalf("archive ran without a pending marker: %v", err)
+	}
+}
+
 type runBodyFixture struct {
 	trace             bool
 	root              string
