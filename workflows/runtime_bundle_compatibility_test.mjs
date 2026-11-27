@@ -137,6 +137,15 @@ const schemaSamples = {
     outsideConcernFindings: [],
     outOfScopeObservations: [observationSample],
   },
+  generalSchema: { findings: [sampleFinding], outOfScopeObservations: [observationSample] },
+  generalWholeChangeSchema: {
+    shares: [
+      { id: "parser", focus: "The parser's new record type.", paths: ["a.go"] },
+      { id: "store", focus: "The store that keeps it.", paths: ["b.go", "c.go"] },
+    ],
+    findings: [],
+    outOfScopeObservations: [],
+  },
   mergeSchema: { groups: [{ findingIds: ["a", "b"], primary: "a", sharedCause: "one fix" }] },
   verifierSchema: {
     verdicts: [{

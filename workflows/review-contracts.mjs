@@ -1,6 +1,7 @@
 // What each stage of the review workflows returns: the exploration plan,
-// the specialist, merge and verifier schemas both workflows share, what the merge and verifier
-// legs are shown of a finding, and the verifier batch size. The input
+// the specialist and general reviewers' answers, the merge and verifier
+// schemas every workflow shares, what the merge and verifier legs are shown
+// of a finding, and the verifier batch size. The input
 // builders attach these as `args.contracts` and each workflow validates
 // them before dispatching anything; neither keeps a copy.
 
@@ -121,6 +122,50 @@ export const specialistSchema = {
   },
 };
 
+// One share of a change divided among general reviewers, as
+// general-assignment/whole-change.md asks for it: the changed `paths` its
+// reviewer answers for and, in `focus`, a sentence saying what that part of
+// the change does. A share is what its reviewer must get through and never
+// a bound on what it reads or reports.
+export const shareShape = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "focus", "paths"],
+  properties: {
+    id: { type: "string" },
+    focus: { type: "string" },
+    paths: { type: "array", minItems: 1, items: { type: "string" } },
+  },
+};
+
+// What a general reviewer returns, on general.md, for the share of a
+// divided change it was given. A general reviewer has no concern, so it
+// answers for no applicability and has no finding outside one: every
+// problem the change introduced is in `findings`, each a proposed finding
+// merged and verified like a specialist's.
+export const generalSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["findings", "outOfScopeObservations"],
+  properties: {
+    findings: { type: "array", items: findingShape },
+    outOfScopeObservations: { type: "array", items: outOfScopeObservationShape },
+  },
+};
+
+// What the general reviewer given the whole change returns: a general
+// reviewer's answer and, in `shares`, the division it made of a change it
+// judged too large for one reader. Two or more shares are a division, and
+// a reviewer is then sent for each on generalSchema, which has no `shares`,
+// so a change is divided once. Fewer than two are none: the answer's
+// `findings` are then the review. A dividing answer's `findings`, where it
+// has any, are proposed all the same.
+export const generalWholeChangeSchema = {
+  ...generalSchema,
+  required: ["shares", ...generalSchema.required],
+  properties: { shares: { type: "array", items: shareShape }, ...generalSchema.properties },
+};
+
 // What the merge leg is shown of each proposed finding, as merge.md's
 // `{{findings}}`: no severity and no confidence, which grouping does not
 // turn on. `reportedBy` is the proposing leg's concern and `outsideConcern`
@@ -232,6 +277,9 @@ export function reviewContracts(concernNames) {
     outOfScopeObservationShape,
     applicabilityShape,
     specialistSchema,
+    shareShape,
+    generalSchema,
+    generalWholeChangeSchema,
     mergeFindingFields: MERGE_FINDING_FIELDS,
     mergeSchema,
     verifierFindingFields: VERIFIER_FINDING_FIELDS,
@@ -257,6 +305,9 @@ export function contractsFromInput(input) {
     "outOfScopeObservationShape",
     "applicabilityShape",
     "specialistSchema",
+    "shareShape",
+    "generalSchema",
+    "generalWholeChangeSchema",
     "mergeSchema",
     "verifierVerdictShape",
     "verifierSchema",
