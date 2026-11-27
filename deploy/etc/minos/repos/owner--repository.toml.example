@@ -32,6 +32,14 @@ repo = "REPLACE_WITH_FORGEJO_REPOSITORY"
 # [markers]
 # in-flight = {label = "REPLACE_WITH_IN_FLIGHT_LABEL"}
 # clean = {reaction = "+1"}
+# Routing overrides [routing] in service.toml one role or concern at a time:
+# a role or concern set here replaces the service's whole, and every other
+# role and concern keeps the service's.
+# [routing.proposer]
+# effort = "high"
+# [routing.concerns.security]
+# engine = "claude"
+# model = "claude-opus-5-5"
 
 [adaptation]
 run-body = "/opt/minos/run-body/run-body"

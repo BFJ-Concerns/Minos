@@ -64,8 +64,10 @@ With both engines available, specialists propose findings on Codex
 both at medium effort, so every finding is checked by the family that did
 not propose it: a verifier from the proposer's own family measurably favours
 that family's findings. The planning roles run on Codex (`gpt-6.1-sol`).
-`[routing]` in `service.toml` moves any role to another engine, model or
-effort, and a box with only one engine runs every role on it. Such a box
+`[routing]` in `service.toml` moves any role, or any one specialist
+concern, to another engine, model or effort, and a repository's own
+`[routing]` replaces any role or concern it sets; a box with only one
+engine runs every role on it. Such a box
 gives up the cross-family check: no finding there is checked by a family
 other than the one that proposed it.
 

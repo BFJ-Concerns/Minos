@@ -59,11 +59,15 @@ nothing else.
   `workflows/filing-destination.mjs`). The brief stage reports a skipped
   concern as skipped, never as passed.
 - The workflow dispatches every leg on the engine its role's routing
-  names. With both engines provisioned, the default routing
-  (`workflows/role-routing.mjs`) proposes on Codex and verifies on Claude,
-  so a finding is verified by the family that did not propose it, a
-  verifier's own new finding included. `[routing]` can put the proposer
-  and verifier on one engine, and then that pairing no longer holds. A leg
+  names, and a specialist on its concern's where `[routing.concerns]` sets
+  one (`workflows/concern-routing.mjs`). With both engines provisioned, the
+  default routing (`workflows/role-routing.mjs`) proposes on Codex and
+  verifies on Claude, so a finding is verified by the family that did not
+  propose it, a verifier's own new finding and a finding from a concern
+  routed to the verifier's engine included. `[routing]` can put the
+  proposer and verifier on one engine, and then that pairing no longer
+  holds. A repository's own `[routing]` replaces each role or concern it
+  sets. A leg
   that does not complete or a finding without a complete verifier verdict
   makes the run incomplete: no review is published and no clean status is
   set.
