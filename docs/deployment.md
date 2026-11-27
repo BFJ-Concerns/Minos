@@ -133,7 +133,10 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
      path directly; Ensemble workers resolve `claude` and `codex` by
      command name through the inherited PATH (the `environment.d` file
      from step 2), so both the absolute variable and PATH must be correct;
-   - set `MINOS_LEAD_ENGINE` to `claude` or `codex` (`claude` by default)
+   - on upgrade, set `MINOS_RUN_DRIVER` to the installed
+     `workflows/run-driver.mjs` to use the scripted driver with an existing
+     configuration file;
+   - to use the resident lead, set `MINOS_LEAD_ENGINE` to `claude` or `codex` (`claude` by default)
      and `MINOS_LEAD_MODEL` to the model the lead runs on — `claude-opus-5-5`
      by default for Claude, `gpt-6.1-sol` for Codex; a Codex lead needs
      `MINOS_CODEX` set to the installed Codex executable;
@@ -466,20 +469,19 @@ A successful run exits after a `clean` marker, a continuation, or a recorded
 exits with status 75 and waits for the timer. An operator's
 `systemctl --user stop` of a run unit also requests a sweep.
 
-Keep the resident lead enabled until the scripted driver ships with both
-verdict classification and earlier-findings settlement and its judgement
-stages have been compared with archived runs. An installation with either
-stage missing uses the resident lead even if a driver path was configured.
+The shipped `run-body.env` selects the scripted driver. The script carries
+the run from claim to conclusion and launches one-shot judgement stages
+when a decision needs reading. An installation with either judgement
+module missing falls back to the resident lead.
 
-The resident lead runs on the configured engine and model. `run-body`
-keeps resumable `done` and `blocked` turns alive after useful run activity
-has begun. A lead blocked before its first run-tree change is stopped and recorded
-as a supervision failure. The supervisor otherwise stops the session only
-after the lead reports `failed` or `stopped`, the lead writes a terminal marker
-(`clean`, `non-clean`, or `continuation`), or the run tree outside its private
-home has not changed for the silence timeout. The silence backstop records a
-supervision failure. The foreground run body waits for the background session
-and stops it at one of those terminal conditions.
+To use the resident lead, set `MINOS_RUN_DRIVER=""` in `run-body.env`. The
+lead runs on the configured engine and model. After useful run activity
+begins, `run-body` keeps resumable `done` and `blocked` turns alive. It
+stops the session when the lead reports `failed` or `stopped`, when the
+lead writes a terminal marker (`clean`, `non-clean` or `continuation`), or
+when the run tree outside its private home reaches the silence timeout.
+The supervisor records a failure if the lead blocks before its first
+run-tree change or reaches the silence timeout.
 
 The review and repository-brief workflows run through `adjudicated-review`.
 The wrapper finds the launcher in the sibling `runtime/` directory. It

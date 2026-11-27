@@ -631,6 +631,65 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 // sweep pass; an incomplete outcome or a stop without a recorded status
 // exits 75 and waits for the timer, so a head that keeps ending incomplete
 // never re-runs at run pace.
+func TestRunBodyCarriesANoReviewHeadThroughTheScriptedDriver(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	driver, err := filepath.Abs(filepath.Join("..", "..", "workflows", "run-driver.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, fixture.setupStub, `#!/usr/bin/env sh
+set -eu
+mkdir -p "$MINOS_WORKSPACE"
+printf '%s\n' 'Fixture repository guidance.' >"$MINOS_WORKSPACE/AGENTS.md"
+jq -n --arg location "$MINOS_WORKSPACE/AGENTS.md" '{
+  guidance: [{source: {path: "AGENTS.md"}, origin: "checked-in", location: $location}]
+}' >"$MINOS_ORIENTATION"
+`)
+	writeScript(t, filepath.Join(filepath.Dir(fixture.setupStub), "dispatch-stage"), `#!/usr/bin/env sh
+set -eu
+test "$*" = "push-inspection judgement.js run-judgement"
+jq -e '.input.outcomes | index("no-review")' "$MINOS_RUN_DIR/$1-args.json" >/dev/null
+printf '%s\n' '{"stage":"push-inspection","answer":{"outcome":"no-review","reason":"No file changed."}}' >"$MINOS_RUN_DIR/$1-result.json"
+`)
+	forge := filepath.Join(fixture.root, "fixture-forge")
+	writeScript(t, forge, `#!/usr/bin/env sh
+set -eu
+test "$1" = forge
+shift
+printf '%s\n' "$*" >>"$MINOS_RUN_DIR/forge-calls"
+case "$1" in
+  snapshot) printf '%s\n' '{"head_sha":"head-sha","target_sha":"target-sha","authenticated_user":"minos","reviews":[]}' ;;
+  earlier) printf '%s\n' '{"head":"old-sha","outcome":"clean","ancestor":true,"changed_paths":[]}' ;;
+  threads) printf '%s\n' '[]' ;;
+  approve) printf '%s\n' '{"outcome":"not-needed"}' ;;
+  claim|status|marker) printf '%s\n' '{"outcome":"applied"}' ;;
+  *) exit 2 ;;
+esac
+`)
+	timings, err := filepath.Abs(filepath.Join("..", "..", "scripts", "run-body", "collect-timings"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(timings, filepath.Join(filepath.Dir(fixture.setupStub), "collect-timings")); err != nil {
+		t.Fatal(err)
+	}
+	fixture.appendConfig(t, map[string]string{"MINOS_RUN_DRIVER": driver, "MINOS_BIN": forge})
+	output, err := fixture.execute(map[string]string{
+		"MINOS_PUSH_INSPECTION_OUTCOMES": `["no-review","increment","full"]`,
+		"MINOS_ROUTING":                  "{}",
+	})
+	if err != nil {
+		t.Fatalf("scripted run: %v\n%s", err, output)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "clean")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "report.md"), "No file changed.")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "marker head-sha target-sha in-flight remove")
+	assertFileEmpty(t, fixture.failureLog)
+	if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
+		t.Fatalf("resident lead was launched: %v", err)
+	}
+}
+
 func TestRunBodyKeepsTheLeadWhenAScriptedJudgementStageIsMissing(t *testing.T) {
 	for _, present := range []string{"verdict-classification.mjs", "earlier-findings.mjs"} {
 		t.Run(present, func(t *testing.T) {
