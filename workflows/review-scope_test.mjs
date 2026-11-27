@@ -85,9 +85,9 @@ function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true, rename 
   try {
     const workspace = join(root, "workspace");
     mkdirSync(workspace);
-    const env = rename || numstatFault
-      ? Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(MINOS_|ENSEMBLE_)/.test(name)))
-      : process.env;
+    // The isolation import at the top of this file has already stripped
+    // MINOS_* and ENSEMBLE_* from process.env, so every child inherits none.
+    const env = process.env;
     const git = (...args) => execFileSync("git", ["-C", workspace, ...args], {
       encoding: "utf8",
       env: {
