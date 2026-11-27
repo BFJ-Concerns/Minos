@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BFJ-Concerns/Minos/internal/shell"
 )
@@ -16,7 +17,7 @@ const testCredential = "correct horse battery staple"
 
 // testSite serves the real pages, and any a test adds, over the readings the
 // test supplies, behind a credential file the test may rewrite.
-func testSite(t *testing.T, read Readings, write Settings, added ...Page) (http.Handler, string) {
+func testSite(t *testing.T, read Readings, write Settings, added ...Page) (*site, string) {
 	t.Helper()
 	credentialFile := filepath.Join(t.TempDir(), "page.credential")
 	if err := os.WriteFile(credentialFile, []byte(testCredential+"\n"), 0o600); err != nil {
@@ -99,12 +100,58 @@ func TestSignedInOperatorSeesTheOverview(t *testing.T) {
 
 func TestWrongCredentialIsRefusedAndTheNextAttemptHeldOff(t *testing.T) {
 	site, _ := testSite(t, enrolled(), Settings{})
+	// The clock stands still, so the second attempt falls inside the first
+	// one's spacing however long the scheduler takes between them.
+	moment := time.Now()
+	site.now = func() time.Time { return moment }
 	wrong := submit(site, "/sign-in", url.Values{"credential": {"guess"}}, nil)
 	if wrong.Code != http.StatusUnauthorized || len(wrong.Result().Cookies()) != 0 {
 		t.Fatalf("a wrong credential answered %d with cookies %v", wrong.Code, wrong.Result().Cookies())
 	}
 	if held := submit(site, "/sign-in", url.Values{"credential": {testCredential}}, nil); held.Code != http.StatusTooManyRequests {
 		t.Fatalf("an attempt straight after another answered %d, want it held off unchecked", held.Code)
+	}
+	moment = moment.Add(attemptSpacing)
+	if admitted := submit(site, "/sign-in", url.Values{"credential": {testCredential}}, nil); admitted.Code != http.StatusSeeOther {
+		t.Fatalf("an attempt a spacing later answered %d, want it checked and signed in", admitted.Code)
+	}
+}
+
+func TestExpiredSessionIsSentToSignIn(t *testing.T) {
+	site, _ := testSite(t, enrolled(), Settings{})
+	key, err := (&sessionKeys{}).derive(testCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired := &http.Cookie{Name: sessionCookie, Value: mintSession(key, time.Now().Add(-time.Minute))}
+	if response := visit(site, "/", expired); response.Code != http.StatusSeeOther || !strings.HasPrefix(response.Header().Get("Location"), "/sign-in") {
+		t.Fatalf("a correctly signed session past its expiry answered %d to %q, want sign-in", response.Code, response.Header().Get("Location"))
+	}
+	current := &http.Cookie{Name: sessionCookie, Value: mintSession(key, time.Now().Add(time.Hour))}
+	if response := visit(site, "/", current); response.Code != http.StatusOK {
+		t.Fatalf("the same session before its expiry answered %d, want the page", response.Code)
+	}
+}
+
+func TestSignInReturnsOnlyToAPathOnThisSite(t *testing.T) {
+	for next, want := range map[string]string{
+		"/queue":                    "/queue",
+		"/repositories/f/o/r?x=1#y": "/repositories/f/o/r?x=1#y",
+		"":                          "/",
+		"queue":                     "/",
+		"https://elsewhere.example": "/",
+		"//elsewhere.example":       "/",
+		"/\\elsewhere.example":      "/",
+		"\\/elsewhere.example":      "/",
+		"/\t/elsewhere.example":     "/",
+		"/\n/elsewhere.example":     "/",
+		"/\r/elsewhere.example":     "/",
+		"\t//elsewhere.example":     "/",
+		"/\x7f/elsewhere.example":   "/",
+	} {
+		if got := localPath(next); got != want {
+			t.Errorf("localPath(%q) = %q, want %q", next, got, want)
+		}
 	}
 }
 
