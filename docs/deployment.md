@@ -152,8 +152,10 @@ needs; it is not required.
    `attention` on a request-changes outcome. Each is a reaction or a
    label. Unset, `in-flight` defaults to the eyes reaction and `clean` to
    the +1 reaction; no attention marker is written unless configured. A
-   label must already be defined on the repository or its organisation;
-   Minos never creates labels, and refuses the marker write when the
+   label must already be defined: on Forgejo, on the repository or its
+   organisation; on GitHub, on the repository itself, since an
+   organisation-level label does not count there. Minos never creates
+   labels, and refuses the marker write when the
    label is missing. A repository's own `[markers]` table replaces the
    service-level one whole.
 
@@ -236,9 +238,11 @@ needs; it is not required.
 
    `MINOS_LEAD_SILENCE_TIMEOUT` optionally overrides the supervisor's
    3600-second backstop. The timer measures changes to files in the run
-   directory outside the run's private home, not the lead's output: a run
-   whose files have not changed for that long is stopped as a supervision
-   failure, however much the lead prints. Keep the lifecycle's fallback wake shorter
+   directory outside the run's private home: a run whose files there have
+   not changed for that long is stopped as a supervision failure. A Claude
+   lead's session lives in the private home, so its output does not count;
+   a Codex lead's output is written to `codex-lead.jsonl` and
+   `codex-lead.stderr` in the run directory, so its output does. Keep the lifecycle's fallback wake shorter
    than this value.
 
    Choose one Claude authentication mode in `run-body.env`:
@@ -293,8 +297,9 @@ needs; it is not required.
    verification), `write:repository` (cloning, branch reads, commit
    statuses, requested reviewers, and reviews), and `write:issue`
    (reactions, labels, dependency lookups, and issue filing). The account
-   named by `service.bot-login` must match the token's authenticated identity; the
-   claim adapter rejects a mismatch. The Forgejo instance must expose the
+   Minos uses for this forge — the forge table's `bot-login` where it is
+   set, otherwise `service.bot-login` — must match the token's
+   authenticated identity; the claim adapter rejects a mismatch. The Forgejo instance must expose the
    issue-dependencies API (`/api/v1/repos/.../issues/.../dependencies`); a
    missing or disabled endpoint produces "dependency state unavailable" and
    defers review until the next sweep pass.
@@ -443,7 +448,8 @@ attention marker — a reaction or a label, in the repository's configured
 form — left on a head the author has since replaced: reviews and statuses are
 SHA-bound evidence, but the PR-wide marker is not, so it is removed before
 another reconciliation decision is made. A label marker must already be
-defined on the repository or its organisation; a missing one refuses the
+defined (on the repository, or on Forgejo its organisation); a missing one
+refuses the
 marker write with a reason naming the label and repository.
 
 When a run sets a `clean` or `attention` status on a head, Minos records
