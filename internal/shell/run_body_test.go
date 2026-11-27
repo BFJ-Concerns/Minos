@@ -631,6 +631,35 @@ func TestRunBodyStopsLeadAfterCompletionMarker(t *testing.T) {
 // sweep pass; an incomplete outcome or a stop without a recorded status
 // exits 75 and waits for the timer, so a head that keeps ending incomplete
 // never re-runs at run pace.
+func TestRunBodyKeepsTheLeadWhenAScriptedJudgementStageIsMissing(t *testing.T) {
+	for _, present := range []string{"verdict-classification.mjs", "earlier-findings.mjs"} {
+		t.Run(present, func(t *testing.T) {
+			fixture := newRunBodyFixture(t)
+			driver := filepath.Join(fixture.root, "run-driver.mjs")
+			if err := os.WriteFile(driver, []byte("throw new Error('driver started');\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			judgements := filepath.Join(fixture.root, "judgements")
+			if err := os.Mkdir(judgements, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(judgements, present), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fixture.appendConfig(t, map[string]string{"MINOS_RUN_DRIVER": driver})
+			output, err := fixture.execute(nil)
+			if err != nil {
+				t.Fatalf("resident lead exit = %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), "scripted judgement stages are missing. Using the resident lead.") {
+				t.Fatalf("missing fallback diagnostic:\n%s", output)
+			}
+			assertContainsFile(t, fixture.record+".argv", "--bg")
+			assertFileEmpty(t, fixture.failureLog)
+		})
+	}
+}
+
 func TestRunBodyWaitsForTheScriptedDriverWithoutLaunchingTheLead(t *testing.T) {
 	fixture := newRunBodyFixture(t)
 	driver := filepath.Join(fixture.root, "run-driver.mjs")
@@ -647,6 +676,15 @@ process.exitCode = 75;
 	if err := os.WriteFile(driver, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	judgements := filepath.Join(fixture.root, "judgements")
+	if err := os.Mkdir(judgements, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"verdict-classification.mjs", "earlier-findings.mjs"} {
+		if err := os.WriteFile(filepath.Join(judgements, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	fixture.appendConfig(t, map[string]string{
 		"MINOS_RUN_DRIVER": driver, "MINOS_LEAD_ENGINE": "unused",
 		"MINOS_LIFECYCLE_INSTRUCTION": "/no-resident-lead-prompt",
@@ -658,7 +696,7 @@ process.exitCode = 75;
 	}
 	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "non-clean")
 	assertFileEmpty(t, fixture.failureLog)
-	if _, err := os.Stat(fixture.record); !os.IsNotExist(err) {
+	if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {
 		t.Fatalf("resident lead was launched: %v", err)
 	}
 }

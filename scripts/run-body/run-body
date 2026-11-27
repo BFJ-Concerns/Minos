@@ -241,6 +241,17 @@ failure_cause="could not load ${MINOS_CONFIG%/}/run-body.env"
 . "${MINOS_CONFIG%/}/run-body.env"
 set +a
 
+# Scripted mode needs both companion judgement stages. Keep serving reviews
+# with the lead if an installation has only the driver's mechanical course.
+if [ -n "${MINOS_RUN_DRIVER:-}" ]; then
+  judgement_dir="$(dirname "$MINOS_RUN_DRIVER")/judgements"
+  if [ ! -r "$judgement_dir/verdict-classification.mjs" ] ||
+    [ ! -r "$judgement_dir/earlier-findings.mjs" ]; then
+    echo "run-body: scripted judgement stages are missing. Using the resident lead." >&2
+    unset MINOS_RUN_DRIVER
+  fi
+fi
+
 if [ -n "${MINOS_ANTHROPIC_CREDENTIAL_FILE:-}" ]; then
   require_variable ANTHROPIC_BASE_URL "ANTHROPIC_BASE_URL is required in gateway mode"
   if [ ! -f "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ] ||
