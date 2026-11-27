@@ -50,6 +50,27 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 	return snapshot, nil
 }
 
+// PullRequestRetired checks the pull request itself, independently of the
+// target branch, statuses and reviews that a full snapshot also requires.
+func (a *Adapter) PullRequestRetired(ctx context.Context, repository Repository, pullRequest int64) (bool, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "pull-request-state", Arguments: []string{repository.Owner, repository.Name, strconv.FormatInt(pullRequest, 10)}})
+	if err != nil {
+		return false, err
+	}
+	var state string
+	if err := json.Unmarshal(out, &state); err != nil {
+		return false, fmt.Errorf("decode pull request state: %w", err)
+	}
+	switch state {
+	case "closed", "merged", "missing":
+		return true, nil
+	case "open":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected pull request state %q", state)
+	}
+}
+
 // RepositoryMetadata reads a repository's clone URL and default branch.
 func (a *Adapter) RepositoryMetadata(ctx context.Context, repository Repository) (RepositoryMetadata, error) {
 	out, err := a.runner.Run(ctx, RunRequest{Operation: "repository-metadata", Arguments: []string{repository.Owner, repository.Name}})
