@@ -19,6 +19,9 @@
 // itself: a verifier sure of something the repository does not show has
 // still not shown it. The rule is enforced here so that it does not rest
 // on the verifier brief's wording alone.
+//
+// A finding left standing, confirmed or unsettled, is graded on the
+// severity scale; `findingGrade` says by whom.
 
 import { SEVERITIES } from "./review-contracts.mjs";
 
@@ -44,4 +47,15 @@ export function findingDisposition(verdict) {
   if (!usableVerdict(verdict)) return NO_VERDICT;
   if (verdict.outsideFact.trim() !== "") return UNSETTLED;
   return verdict.verdict;
+}
+
+// The grade a finding left standing carries: the verifier's own where it
+// gave one from the scale. A verdict made unsettled by its outside fact
+// may have been graded `None` as a refutation; the finding then carries
+// its proposer's grade, which rates it as true, as the finding fears.
+// Null for a finding not left standing.
+export function findingGrade(verdict, proposedSeverity) {
+  const disposition = findingDisposition(verdict);
+  if (disposition !== CONFIRMED && disposition !== UNSETTLED) return null;
+  return SEVERITIES.includes(verdict.severity) ? verdict.severity : proposedSeverity;
 }
