@@ -73,7 +73,7 @@ func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[str
 			sweepErrors = append(sweepErrors, fmt.Errorf("preserve %s after salvage failed: %w", entry.Name(), err))
 			continue
 		}
-		if appended {
+		if appended && cfg.Runs.FailuresRepo != "" {
 			if err := publishFailureDigest(ctx, cfg); err != nil {
 				sweepErrors = append(sweepErrors, fmt.Errorf("publish salvaged failure for %s: %w", entry.Name(), err))
 			}
@@ -94,6 +94,16 @@ func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[str
 // leaves one after recording crash evidence, so archive retries do not
 // append another copy to the ledger.
 func prepareResidueArchive(cfg ServiceConfig, runDir, name string) (string, bool, error) {
+	// The periodic and post-run sweeps can see the same dead directory.
+	// Hold its lock until the retry marker follows the durable append.
+	dir, err := os.Open(runDir)
+	if err != nil {
+		return "", false, err
+	}
+	defer dir.Close()
+	if err := syscall.Flock(int(dir.Fd()), syscall.LOCK_EX); err != nil {
+		return "", false, fmt.Errorf("lock crash salvage: %w", err)
+	}
 	path := filepath.Join(runDir, archivePendingFile)
 	if data, err := os.ReadFile(path); err == nil {
 		if label := strings.TrimSpace(string(data)); label != "" {
@@ -103,7 +113,7 @@ func prepareResidueArchive(cfg ServiceConfig, runDir, name string) (string, bool
 	} else if !os.IsNotExist(err) {
 		return "", false, err
 	}
-	appended, err := appendFailureDigest(runDir, cfg.Runs.FailuresRepo)
+	appended, err := appendFailureDigest(runDir, cfg)
 	if err != nil {
 		return "", false, err
 	}
@@ -111,7 +121,7 @@ func prepareResidueArchive(cfg ServiceConfig, runDir, name string) (string, bool
 		return "", false, err
 	}
 	if !appended {
-		log.Printf("run %s: no salvage evidence found; no FAILURES.md digest appended", name)
+		log.Printf("run %s: no salvage evidence found; no failure digest appended", name)
 	}
 	return name, appended, nil
 }
@@ -233,44 +243,65 @@ func validHandoffRunDirs(cfg ServiceConfig, factsByUnit map[string]Facts) map[st
 	return preserved
 }
 
-func appendFailureDigest(runDir, failuresRepo string) (bool, error) {
-	if failuresRepo == "" {
-		return false, fmt.Errorf("runs.failures-repo is not configured")
-	}
-	if insideDirectory(failuresRepo, filepath.Dir(runDir)) {
-		return false, fmt.Errorf("failures repository must be outside runs.dir")
-	}
-	failuresPath := filepath.Join(failuresRepo, "FAILURES.md")
-	info, err := os.Stat(failuresPath)
-	if err != nil {
-		return false, fmt.Errorf("inspect Minos FAILURES.md: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("Minos FAILURES.md is not a regular file")
-	}
+func appendFailureDigest(runDir string, cfg ServiceConfig) (bool, error) {
 	digest, found, err := buildFailureDigest(runDir)
-	if err != nil {
+	if err != nil || !found {
 		return false, err
 	}
-	if !found {
-		return false, nil
+	flags := os.O_APPEND | os.O_WRONLY
+	var path string
+	if repo := cfg.Runs.FailuresRepo; repo != "" {
+		if insideDirectory(repo, cfg.Runs.Dir) {
+			return false, fmt.Errorf("failures repository must be outside runs.dir")
+		}
+		path = filepath.Join(repo, "FAILURES.md")
+	} else {
+		path = cfg.Runs.FailureLog
+		if path == "" {
+			return false, fmt.Errorf("runs.failure-log is required for crash salvage without a failures repository")
+		}
+		if insideDirectory(path, cfg.Runs.Dir) {
+			return false, fmt.Errorf("runs.failure-log must be outside runs.dir")
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return false, fmt.Errorf("create local failure log directory: %w", err)
+		}
+		flags |= os.O_CREATE
 	}
-	file, err := os.OpenFile(failuresPath, os.O_APPEND|os.O_WRONLY, 0)
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return false, fmt.Errorf("failure log %s is not a regular file", path)
+		}
+	} else if !os.IsNotExist(err) || flags&os.O_CREATE == 0 {
+		return false, fmt.Errorf("inspect failure log %s: %w", path, err)
+	}
+	file, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
-		return false, fmt.Errorf("open Minos FAILURES.md: %w", err)
+		return false, fmt.Errorf("open failure log %s: %w", path, err)
 	}
-	defer file.Close()
-	if _, err := file.Write(digest); err != nil {
-		return false, err
+	// A crash digest can contain transcript excerpts. A log created by
+	// the run driver may have inherited broader permissions.
+	if cfg.Runs.FailuresRepo == "" && info != nil && info.Mode().Perm()&0o077 != 0 {
+		if err := file.Chmod(info.Mode().Perm() & 0o700); err != nil {
+			return false, fmt.Errorf("restrict local failure log %s: %w", path, errors.Join(err, file.Close()))
+		}
 	}
-	if err := file.Sync(); err != nil {
-		return false, fmt.Errorf("flush Minos FAILURES.md: %w", err)
+	_, writeErr := file.Write(digest)
+	err = errors.Join(writeErr, file.Sync(), file.Close())
+	if err != nil {
+		return false, fmt.Errorf("persist failure digest to %s: %w", path, err)
 	}
 	return true, nil
 }
 
 func insideDirectory(path, directory string) bool {
-	rel, err := filepath.Rel(filepath.Clean(directory), filepath.Clean(path))
+	path, pathErr := filepath.Abs(path)
+	directory, dirErr := filepath.Abs(directory)
+	if pathErr != nil || dirErr != nil {
+		return false
+	}
+	rel, err := filepath.Rel(directory, path)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
