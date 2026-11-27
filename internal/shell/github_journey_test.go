@@ -1809,6 +1809,7 @@ func TestGitHubForgeBotLoginRecognisesTheAppsCompletionBesideAnotherForgesLogin(
 	githubApplied(t, adapter.SetProductStatus(t.Context(), state.guard(), product.Clean()))
 	githubApplied(t, adapter.AddMarker(t.Context(), state.guard(), marker))
 	repo := RepoConfig{Forge: "github", Owner: "acme", Repo: "widgets"}
+	repo.Review.CommitStatus = true
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	repo.Markers.Clean = &marker
 	facts := Facts{Forge: repo.Forge, Owner: repo.Owner, Repo: repo.Repo, PR: "7"}
