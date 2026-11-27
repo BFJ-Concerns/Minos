@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{{- if .Refresh}}
+<meta http-equiv="refresh" content="{{.Refresh}}">
+{{- end}}
+<title>{{.Title}} · Minos</title>
+<link rel="stylesheet" href="/static/page.css">
+</head>
+<body>
+<header>
+<a class="product" href="/">Minos</a>
+{{- if .Navigation}}
+<nav>
+{{- range .Navigation}}
+<a href="{{.Path}}"{{if eq .Title $.Title}} aria-current="page"{{end}}>{{.Title}}</a>
+{{- end}}
+</nav>
+<form method="post" action="/sign-out"><button class="quiet">Sign out</button></form>
+{{- end}}
+</header>
+<main>
+{{- if .Refusal}}
+<p class="refusal" role="alert">{{.Refusal}}</p>
+{{- end}}
+{{template "content" .Data}}
+</main>
+</body>
+</html>

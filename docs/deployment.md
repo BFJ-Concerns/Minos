@@ -585,6 +585,49 @@ The run supervisor's own silence backstop (`MINOS_LEAD_SILENCE_TIMEOUT`)
 already bounds a genuinely wedged lead on either engine — do not kill a
 waiting run ahead of it on the strength of quiet files.
 
+## The web page
+
+The receiver serves a web page for the operator at the root of its listener
+(`http://BOX:8919/` with the shipped `bind`), behind one sign-in. It opens on
+an overview of the enrolled repositories. Nothing Minos does depends on the
+page: a deployment that never opens it reviews exactly the same.
+
+The page is served once the deployment holds an operator credential. Create
+one, or write a passphrase of your own into the file:
+
+```sh
+umask 077 && head -c 24 /dev/urandom | base64 > /etc/minos/page.credential
+```
+
+The shipped `service.toml` already names that file; restart the receiver
+after adding the key to a configuration that lacks it:
+
+```toml
+[listener]
+bind = ":8919"
+page-credential-file = "/etc/minos/page.credential"
+```
+
+Open the listener's address in a browser and sign in with the file's content.
+The credential is the whole gate, so keep it as you would the forge token.
+
+- A browser stays signed in for 30 days, and each visit in the second half
+  of that time renews it. **Sign out** ends the session in that browser.
+- Replacing the file's content changes the credential at once, with no
+  restart, and signs every browser out. That is also how to end a session
+  on a browser you no longer hold.
+- The receiver checks at most one sign-in attempt a second, however many
+  arrive.
+- The listener speaks plain HTTP, so the credential crosses the network in
+  the clear at sign-in. Keep the listener to a network you trust, or put a
+  TLS-terminating proxy in front of it; behind a proxy that sends
+  `X-Forwarded-Proto: https`, the session cookie is marked for TLS only.
+- The page shares the listener with the webhook route. Where a forge reaches
+  the listener from the internet, have the proxy forward `/hooks/` alone
+  unless you mean the sign-in page to be public too.
+
+Without the key the receiver serves no page, and its root answers 404.
+
 ## Serving run status to an operator surface
 
 The receiver can serve a read-only projection of what is live: for each active

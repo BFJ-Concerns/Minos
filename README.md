@@ -251,6 +251,9 @@ journalctl --user -u minos-receiver.service -u minos-sweep.service
 systemctl --user start minos-sweep.service   # run a sweep pass now
 ```
 
+- The receiver serves a web page for the operator at the root of its
+  listener, behind one sign-in:
+  [setup](docs/deployment.md#the-web-page).
 - `/status` reports live runs, the sweep's deferrals and the receiver's
   heartbeat, and `/runs/recent` lists recently finished runs. Both are
   optional, read-only and behind a bearer token:
@@ -280,7 +283,7 @@ just verify
 | Path | Contents |
 |------|----------|
 | [`cmd/minos`](cmd/minos) | The service binary |
-| [`internal/`](internal) | Webhook receiver, sweep, run lifecycle and forge bridge |
+| [`internal/`](internal) | Webhook receiver, sweep, run lifecycle, forge bridge and the web page |
 | [`workflows/`](workflows) | The Ensemble review workflows and the prompts their agents receive |
 | [`runtime/`](runtime) | The vendored Ensemble runtime |
 | [`scripts/`](scripts) | Forge adaptations, per-run scripts and installers |
