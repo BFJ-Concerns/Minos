@@ -1,7 +1,9 @@
 import { HeadMoved } from "../run-endings.mjs";
 
-export function checkHead(run, snapshot) {
+export async function currentSnapshot(run) {
+  const snapshot = await run.forge("snapshot");
   if (snapshot.head_sha !== run.head) throw new HeadMoved(snapshot.head_sha);
+  return snapshot;
 }
 
 export async function applied(run, operation, args, accepted = ["applied"]) {

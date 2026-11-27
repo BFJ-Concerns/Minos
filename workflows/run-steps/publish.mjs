@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { runCommand } from "../run-process.mjs";
 import { DEFAULT_THRESHOLD } from "../verdict-classification.mjs";
-import { applied } from "./forge-writes.mjs";
+import { applied, currentSnapshot, movedHead } from "./forge-writes.mjs";
 
 function helper(name) {
   return fileURLToPath(new URL(`../${name}`, import.meta.url));
@@ -31,9 +31,15 @@ export async function publish(run, { review, briefReview, reviewFile, briefRevie
 
   let filing;
   try {
-    const result = await runCommand(run, process.execPath, [helper("file-triage.mjs"), plan.triage.entries, run.orientation]);
+    const { entries, ...counts } = plan.triage;
+    if (Object.values(counts).some((count) => count > 0)) {
+      const { kind } = JSON.parse(run.env.MINOS_FILING_DESTINATION);
+      if (kind === "file" || kind === "issue") await currentSnapshot(run);
+    }
+    const result = await runCommand(run, process.execPath, [helper("file-triage.mjs"), entries, run.orientation]);
     filing = JSON.parse(result);
   } catch (error) {
+    if (movedHead(error)) throw error;
     filing = { outcome: "unfiled", reason: error.message };
   }
   let filingRecordProblem;

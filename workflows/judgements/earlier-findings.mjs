@@ -88,10 +88,13 @@ export const stage = {
   // One answer for every finding shown, each with its reason, since the
   // reason is the record of why a block was lifted or kept.
   answerProblem(answer, input) {
+    const heads = new Map(input.findings.map(({ key, head }) => [key, head]));
     const answered = new Set();
     for (const entry of answer.findings) {
       if (answered.has(entry.key)) return `finding ${entry.key} is answered twice`;
       answered.add(entry.key);
+      if (entry.outcome === DEFECT_GONE && heads.get(entry.key) === input.head)
+        return `finding ${entry.key} was raised on this head and cannot have changed`;
       if (typeof entry.reason !== "string" || entry.reason.trim() === "") return `the reason for ${entry.key} is blank`;
     }
     const missing = input.findings.map((finding) => finding.key).filter((key) => !answered.has(key));

@@ -1,9 +1,8 @@
 // Finds which blocking findings of earlier Minos reviews on this pull
 // request still stand. Part of that is mechanical: a resolved thread is the
 // author's answer. A finding raised on this head is read like any other,
-// because an earlier run on the same head may have raised it; this run's
-// own blocking findings, published before this step, stand by the same
-// reading, and the run requests changes for them in any case.
+// because an earlier run on the same head may have raised it. Settlement
+// finishes before this run publishes anything.
 // Whether the author rejected a finding in words, and whether the defect it
 // describes is gone from the code at this head, are judgements, so this
 // step gathers the rest with their replies and the author's comments, asks
@@ -15,6 +14,7 @@
 
 import { REVIEW_BODY, THREAD, earlierMinosFindings } from "../earlier-minos-findings.mjs";
 import { STANDS, stage as earlierFindings } from "../judgements/earlier-findings.mjs";
+import { currentSnapshot } from "./forge-writes.mjs";
 
 // The comments that can answer a review-body finding: the pull request's
 // author's, written after the review that holds the finding was published.
@@ -40,7 +40,8 @@ export function findingsToRead({ snapshot, threads, comments }) {
 }
 
 export async function settleEarlierFindings(run) {
-  const [snapshot, threads] = [await run.forge("snapshot"), await run.forge("threads")];
+  const snapshot = await currentSnapshot(run);
+  const threads = await run.forge("threads");
   const needsComments = earlierMinosFindings(snapshot, threads)
     .some((finding) => finding.blocking && finding.where === REVIEW_BODY);
   const comments = needsComments ? await run.forge("comments") : [];
