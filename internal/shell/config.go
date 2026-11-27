@@ -746,8 +746,9 @@ const defaultReviewDepth = "standard"
 
 // reviewDepths are the review depth presets, from the narrowest plan and
 // shallowest reading to the widest and deepest. Each names the passages
-// workflows/review-briefs/exploration-depth/ and specialist-depth/ hold for
-// it, and workflows/prompt-settings.mjs lists the same values.
+// workflows/review-briefs/exploration-depth/, specialist-depth/ and
+// general-depth/ hold for it, and workflows/prompt-settings.mjs lists the
+// same values.
 var reviewDepths = []string{"light", "standard", "thorough"}
 
 func validReviewThreshold(value string) bool {

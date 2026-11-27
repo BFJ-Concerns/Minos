@@ -34,9 +34,11 @@ test("every shipped prompt has its file slots filled and carries only its stage'
     ["merge", prompts.merge],
     ["verifier", prompts.verifier],
     ...Object.values(prompts.specialist).map((text) => ["specialist", text]),
+    ["general", prompts.general],
+    ...Object.values(prompts.generalAssignment).map((text) => ["general-assignment", text]),
   ];
   for (const [stage, text] of stages) {
-    for (const file of ["reviewed-change", "writing-a-finding", "severity-scale", "concern"])
+    for (const file of ["reviewed-change", "what-makes-a-finding", "writing-a-finding", "severity-scale", "concern"])
       assert.ok(!text.includes(`{{${file}}}`), `${stage} has ${file} filled`);
     assert.ok(slotNames(text).every((name) => STAGE_RUN_SLOTS[stage].includes(name)), stage);
   }
@@ -44,6 +46,9 @@ test("every shipped prompt has its file slots filled and carries only its stage'
   assert.doesNotMatch(prompts.specialist.security, /^---$/m, "a concern's front matter stays out of its prompt");
   assert.match(prompts.verifier, /- `Critical`: ordinary use loses or corrupts data/);
   assert.deepEqual(Object.keys(prompts.assignment), ["changedPart", "wholePart", "unit", "files"]);
+  assert.deepEqual(Object.keys(prompts.generalAssignment), ["wholeChange", "share"]);
+  for (const text of [prompts.general, ...Object.values(prompts.specialist)])
+    assert.match(text, /## What makes a finding\n\nA finding is something this change gets wrong/, "the proposers of a change share one account of a finding");
   for (const text of [prompts.briefRelevance, prompts.briefPartition])
     assert.match(text, /## The repository and the change\n/, "the brief-planner prompts open on the reviewed change");
 });

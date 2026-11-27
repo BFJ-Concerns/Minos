@@ -169,7 +169,7 @@ test("the script emits an envelope with every routed leg and raw verifier output
   const { result, calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
 
   assert.deepEqual(Object.keys(result).sort(), [
-    "briefs", "dispatches", "exploration", "misconfigurations", "outOfScopeObservations", "proposedFindings",
+    "briefs", "dispatches", "exploration", "misconfigurations", "mode", "outOfScopeObservations", "proposedFindings",
     "requiredModelEvidence", "reviewed", "reviewers", "stage", "uncheckedFindings",
   ]);
   assert.equal(result.stage, "present");
@@ -207,6 +207,7 @@ test("malformed exploration scope entries fail closed before specialist dispatch
     assert.deepEqual(specialistCalls(calls), []);
     assert.deepEqual(result, {
       reviewed: { target: ARGS.target, head: ARGS.head, occasion: null },
+      mode: "specialist",
       stage: "present",
       incomplete: ["exploration returned a malformed review plan"],
       requiredModelEvidence: [{

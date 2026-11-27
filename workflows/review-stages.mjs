@@ -1,8 +1,10 @@
 // The stages every review workflow runs: the proposing legs, the merge of
 // the findings one fix would resolve, and their verification in rounds.
-// review.js and review-briefs.js plan their proposing units and prompt them
-// in different ways; the dispatch of those units and everything after it
-// is shared.
+// Each workflow comes by its proposing units and prompts them in its own
+// way: review.js from exploration's plan, review-briefs.js from the
+// repository's briefs, and a quick review (review-mode.mjs) from the
+// change itself or its division into shares. The dispatch of those units
+// and everything after it is shared.
 //
 // A workflow script cannot import statically, so it loads this module
 // where it needs it, from beside itself:
@@ -84,16 +86,18 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
 
   // The proposing legs: one for each unit, each sent the unit's own
   // `prompt` under its `label` on the unit's `route`, or on the proposer
-  // route where it carries none. A unit's `source` names it on the
-  // observations it records. Each unit comes back with whether its leg
-  // completed and its usable output, null where the leg failed or answered
-  // nothing, which already marks the run incomplete.
+  // route where it carries none. A unit answers on its own `schema` and
+  // its leg is recorded under its own `role`; one that names neither is a
+  // specialist answering on the specialist schema. A unit's `source` names
+  // it on the observations it records. Each unit comes back with whether
+  // its leg completed and its usable output, null where the leg failed or
+  // answered nothing, which already marks the run incomplete.
   async function proposeUnits(units, phaseName) {
     const routeOf = (unit) => unit.route || routing.proposer;
-    for (const unit of units) addLeg(unit.label, "specialist", routeOf(unit).model);
+    for (const unit of units) addLeg(unit.label, unit.role || "specialist", routeOf(unit).model);
     const settlements = await parallel(units.map((unit) => () => agent(unit.prompt, {
       engine: routeOf(unit).engine,
-      schema: contracts.specialistSchema,
+      schema: unit.schema || contracts.specialistSchema,
       model: routeOf(unit).model,
       effort: routeOf(unit).effort,
       strip: ["skills", "agents"],

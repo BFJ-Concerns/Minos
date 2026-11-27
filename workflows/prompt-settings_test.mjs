@@ -33,11 +33,11 @@ test("each of a setting's slots reads differently under each of its values", () 
       assert.equal(new Set(values.map((value) => passage(slot, value))).size, values.length, `${slot} passages differ`);
 });
 
-test("the specialists, the brief reviewer and the verifier read the safeguard-request passages their repository's setting chooses", () => {
+test("the specialists, the general reviewer, the brief reviewer and the verifier read the safeguard-request passages their repository's setting chooses", () => {
   for (const value of ["false", "true"]) {
     const { prompts } = reviewPrompts(repositoryRoot, promptSettingsFromEnvironment({ MINOS_FILE_SAFEGUARD_REQUESTS: value }));
     const other = value === "true" ? "false" : "true";
-    for (const [label, text] of [["repository", prompts.repository], ...Object.entries(prompts.specialist)]) {
+    for (const [label, text] of [["repository", prompts.repository], ["general", prompts.general], ...Object.entries(prompts.specialist)]) {
       assert.ok(text.includes(passage("safeguard-requests", value)), `${label} under ${value} carries ${value}.md`);
       assert.ok(!text.includes(passage("safeguard-requests", other)), `${label} under ${value} leaves out ${other}.md`);
       assert.ok(!text.includes("{{safeguard-requests}}"), `${label} has the slot filled`);
@@ -50,15 +50,20 @@ test("the specialists, the brief reviewer and the verifier read the safeguard-re
   }
 });
 
-// Depth reaches the plan and the specialists' reading and nothing else: the
-// prompts that judge, merge or filter findings read the same at every depth.
-test("the exploration leg and the specialists read the depth passages their repository's setting chooses, and no other prompt changes", () => {
+// Depth reaches the plan and the reading of the reviewers of a change,
+// specialist and general, and nothing else: the prompts that judge, merge
+// or filter findings read the same at every depth.
+test("the exploration leg, the specialists and the general reviewer read the depth passages their repository's setting chooses, and no other prompt changes", () => {
   const depths = PROMPT_SETTINGS.depth.values;
   const under = Object.fromEntries(depths.map((depth) =>
     [depth, reviewPrompts(repositoryRoot, promptSettingsFromEnvironment({ MINOS_REVIEW_DEPTH: depth })).prompts]));
   for (const depth of depths) {
-    const { exploration, specialist } = under[depth];
-    for (const [slot, texts] of [["exploration-depth", [["exploration", exploration]]], ["specialist-depth", Object.entries(specialist)]]) {
+    const { exploration, specialist, general } = under[depth];
+    for (const [slot, texts] of [
+      ["exploration-depth", [["exploration", exploration]]],
+      ["specialist-depth", Object.entries(specialist)],
+      ["general-depth", [["general", general]]],
+    ]) {
       for (const [label, text] of texts) {
         assert.ok(!text.includes(`{{${slot}}}`), `${label} has the slot filled`);
         for (const other of depths) {
