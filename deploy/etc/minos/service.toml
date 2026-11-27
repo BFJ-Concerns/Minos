@@ -75,9 +75,11 @@ signature-header = "X-Forgejo-Signature"
 # never gates; set true, it goes to the filing destination marked as a
 # safeguard request, and unset or false it is filed nowhere.
 # file-safeguard-requests = false
-# The review depth preset steers how wide the exploration leg plans and how
-# deeply the specialists read: light, standard or thorough. It never bounds
-# the findings a review returns.
+# The review depth preset steers how far a review reads around the change:
+# light, standard or thorough. In the specialist review it sets how wide the
+# exploration leg plans and how deeply the specialists read, and in the quick
+# review how deeply the general reviewers read. It never bounds the findings
+# a review returns.
 # depth = "standard"
 # The review mode says which review a head gets: specialist, where an
 # exploration leg plans the review and a specialist reads for each concern,

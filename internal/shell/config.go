@@ -313,9 +313,10 @@ type RepositoryKnobs struct {
 		// to the filing destination, each marked as such. Off, they are
 		// published and filed nowhere.
 		FileSafeguardRequests bool `toml:"file-safeguard-requests"`
-		// Depth is the review depth preset: how wide exploration plans and
-		// how deeply the specialists read, one of reviewDepths. It never
-		// bounds the findings a review returns.
+		// Depth is the review depth preset, one of reviewDepths: how wide
+		// exploration plans and how deeply the specialists read in the
+		// specialist review, and how deeply the general reviewers read in
+		// the quick review. It never bounds the findings a review returns.
 		Depth string `toml:"depth"`
 		// Mode is the review a head gets, one of reviewModes: the
 		// specialist review, planned by exploration and proposed on by a
