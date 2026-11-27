@@ -31,8 +31,13 @@ repository's files through their engine, so Anthropic, OpenAI or a gateway
 in between sees that source. The run archives carry it too. Each archive
 holds the run's Claude transcripts, Codex rollouts and Ensemble records, and
 those hold the source the agents read, so the archive host and its
-destination keep copies for as long as the archives are kept. Enrol a
-private repository only where its owner accepts both.
+destination keep copies for as long as the archives are kept. The failure
+record carries it as well: the digest the sweep records for a crashed run
+holds the tails of its transcripts, and goes to `runs.failure-log` or, with
+`runs.failures-repo` set, is committed to that repository and pushed, which
+may sit on another forge or be more widely readable than the repository
+reviewed (see *How runs and the sweep behave* below). Enrol a private repository only where
+its owner accepts all three.
 
 ## Install and configure
 

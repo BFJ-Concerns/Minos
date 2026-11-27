@@ -138,8 +138,12 @@ enrolled repositories. The lead and the review agents read the pull request's
 diff and the repository's files through their engine, so Anthropic (for
 Claude Code), OpenAI (for Codex) or the gateway in between sees that source.
 With an archive host configured, each run's archive carries it too: the
-agents' transcripts and run records hold the source they read. Enrol a
-private repository only where its owner accepts both.
+agents' transcripts and run records hold the source they read. So does the
+failure record: the digest of a crashed run holds the tails of its
+transcripts, and the sweep appends it to `runs.failure-log` or, with
+`runs.failures-repo` set, commits it to that repository and pushes it, which
+may sit on another forge or be more widely readable than the repository
+reviewed. Enrol a private repository only where its owner accepts all three.
 
 ## Installation
 
