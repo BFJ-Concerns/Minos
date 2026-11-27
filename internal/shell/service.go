@@ -118,9 +118,6 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
 	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
-	if snapshot.Draft {
-		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "draft", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
-	}
 	guard := forge.Guard{
 		Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
 		PullRequest: snapshot.PullRequest,
@@ -141,6 +138,9 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		if result := adapter.RemoveMarker(ctx, guard, *terminal.marker); result.Outcome != forge.WriteApplied {
 			return ReconcileResult{}, fmt.Errorf("remove stale %s marker: %s: %s", terminal.role, result.Outcome, result.Reason)
 		}
+	}
+	if snapshot.Draft {
+		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "draft", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
 	}
 	facts.HeadSHA = snapshot.HeadSHA
 	facts.BaseSHA = snapshot.TargetSHA

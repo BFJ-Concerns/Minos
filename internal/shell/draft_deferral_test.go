@@ -15,11 +15,14 @@ func TestSweepRecordsDraftDeferrals(t *testing.T) {
 	for _, scenario := range []string{"draft", "draft with dependency", "draft with every reason"} {
 		t.Run(scenario, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
-			cfg := writeSweepFixtureConfig(t, state)
+			cfg := writeSweepFixtureConfigWithKnobs(t, state, labelMarkerKnobs)
 			state.changePullRequest(func(pr map[string]any) { pr["draft"] = true })
-			state.mu.Lock()
-			state.reactions = []string{"+1", "-1"}
-			state.mu.Unlock()
+			defineMarkerLabels(state)
+			state.setPullRequestLabels(state.repositoryLabels[2:])
+			state.setReviews([]map[string]any{{
+				"id": 9, "state": "APPROVED", "commit_id": "previous-head",
+				"user": map[string]any{"login": "Minos"},
+			}})
 			wantReasons := []string{"draft"}
 			if scenario == "draft with every reason" {
 				setSweepFixtureWorkInProgressPrefix(t, cfg, "structural/")
@@ -58,7 +61,14 @@ func TestSweepRecordsDraftDeferrals(t *testing.T) {
 			}
 			state.mu.Lock()
 			defer state.mu.Unlock()
-			if len(state.writeSequence) != 0 || state.reviewRequestWrites != 0 || state.obsoleteAssignmentWrites != 0 || state.reactionWrites != 0 || state.reactionDeleteWrites != 0 || state.labelWrites != 0 || state.statusWrites != 0 || state.reviewWrites != 0 || len(state.issueCreateRequests) != 0 {
+			wantWrites := []string{"label-remove:minos/approved", "label-remove:minos/attention"}
+			if scenario == "draft with every reason" {
+				wantWrites = wantWrites[1:] // The clean marker still stands for the current head.
+			}
+			if !reflect.DeepEqual(state.writeSequence, wantWrites) {
+				t.Fatalf("draft marker writes = %v, want %v", state.writeSequence, wantWrites)
+			}
+			if state.reviewRequestWrites != 0 || state.obsoleteAssignmentWrites != 0 || state.reactionWrites != 0 || state.reactionDeleteWrites != 0 || state.statusWrites != 0 || state.reviewWrites != 0 || len(state.issueCreateRequests) != 0 {
 				t.Fatalf("draft caused forge writes: sequence=%v reactions=%d/%d labels=%d statuses=%d reviews=%d requests=%d assignments=%d issues=%d", state.writeSequence, state.reactionWrites, state.reactionDeleteWrites, state.labelWrites, state.statusWrites, state.reviewWrites, state.reviewRequestWrites, state.obsoleteAssignmentWrites, len(state.issueCreateRequests))
 			}
 		})
