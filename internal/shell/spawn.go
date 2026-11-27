@@ -253,7 +253,8 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	for key, value := range map[string]any{
 		"MINOS_GUIDANCE_SOURCES":         nonNilSources(repo.GuidanceSources),
 		"MINOS_FILING_DESTINATION":       repo.FilingDestination,
-		"MINOS_ROUTING":                  cfg.Routing.Roles(),
+		"MINOS_ROUTING":                  repo.Routing.Roles(),
+		"MINOS_CONCERN_ROUTING":          repo.Routing.ConcernRoutes(),
 		"MINOS_MARKERS":                  repo.Markers,
 		"MINOS_PUSH_INSPECTION_OUTCOMES": repo.PushInspection.Outcomes,
 	} {

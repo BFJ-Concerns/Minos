@@ -31,6 +31,7 @@ function enumeratedArgs(
     absentPullRequestRecord = false,
     provisioned = "claude codex",
     routing,
+    concernRouting,
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "minos-review-inputs-"));
@@ -69,6 +70,7 @@ function enumeratedArgs(
         MINOS_PR: "1",
         MINOS_PROVISIONED_ENGINES: provisioned,
         ...(routing === undefined ? { MINOS_ROUTING: "" } : { MINOS_ROUTING: JSON.stringify(routing) }),
+        MINOS_CONCERN_ROUTING: concernRouting === undefined ? "" : JSON.stringify(concernRouting),
       },
       stdio: ["ignore", "pipe", "pipe"],
     }));
@@ -355,6 +357,71 @@ test("every leg runs on the routing the input carries, and labels follow the rou
     result.requiredModelEvidence.filter((leg) => leg.role === "verifier").map((leg) => leg.pinnedModel),
     verifiers.map(() => "gpt-6-astra"),
   );
+});
+
+test("a routed concern's specialists propose on its own routing and the other concerns on the proposer's", async () => {
+  const args = enumeratedArgs("aaa111", "bbb222", {
+    concernRouting: { security: { engine: "claude", effort: "high" }, tests: { effort: "low" } },
+  });
+  assert.deepEqual(args.concernRouting.security, { engine: "claude", model: "claude-opus-5-5", effort: "high" });
+  assert.deepEqual(args.concernRouting.tests, { engine: "codex", model: "gpt-6.2-astra", effort: "low" });
+  assert.deepEqual(args.concernRouting.logic, args.routing.proposer);
+  const plan = [unit("correct", "logic"), unit("secure", "security"), unit("tested", "tests")];
+  const { result, calls } = await runScript(args, responder({ exploration: explorationFixture({ plan }) }));
+  assert.deepEqual(
+    specialistCalls(calls).map((call) => [call.opts.label, call.opts.engine, call.opts.model, call.opts.effort]),
+    [
+      ["specialist-1-logic-codex", "codex", "gpt-6.2-astra", "medium"],
+      ["specialist-2-security-claude", "claude", "claude-opus-5-5", "high"],
+      ["specialist-3-tests-codex", "codex", "gpt-6.2-astra", "low"],
+    ],
+  );
+  assert.deepEqual(
+    result.requiredModelEvidence.filter((leg) => leg.role === "specialist").map((leg) => leg.pinnedModel),
+    ["gpt-6.2-astra", "claude-opus-5-5", "gpt-6.2-astra"],
+  );
+  assert.deepEqual(result.dispatches.map((dispatch) => dispatch.family), ["codex", "claude", "codex"]);
+});
+
+test("a finding from a concern routed to the verifier's engine is verified by the other family", async () => {
+  const args = enumeratedArgs("aaa111", "bbb222", { concernRouting: { security: { engine: "claude" } } });
+  const plan = [unit("correct", "logic"), unit("secure", "security")];
+  const { result, calls } = await runScript(args, responder({ exploration: explorationFixture({ plan }) }));
+  const verified = Object.fromEntries(calls
+    .filter((call) => call.opts.label?.startsWith("verify-"))
+    .map((call) => [call.opts.label, [call.opts.engine, call.opts.model, findingsFromVerifierPrompt(call.prompt).map((entry) => entry.id)]]));
+  assert.deepEqual(verified, {
+    "verify-1-claude": ["claude", "claude-opus-5-5", ["specialist-1-logic-codex:1"]],
+    "verify-1-codex": ["codex", "gpt-6.2-astra", ["specialist-2-security-claude:1"]],
+  });
+  assert.ok(result.proposedFindings.every((entry) => entry.rawVerifier !== null));
+});
+
+test("the input builder refuses concern routing it cannot honour, and the workflow refuses input without it", async () => {
+  assert.throws(
+    () => enumeratedArgs("aaa111", "bbb222", { concernRouting: { style: { effort: "low" } } }),
+    /routing\.concerns\.style is not a specialist concern/,
+  );
+  assert.throws(
+    () => enumeratedArgs("aaa111", "bbb222", { provisioned: "codex", concernRouting: { security: { engine: "claude" } } }),
+    /routing\.concerns\.security\.engine names claude, which this deployment has not provisioned/,
+  );
+  assert.throws(
+    () => enumeratedArgs("aaa111", "bbb222", { concernRouting: { security: { model: "claude-opus-5-5" } } }),
+    /routing\.concerns\.security\.model needs routing\.concerns\.security\.engine/,
+  );
+  const calls = [];
+  const { concernRouting, ...withoutConcernRouting } = ARGS;
+  await assert.rejects(
+    runScript(withoutConcernRouting, (label) => { calls.push(label); return null; }),
+    /omitted or malformed the concern routing/,
+  );
+  const { security, ...missingOne } = concernRouting;
+  await assert.rejects(
+    runScript({ ...ARGS, concernRouting: missingOne }, (label) => { calls.push(label); return null; }),
+    /omitted or malformed the concern routing/,
+  );
+  assert.deepEqual(calls, []);
 });
 
 test("a single-engine deployment verifies a verifier's own findings on the one engine it has", async () => {
@@ -751,6 +818,7 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
 test("the lifecycle sizes the review to what the author changed since the head Minos last finished on", () => {
   assert.match(lifecycle, /then decide how much review this head needs, before any workflow runs/);
   assert.match(lifecycle, /"\$MINOS_BIN" forge earlier "\$MINOS_HEAD_SHA" "\$MINOS_TARGET_SHA"[\s\S]*`changed_paths`[\s\S]*The comparison is of file content, not of\s+commits/);
+  assert.match(lifecycle, /`\$MINOS_PUSH_INSPECTION_OUTCOMES`[\s\S]*An outcome the list\s+does not name is closed to this run[\s\S]*Choose one that the list names:\s+- \*\*No review\.\*\*/);
   assert.match(lifecycle, /\*\*No review\.\*\*[\s\S]*an empty `changed_paths`/);
   assert.match(lifecycle, /\*\*No review\.\*\*[\s\S]*unavailable\s+when a `\.review\/` brief engages the range[\s\S]*review-scope-inputs\.mjs" BASE "\$MINOS_HEAD_SHA"`[\s\S]*`briefsEngage`/);
   assert.match(lifecycle, /\*\*Increment\.\*\*[\s\S]*earlier head is an ancestor[\s\S]*`EARLIER\.\.\.HEAD` alone/);

@@ -105,11 +105,25 @@ signature-header = "X-Forgejo-Signature"
 # finding is checked by the family that did not propose it; with one engine
 # provisioned every role runs on it. The verifier's routing also carries the
 # finding merge. A model needs its engine named.
+#
+# A specialist concern (failure, fit, logic, security, tests) proposes on the
+# proposer's routing unless [routing.concerns.<concern>] sets its own: the
+# fields it sets replace the proposer's, and a concern moved to another
+# engine without a model takes that engine's proposer default. Each finding
+# is verified on the family that did not propose it where both engines are
+# provisioned, so a concern moved to claude is verified on the proposer's
+# codex routing.
+#
+# This table is the service-wide routing. A repository's own [routing]
+# replaces any role or concern it sets, whole: the fields it leaves out take
+# the defaults above, not the values set here.
 [routing]
 # [routing.verifier]
 # engine = "claude"
 # model = "claude-opus-5-5"
 # effort = "medium"
+# [routing.concerns.security]
+# effort = "high"
 
 [runs]
 dir = "/var/lib/minos/runs"

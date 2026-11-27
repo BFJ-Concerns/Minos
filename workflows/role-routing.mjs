@@ -45,7 +45,7 @@ const PAIRED_ENGINE = {
   judgement: "claude",
 };
 
-function defaultModel(role, engine) {
+export function defaultModel(role, engine) {
   return (PAIRED_MODEL[role] && PAIRED_MODEL[role][engine]) || DEFAULT_MODEL[engine];
 }
 

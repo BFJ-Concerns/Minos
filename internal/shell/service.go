@@ -127,11 +127,13 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		return ReconcileResult{Decision: ReconcileNothing}, nil
 	}
 	denials := repo.Admission.metadataDeferrals(snapshot)
+	var pathReadErr error
 	if len(denials) == 0 && len(repo.Admission.Paths) > 0 {
 		paths, err := adapter.ChangedPaths(ctx, guard, snapshot.TargetBranch)
 		switch {
 		case err != nil:
-			return ReconcileResult{}, fmt.Errorf("read paths for admission: %w", err)
+			denials = append(denials, "admission changed paths unavailable")
+			pathReadErr = fmt.Errorf("read paths for admission: %w", err)
 		case !repo.Admission.matchesPaths(paths):
 			denials = append(denials, "admission paths did not match")
 		}
@@ -141,7 +143,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		return ReconcileResult{
 			Decision: ReconcileNothing, DeferralReason: denials[0],
 			DeferralReasons: append(denials, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
-		}, nil
+		}, pathReadErr
 	}
 	for _, terminal := range []struct {
 		role   string

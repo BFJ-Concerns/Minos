@@ -78,10 +78,13 @@ type ServiceConfig struct {
 		DurationCeiling          string `toml:"duration-ceiling"`
 		PressureThresholdPercent int    `toml:"pressure-threshold-percent"`
 	} `toml:"runs"`
-	// Routing names, per workflow role, the engine, model and effort the
-	// operator chose. A role left unset defaults at run time to the
-	// cross-family pairing when both engines are provisioned and to the one
-	// provisioned engine otherwise; only set roles are exported.
+	// Routing names, per workflow role and per specialist concern, the
+	// engine, model and effort the operator chose for every repository. A
+	// repository's own [routing] replaces any role or concern it sets. A role
+	// left unset at both levels defaults at run time to the cross-family
+	// pairing when both engines are provisioned and to the one provisioned
+	// engine otherwise, and a concern left unset proposes on the proposer's
+	// routing; only set entries are exported.
 	Routing  Routing `toml:"routing"`
 	Ensemble struct {
 		ConcurrencyClaude int `toml:"concurrency-claude"`
@@ -145,33 +148,92 @@ type RoleRouting struct {
 	Effort string `toml:"effort" json:"effort,omitempty"`
 }
 
-// Routing holds the workflow roles by their configured names.
+// Routing holds the workflow roles by their configured names, and
+// under Concerns the specialist concerns that propose on routing of their
+// own, by concern name.
 type Routing struct {
-	Exploration    RoleRouting `toml:"exploration"`
-	Proposer       RoleRouting `toml:"proposer"`
-	Verifier       RoleRouting `toml:"verifier"`
-	EngagementGate RoleRouting `toml:"engagement-gate"`
-	BriefPlanner   RoleRouting `toml:"brief-planner"`
-	Judgement      RoleRouting `toml:"judgement"`
+	Exploration    RoleRouting            `toml:"exploration"`
+	Proposer       RoleRouting            `toml:"proposer"`
+	Verifier       RoleRouting            `toml:"verifier"`
+	EngagementGate RoleRouting            `toml:"engagement-gate"`
+	BriefPlanner   RoleRouting            `toml:"brief-planner"`
+	Judgement      RoleRouting            `toml:"judgement"`
+	Concerns       map[string]RoleRouting `toml:"concerns"`
+}
+
+// routingRoles names the workflow roles in the order they are listed.
+var routingRoles = []string{"exploration", "proposer", "verifier", "engagement-gate", "brief-planner", "judgement"}
+
+// role is the named role's routing field, for reading and replacing it.
+func (r *Routing) role(name string) *RoleRouting {
+	switch name {
+	case "exploration":
+		return &r.Exploration
+	case "proposer":
+		return &r.Proposer
+	case "verifier":
+		return &r.Verifier
+	case "engagement-gate":
+		return &r.EngagementGate
+	case "brief-planner":
+		return &r.BriefPlanner
+	case "judgement":
+		return &r.Judgement
+	}
+	panic("unknown routing role " + name)
 }
 
 // Roles lists the set roles by name for export and validation; an unset role
 // is absent so the run applies its default.
 func (r Routing) Roles() map[string]RoleRouting {
 	roles := map[string]RoleRouting{}
-	for _, role := range []struct {
-		name    string
-		routing RoleRouting
-	}{
-		{"exploration", r.Exploration}, {"proposer", r.Proposer}, {"verifier", r.Verifier},
-		{"engagement-gate", r.EngagementGate}, {"brief-planner", r.BriefPlanner},
-		{"judgement", r.Judgement},
-	} {
-		if role.routing != (RoleRouting{}) {
-			roles[role.name] = role.routing
+	for _, name := range routingRoles {
+		if routing := *r.role(name); routing != (RoleRouting{}) {
+			roles[name] = routing
 		}
 	}
 	return roles
+}
+
+// ConcernRoutes lists the set concerns by name for export; an unset concern
+// is absent so it proposes on the proposer's routing.
+func (r Routing) ConcernRoutes() map[string]RoleRouting {
+	concerns := map[string]RoleRouting{}
+	for name, routing := range r.Concerns {
+		if routing != (RoleRouting{}) {
+			concerns[name] = routing
+		}
+	}
+	return concerns
+}
+
+// specialistConcerns is every specialist concern the workflows ship, one per
+// file in workflows/review-briefs/concerns; a test holds the two together,
+// so a routed concern name is checked when the configuration loads rather
+// than when a run builds its input.
+var specialistConcerns = []string{"failure", "fit", "logic", "security", "tests"}
+
+// resolveRouting layers a repository file's routing over the service's. Each
+// role and each concern is one setting: one the file defines replaces the
+// service's whole, so a field it leaves out takes the run-time default and
+// not the service's value.
+func resolveRouting(service, own Routing, defined func(...string) bool) Routing {
+	resolved := service
+	resolved.Concerns = map[string]RoleRouting{}
+	for name, routing := range service.Concerns {
+		resolved.Concerns[name] = routing
+	}
+	for _, name := range routingRoles {
+		if defined("routing", name) {
+			*resolved.role(name) = *own.role(name)
+		}
+	}
+	for name, routing := range own.Concerns {
+		if defined("routing", "concerns", name) {
+			resolved.Concerns[name] = routing
+		}
+	}
+	return resolved
 }
 
 var routingEngines = []string{"claude", "codex"}
@@ -181,16 +243,26 @@ var routingEngines = []string{"claude", "codex"}
 // in workflows/role-routing.mjs carries the same list.
 var routingEfforts = []string{"minimal", "low", "medium", "high", "xhigh"}
 
-func validateRouting(routing Routing) error {
+func validateRouting(where string, routing Routing) error {
+	entries := map[string]RoleRouting{}
 	for name, role := range routing.Roles() {
+		entries[name] = role
+	}
+	for name, concern := range routing.Concerns {
+		if !slices.Contains(specialistConcerns, name) {
+			return fmt.Errorf("%s: routing.concerns.%s is not a specialist concern; the concerns are %s", where, name, strings.Join(specialistConcerns, ", "))
+		}
+		entries["concerns."+name] = concern
+	}
+	for name, role := range entries {
 		if role.Engine != "" && !slices.Contains(routingEngines, role.Engine) {
-			return fmt.Errorf("service.toml: routing.%s.engine must be one of %s", name, strings.Join(routingEngines, ", "))
+			return fmt.Errorf("%s: routing.%s.engine must be one of %s", where, name, strings.Join(routingEngines, ", "))
 		}
 		if role.Model != "" && role.Engine == "" {
-			return fmt.Errorf("service.toml: routing.%s.model needs routing.%s.engine, which names the model's family", name, name)
+			return fmt.Errorf("%s: routing.%s.model needs routing.%s.engine, which names the model's family", where, name, name)
 		}
 		if role.Effort != "" && !slices.Contains(routingEfforts, role.Effort) {
-			return fmt.Errorf("service.toml: routing.%s.effort must be one of %s", name, strings.Join(routingEfforts, ", "))
+			return fmt.Errorf("%s: routing.%s.effort must be one of %s", where, name, strings.Join(routingEfforts, ", "))
 		}
 	}
 	return nil
@@ -302,6 +374,10 @@ type RepoConfig struct {
 	// loading and the resolved values afterwards, so consumers read
 	// repo.Review.Threshold and friends without knowing which level set them.
 	RepositoryKnobs
+	// Routing holds the file's own [routing] while loading and, afterwards,
+	// the service's [routing] with every role and concern the file sets
+	// replaced by the file's.
+	Routing Routing `toml:"routing"`
 }
 
 func LoadServiceConfig(root string) (ServiceConfig, error) {
@@ -332,7 +408,7 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	if err := validateRepositoryKnobs("service.toml: repositories", cfg.Repositories); err != nil {
 		return ServiceConfig{}, err
 	}
-	if err := validateRouting(cfg.Routing); err != nil {
+	if err := validateRouting("service.toml", cfg.Routing); err != nil {
 		return ServiceConfig{}, err
 	}
 	for name, forge := range cfg.Forges {
@@ -428,6 +504,10 @@ func LoadRepoConfigs(cfg ServiceConfig) ([]RepoConfig, error) {
 		if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
 			return nil, err
 		}
+		if err := validateRouting(path, repo.Routing); err != nil {
+			return nil, err
+		}
+		repo.Routing = resolveRouting(cfg.Routing, repo.Routing, metadata.IsDefined)
 		repos = append(repos, repo)
 	}
 	return repos, nil

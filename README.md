@@ -64,8 +64,10 @@ With both engines available, specialists propose findings on Codex
 both at medium effort, so every finding is checked by the family that did
 not propose it: a verifier from the proposer's own family measurably favours
 that family's findings. The planning roles run on Codex (`gpt-6.1-sol`).
-`[routing]` in `service.toml` moves any role to another engine, model or
-effort, and a box with only one engine runs every role on it. Such a box
+`[routing]` in `service.toml` moves any role, or any one specialist
+concern, to another engine, model or effort, and a repository's own
+`[routing]` replaces any role or concern it sets; a box with only one
+engine runs every role on it. Such a box
 gives up the cross-family check: no finding there is checked by a family
 other than the one that proposed it.
 
@@ -151,15 +153,16 @@ The [deployment guide](docs/deployment.md) covers every step in detail,
 including the forge credentials and the archive host. On Linux amd64,
 download `minos-linux-amd64` from the [GitHub releases page][releases] and
 [check its SHA-256 digest](docs/deployment.md#check-the-release-binary) before
-installing it. Use the source files for the same tag to install the runtime
-and configuration. If the release has no binary asset or you use a
-different architecture, [build from source](#building-from-source).
+installing it with `sudo install -m 0755 minos-linux-amd64 /usr/local/bin/minos`.
+If the release has no binary asset or you use a different architecture,
+[build from source](#building-from-source) and install the resulting binary
+with `sudo install -m 0755 ./minos /usr/local/bin/minos`.
+
+Use the source files for the same tag to install the runtime and configuration.
 
 [releases]: https://github.com/BFJ-Concerns/Minos/releases
 
 ```sh
-sudo install -m 0755 minos-linux-amd64 /usr/local/bin/minos
-
 # Install the forge adaptations, per-run scripts and lead prompt under
 # /opt/minos (see the guide for the exact layout), then the review runtime.
 # The installer stops if a required tool is missing or Node is too old

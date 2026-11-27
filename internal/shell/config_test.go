@@ -2,6 +2,7 @@ package shell
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -439,6 +440,10 @@ func TestLoadServiceConfigDecodesAndValidatesRouting(t *testing.T) {
 		{name: "model without engine", toml: "[routing.proposer]\nmodel = \"gpt-6-astra\"\n", want: "routing.proposer.model needs routing.proposer.engine"},
 		{name: "unknown effort", toml: "[routing.exploration]\neffort = \"maximal\"\n", want: "routing.exploration.effort must be one of minimal, low, medium, high, xhigh"},
 		{name: "unknown role", toml: "[routing.judge]\nengine = \"claude\"\n", want: "unknown TOML keys: routing.judge"},
+		{name: "unknown concern", toml: "[routing.concerns.style]\nengine = \"claude\"\n", want: "routing.concerns.style is not a specialist concern; the concerns are failure, fit, logic, security, tests"},
+		{name: "concern model without engine", toml: "[routing.concerns.security]\nmodel = \"claude-opus-5-5\"\n", want: "routing.concerns.security.model needs routing.concerns.security.engine"},
+		{name: "concern effort", toml: "[routing.concerns.tests]\neffort = \"maximal\"\n", want: "routing.concerns.tests.effort must be one of"},
+		{name: "concern field", toml: "[routing.concerns.tests]\nmodle = \"x\"\n", want: "unknown TOML keys: routing.concerns.tests.modle"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(testServiceConfig+test.toml), 0o644); err != nil {
@@ -587,5 +592,83 @@ failures-forge = "local"
 	}
 	if got := cfg.BotLogin("local"); got != "Minos" {
 		t.Fatalf("local bot login = %q, want the service's", got)
+	}
+}
+
+func TestSpecialistConcernsMatchTheShippedConcernFiles(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("..", "..", "workflows", "review-briefs", "concerns"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shipped []string
+	for _, entry := range entries {
+		if name, ok := strings.CutSuffix(entry.Name(), ".md"); ok {
+			shipped = append(shipped, name)
+		}
+	}
+	if !slices.Equal(shipped, specialistConcerns) {
+		t.Fatalf("shipped concerns = %v, specialistConcerns = %v", shipped, specialistConcerns)
+	}
+}
+
+func TestRepositoryRoutingReplacesEachServiceRoleAndConcernItSets(t *testing.T) {
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, `[routing.proposer]
+engine = "codex"
+model = "gpt-6.2-astra"
+effort = "high"
+[routing.verifier]
+engine = "claude"
+effort = "high"
+[routing.concerns.security]
+engine = "claude"
+effort = "high"
+[routing.concerns.tests]
+effort = "low"
+`)
+	writeRepoConfig(t, root, "inherits.toml", repoConfig(""))
+	writeRepoConfig(t, root, "overrides.toml", repoConfig(`[routing.verifier]
+effort = "low"
+[routing.concerns.security]
+effort = "xhigh"
+[routing.concerns.logic]
+engine = "claude"
+model = "claude-opus-5-5"
+`))
+	repos, err := LoadRepoConfigs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]RepoConfig{}
+	for _, repo := range repos {
+		byPath[filepath.Base(repo.Path)] = repo
+	}
+	inherits := byPath["inherits.toml"].Routing
+	if !maps.Equal(inherits.Roles(), cfg.Routing.Roles()) || !maps.Equal(inherits.ConcernRoutes(), cfg.Routing.ConcernRoutes()) {
+		t.Fatalf("a repository that sets no routing has %+v, want the service's %+v", inherits, cfg.Routing)
+	}
+	overrides := byPath["overrides.toml"].Routing
+	wantRoles := map[string]RoleRouting{
+		"proposer": {Engine: "codex", Model: "gpt-6.2-astra", Effort: "high"},
+		"verifier": {Effort: "low"},
+	}
+	if got := overrides.Roles(); !maps.Equal(got, wantRoles) {
+		t.Fatalf("roles = %+v, want %+v", got, wantRoles)
+	}
+	wantConcerns := map[string]RoleRouting{
+		"security": {Effort: "xhigh"},
+		"tests":    {Effort: "low"},
+		"logic":    {Engine: "claude", Model: "claude-opus-5-5"},
+	}
+	if got := overrides.ConcernRoutes(); !maps.Equal(got, wantConcerns) {
+		t.Fatalf("concerns = %+v, want %+v", got, wantConcerns)
+	}
+	if got := cfg.Routing.ConcernRoutes(); len(got) != 2 || got["security"] != (RoleRouting{Engine: "claude", Effort: "high"}) {
+		t.Fatalf("a repository's override changed the service routing to %+v", got)
+	}
+
+	writeRepoConfig(t, root, "overrides.toml", repoConfig("[routing.concerns.style]\neffort = \"low\"\n"))
+	if _, err := LoadRepoConfigs(cfg); err == nil || !strings.Contains(err.Error(), "overrides.toml: routing.concerns.style is not a specialist concern") {
+		t.Fatalf("error = %v, want the repository file named with the unknown concern", err)
 	}
 }
