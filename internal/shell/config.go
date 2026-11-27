@@ -525,32 +525,39 @@ func repoConfigPaths(root string) ([]string, error) {
 	return paths, nil
 }
 
-// loadRepoConfigFile loads one repository file, an enrolled one or a
-// candidate about to replace it, and resolves its knobs against cfg.
+// loadRepoConfigFile reads an enrolled repository and resolves its knobs against cfg.
 func loadRepoConfigFile(cfg ServiceConfig, path string) (RepoConfig, error) {
-	var repo RepoConfig
-	metadata, err := decodeStrictTOML(path, &repo)
+	repo, metadata, err := readRepoConfigFile(path)
 	if err != nil {
-		return RepoConfig{}, err
-	}
-	repo.Path = path
-	if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
-		return RepoConfig{}, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
-	}
-	// The file's own values are validated before resolution fills a
-	// default, so an incomplete table is an error, never a silent default.
-	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
 		return RepoConfig{}, err
 	}
 	repo.RepositoryKnobs = resolveRepositoryKnobs(cfg.Repositories, repo.RepositoryKnobs, metadata.IsDefined)
 	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
 		return RepoConfig{}, err
 	}
-	if err := validateRouting(path, repo.Routing); err != nil {
-		return RepoConfig{}, err
-	}
 	repo.Routing = resolveRouting(cfg.Routing, repo.Routing, metadata.IsDefined)
 	return repo, nil
+}
+
+// readRepoConfigFile validates the values the file owns before applying
+// inherited values and defaults.
+func readRepoConfigFile(path string) (RepoConfig, toml.MetaData, error) {
+	var repo RepoConfig
+	metadata, err := decodeStrictTOML(path, &repo)
+	if err != nil {
+		return RepoConfig{}, metadata, err
+	}
+	repo.Path = path
+	if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
+		return RepoConfig{}, metadata, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
+	}
+	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
+		return RepoConfig{}, metadata, err
+	}
+	if err := validateRouting(path, repo.Routing); err != nil {
+		return RepoConfig{}, metadata, err
+	}
+	return repo, metadata, nil
 }
 
 // resolveRepositoryKnobs layers a repository file's knobs over the service

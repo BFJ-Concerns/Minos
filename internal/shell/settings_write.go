@@ -27,9 +27,8 @@ import (
 // the next level out applies again: the service-wide value for a repository,
 // the documented default for the service.
 //
-// Nothing is written unless the file, with the change made, loads under the
-// loader the service itself runs. One bad repository file stops every sweep,
-// so a change that would not load is refused here and the file left alone.
+// Each candidate must pass the loader's validation for the file being
+// edited. A fault in another file can be repaired independently.
 
 // settingsWrites serialises the writes of one process. A hand edit made at
 // the same moment is caught by the comparison before the rename.
@@ -38,13 +37,7 @@ var settingsWrites sync.Mutex
 // WriteServiceSetting sets or removes one key of root's service.toml.
 func WriteServiceSetting(root string, key []string, value any) error {
 	return writeSetting(filepath.Join(root, "service.toml"), key, value, func(candidate string) error {
-		cfg, err := loadServiceConfigFile(root, candidate)
-		if err != nil {
-			return err
-		}
-		// A service-wide value is resolved into every repository, so each
-		// must still load with it.
-		_, err = LoadRepoConfigs(cfg)
+		_, err := loadServiceConfigFile(root, candidate)
 		return err
 	})
 }
@@ -56,11 +49,7 @@ func WriteRepositorySetting(root string, repo RepoConfig, key []string, value an
 		return fmt.Errorf("%s is not a repository file of %s", repo.Path, root)
 	}
 	return writeSetting(repo.Path, key, value, func(candidate string) error {
-		cfg, err := LoadServiceConfig(root)
-		if err != nil {
-			return err
-		}
-		_, err = loadRepoConfigFile(cfg, candidate)
+		_, _, err := readRepoConfigFile(candidate)
 		return err
 	})
 }

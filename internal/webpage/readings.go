@@ -69,8 +69,8 @@ func readingsFrom(state *shell.StateReader) Readings {
 // the configuration file the deployer would have edited, taking effect for
 // the next run. Key is the setting's key path in that file and value the
 // whole setting; nil removes the key, so the next level out applies again.
-// A change the configuration loader would not accept is refused and nothing
-// written, and a Change hands that refusal to the operator as a Refused.
+// The loader validates the edited file before it is written, and Change
+// hands any refusal to the operator.
 type Settings struct {
 	// Service writes a key of service.toml. The service-wide value of a
 	// per-repository setting is at that setting's shell.ServiceWideKey.

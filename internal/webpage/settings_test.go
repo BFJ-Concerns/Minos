@@ -365,3 +365,68 @@ func TestSettingsRefusalHidesAPreviousSaveNotice(t *testing.T) {
 		t.Fatalf("refusal answered %d:\n%s", refused.Code, refused.Body)
 	}
 }
+
+func TestSettingsPagesCanRepairTwoInvalidFilesInEitherOrder(t *testing.T) {
+	for _, first := range []string{"service", "repository"} {
+		t.Run(first+" first", func(t *testing.T) {
+			root, read, write := configurationRoot(t)
+			site, _ := testSite(t, read, write)
+			session := signIn(t, site)
+			servicePath := filepath.Join(root, "service.toml")
+			repoPath := filepath.Join(root, "repos", "estate.toml")
+			badService := fileText(t, servicePath) + "max-concurrent = -1\n"
+			badRepo := strings.Replace(fileText(t, repoPath), `threshold = "Low"`, `threshold = "Hgh"`, 1)
+			for path, content := range map[string]string{servicePath: badService, repoPath: badRepo} {
+				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			const repoPage = "/repositories/forgejo/bfj/estate/settings"
+			// Each edited file still has to pass its own validation.
+			bad := submit(site, "/settings", url.Values{"setting": {"runs.max-concurrent"}, "value": {"-2"}}, session)
+			if bad.Code != http.StatusUnprocessableEntity || !strings.Contains(refusalText(bad.Body.String()), "runs max-concurrent") || fileText(t, servicePath) != badService {
+				t.Fatalf("invalid service edit answered %d or reached the file", bad.Code)
+			}
+			bad = submit(site, repoPage, url.Values{"setting": {"adaptation.run-body"}, "value": {""}}, session)
+			if bad.Code != http.StatusUnprocessableEntity || !strings.Contains(refusalText(bad.Body.String()), "adaptation.run-body are required") || fileText(t, repoPath) != badRepo {
+				t.Fatalf("invalid repository edit answered %d or reached the file", bad.Code)
+			}
+
+			repairService := func() {
+				response := submit(site, "/settings", url.Values{"setting": {"runs.max-concurrent"}, "value": {"2"}}, session)
+				if response.Code != http.StatusSeeOther {
+					t.Errorf("correcting service.toml answered %d: %s", response.Code, refusalText(response.Body.String()))
+				}
+			}
+			repairRepo := func() {
+				response := submit(site, repoPage, url.Values{"setting": {"review.threshold"}, "value": {"High"}}, session)
+				if response.Code != http.StatusSeeOther {
+					t.Errorf("correcting repository settings answered %d: %s", response.Code, refusalText(response.Body.String()))
+				}
+			}
+			if first == "service" {
+				repairService()
+				repairRepo()
+			} else {
+				repairRepo()
+				repairService()
+			}
+			cfg, err := shell.LoadServiceConfig(root)
+			if err != nil || cfg.MaxConcurrentRuns() != 2 {
+				t.Fatalf("service did not load the correction: %v", err)
+			}
+			repos, err := shell.LoadRepoConfigs(cfg)
+			if err != nil || len(repos) != 1 || repos[0].Review.Threshold != "High" {
+				t.Fatalf("repository did not load the correction: %v", err)
+			}
+		})
+	}
+}
+
+// refusalText extracts the operator-facing loader error from the page.
+func refusalText(body string) string {
+	_, message, _ := strings.Cut(body, `role="alert">`)
+	message, _, _ = strings.Cut(message, "</p>")
+	return message
+}
