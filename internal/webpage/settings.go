@@ -38,12 +38,14 @@ var repositorySettingsPage = Page{
 type settingsView struct {
 	// Repository is the repository whose settings are shown, nil on the
 	// service's page, which lists Repositories instead.
-	Repository   *shell.RepoConfig
-	Repositories []shell.RepoConfig
-	Unavailable  []string
-	Path         string
-	Saved        string
-	Groups       []settingsGroup
+	Repository         *shell.RepoConfig
+	Repositories       []shell.RepoConfig
+	Unavailable        []string
+	ConfigurationError string
+	Path               string
+	Saved              string
+	HasRefusedRow      bool
+	Groups             []settingsGroup
 }
 
 type settingsGroup struct {
@@ -80,6 +82,10 @@ func showServiceSettings(r *http.Request, read Readings) (any, error) {
 		return nil, err
 	}
 	view := settingsView{Repositories: repos, Unavailable: unavailable}
+	// Report what blocks the service's loader while keeping the editors usable.
+	if _, _, err := read.Configuration(); err != nil {
+		view.ConfigurationError = err.Error()
+	}
 	for _, state := range states {
 		row := settingRow{SettingState: state, Own: state.Level == shell.SetServiceWide, Fallback: "the default"}
 		switch {
@@ -172,6 +178,7 @@ func (view settingsView) finish(r *http.Request) settingsView {
 			}
 			if submitted != "" && row.Name() == submitted {
 				row.Field, row.Refused = r.PostFormValue("value"), true
+				view.HasRefusedRow = true
 			}
 			if len(row.Choices) > 0 && !slices.Contains(row.Choices, row.Field) {
 				row.InvalidChoice = fmt.Sprintf("Invalid value %q. Choose a replacement.", row.Field)
@@ -227,7 +234,7 @@ func changeRepositorySetting(r *http.Request, read Readings, write Settings) (st
 
 // changeSetting carries out a submitted form: the setting it names set to
 // the value typed, or removed. Anything the writer refuses, the loader's
-// refusal among it, is shown to the operator above the form.
+// refusal among it, is shown in the setting's row.
 func changeSetting(r *http.Request, states []shell.SettingState, page string, write func(shell.SettingState, any) error) (string, error) {
 	name := r.PostFormValue("setting")
 	state, found := shell.FindSetting(states, name)

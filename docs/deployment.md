@@ -256,18 +256,19 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    shipped example comments an illustrative value of 4).
 
    `[routing]` maps each workflow role — `exploration`, `proposer`,
-   `verifier`, `brief-planner`, `judgement` — to an
+   `verifier`, `brief-planner`, `judgement`, `description` — to an
    engine, model and effort. A role left unset defaults at run time: with
    both engines provisioned, proposing and planning roles (`exploration`,
    `proposer`, `brief-planner`) run on Codex, and the
-   `verifier` and `judgement` on Claude. With one engine provisioned, every
+   `verifier`, `judgement` and `description` on Claude. With one engine provisioned, every
    role runs on it. A role on
    Claude defaults to `claude-opus-5-5`; on Codex the `proposer` defaults to
    `gpt-6.2-astra` and every other role to `gpt-6.1-sol`. Default effort is `high` for
    `exploration` and `brief-planner`, and `medium` for `proposer`,
-   `verifier` and `judgement`. `judgement` is the role
+   `verifier`, `judgement` and `description`. `judgement` is the role
    of the run driver's one-shot judgement stages
-   (`workflows/judgements/`). An effort is one of the Ensemble
+   (`workflows/judgements/`), and `description` the role of the stage
+   that writes the description Minos keeps of a repository. An effort is one of the Ensemble
    runtime's levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
    or `max`. The verifier's routing also carries
    the leg that merges findings one fix would resolve before they are
@@ -665,7 +666,9 @@ waiting run ahead of it on the strength of quiet files.
 
 The receiver serves a web page for the operator at the root of its listener
 (`http://BOX:8919/` with the shipped `bind`), behind one sign-in. It opens on
-an overview of the enrolled repositories, and its settings pages show and
+an overview of the enrolled repositories. Each repository's Description
+link opens the account Minos keeps of its structure, with the default-branch
+commit it describes and when Minos recorded it. The settings pages show and
 change the configuration. Nothing Minos does depends on the
 page: a deployment that never opens it reviews exactly the same.
 
@@ -717,9 +720,10 @@ equals sign.
   layout stay where they are. Replacing or removing a multiline value can
   discard comments inside it. The receiver needs write access to the
   configuration directory and `repos/` and reports a refusal if it lacks access.
-- The service's loader validates the edited file before saving it and
-  shows the reason for any refusal. You can repair each file independently.
-  The receiver and sweep still validate the configuration they use.
+- The service's loader validates the edited file before saving it. The
+  setting stays open with the reason if the loader refuses the change.
+  You can repair each file independently. The settings index shows where
+  the loader stopped if the current configuration fails to load.
 - A change takes effect from the next run, since the sweep, each webhook
   and each run read the files afresh. The page says where a setting is read
   only when the receiver starts, or sizes the runs slice and needs

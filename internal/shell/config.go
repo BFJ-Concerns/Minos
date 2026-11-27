@@ -63,9 +63,8 @@ type ServiceConfig struct {
 		FailuresForge          string `toml:"failures-forge"`
 		FailuresCredentialFile string `toml:"failures-credential-file"`
 		ArchiveCommand         string `toml:"archive-command"`
-		// TimingsCommand assembles a run's timing record from the residue
-		// the run has already written. Archiving invokes it at the end of a
-		// run; the status projection invokes it mid-run for the same record.
+		// TimingsCommand assembles timing records for live status. The
+		// shipped archiver collects its own timings at the end of a run.
 		TimingsCommand string `toml:"timings-command"`
 		// RecentTimingsCommand lists the timing sidecars archive-run has
 		// delivered since a cutoff, so a finished run can still be reported
@@ -163,12 +162,13 @@ type Routing struct {
 	Proposer     RoleRouting            `toml:"proposer"`
 	Verifier     RoleRouting            `toml:"verifier"`
 	Judgement    RoleRouting            `toml:"judgement"`
+	Description  RoleRouting            `toml:"description"`
 	BriefPlanner RoleRouting            `toml:"brief-planner"`
 	Concerns     map[string]RoleRouting `toml:"concerns"`
 }
 
 // routingRoles names the workflow roles in the order they are listed.
-var routingRoles = []string{"exploration", "proposer", "verifier", "brief-planner", "judgement"}
+var routingRoles = []string{"exploration", "proposer", "verifier", "brief-planner", "judgement", "description"}
 
 // role is the named role's routing field, for reading and replacing it.
 func (r *Routing) role(name string) *RoleRouting {
@@ -183,6 +183,8 @@ func (r *Routing) role(name string) *RoleRouting {
 		return &r.BriefPlanner
 	case "judgement":
 		return &r.Judgement
+	case "description":
+		return &r.Description
 	}
 	panic("unknown routing role " + name)
 }

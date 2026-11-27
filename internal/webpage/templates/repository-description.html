@@ -1,0 +1,11 @@
+{{define "content"}}
+<p><a href="/">Overview</a></p>
+<h1>Description of {{.Repository.Owner}}/{{.Repository.Repo}}</h1>
+<p class="muted">{{.Repository.Forge}}</p>
+{{- with .Description}}
+<p class="description-source">Default branch commit <code>{{.Commit}}</code> · Recorded {{ago .WrittenAt}}</p>
+<pre class="repository-description">{{.Description}}</pre>
+{{- else}}
+<p class="empty">Minos has no description for this repository.</p>
+{{- end}}
+{{end}}

@@ -170,7 +170,13 @@ func TestOverviewShowsTheReviewerForEachForge(t *testing.T) {
 		}, nil
 	}}, Settings{})
 	response := visit(site, "/", signIn(t, site))
-	assertMonitoringPage(t, response.Code, response.Body.String(),
-		`github-project</a></td><td>github</td><td></td><td>github-reviewer</td>`,
-		`forgejo-project</a></td><td>forgejo</td><td></td><td>default-bot</td>`)
+	body := response.Body.String()
+	for _, want := range []struct{ repository, cells string }{
+		{"acme/github-project", "<td>github</td><td></td><td>github-reviewer</td>"},
+		{"acme/forgejo-project", "<td>forgejo</td><td></td><td>default-bot</td>"},
+	} {
+		_, row, _ := strings.Cut(body, ">"+want.repository+"</a>")
+		row, _, _ = strings.Cut(row, "</tr>")
+		assertMonitoringPage(t, response.Code, row, want.cells)
+	}
 }

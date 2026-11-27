@@ -98,6 +98,7 @@ Run slots take a value from the run:
 |---|---|
 | `{{target}}`, `{{head}}` | the commits bounding the change under review |
 | `{{project-documents}}` | each guidance document in configured order, in a `<project-guidance>` block naming its path |
+| `{{repository-description}}` | the description Minos keeps of the repository, in a `<repository-description>` block naming the default-branch commit it was made from, or nothing when the run was set up with none (`workflows/repository-description.mjs`) |
 | `{{pull-request}}` | the title and description in a `<pull-request-description>` block, or nothing when the pull request has neither |
 | `{{concern-name}}` | the concern's name |
 | `{{other-concerns}}` | a list line for every other concern: its name and summary |

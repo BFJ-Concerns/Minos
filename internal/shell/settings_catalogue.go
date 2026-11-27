@@ -147,7 +147,7 @@ func settingsCatalogue() []Setting {
 		Setting{Key: []string{"adaptation", "run-body"}, Scope: RepositoryFileScope, About: "The program each run of this repository starts.", Form: TextForm},
 		repositorySetting("admission", "Which pull requests are reviewed: by label (labels, exclude-labels), author (authors), base branch (base-branches), draft state (drafts: ready, any or only), title (title-pattern), touched paths (paths) and whether forks are admitted (allow-forks).", "Every pull request that is not a draft and not from a fork.", TOMLForm),
 		repositorySetting("work-in-progress-branch-prefixes", "Branch name prefixes whose pull requests are not reviewed.", "None.", TOMLForm),
-		repositorySetting("review.threshold", "The severity at and above which a confirmed finding blocks by default. Classification can make a finding blocking or advisory at any severity.", "High", ChoiceForm).choosing("Critical", "High", "Medium", "Low"),
+		repositorySetting("review.threshold", "Confirmed findings at or above this severity block by default. A finding with a never-gating class is set aside. A confirmed finding below the threshold is advisory by default and blocks only when classification records an undergrade reason.", "High", ChoiceForm).choosing("Critical", "High", "Medium", "Low"),
 		repositorySetting("review.depth", "How widely exploration plans and how deeply specialists read.", defaultReviewDepth, ChoiceForm).choosing(slices.Clone(reviewDepths)...),
 		repositorySetting("review.file-safeguard-requests", "Whether confirmed requests for a safeguard against a failure nobody has observed go to the filing destination, each marked as a safeguard request; they never block.", "false", BoolForm).choosing("false", "true"),
 		repositorySetting("push-inspection.outcomes", "What a run may decide to review after a push: no-review, increment or full; full is always among them.", `["no-review", "increment", "full"]`, TOMLForm),
@@ -156,7 +156,7 @@ func settingsCatalogue() []Setting {
 		repositorySetting("markers", "The marks Minos sets on a pull request (in-flight, clean, attention), each a reaction or a label.", `👀 in flight, 👍 clean and no attention marker.`, TOMLForm),
 	}
 	for _, role := range routingRoles {
-		settings = append(settings, repositorySetting("routing."+role, "The engine, model and effort the "+role+" role runs on, as {engine, model, effort}; the whole role is one setting.", "The shipped pairing: proposing and planning roles on Codex, the verifier and judgement on Claude, where both engines are provisioned; the one provisioned engine otherwise.", TOMLForm))
+		settings = append(settings, repositorySetting("routing."+role, "The engine, model and effort the "+role+" role runs on, as {engine, model, effort}; the whole role is one setting.", "The shipped pairing: proposing and planning roles on Codex, the verifier, judgement and description on Claude, where both engines are provisioned; the one provisioned engine otherwise.", TOMLForm))
 	}
 	for _, concern := range specialistConcerns {
 		settings = append(settings, repositorySetting("routing.concerns."+concern, "The engine, model and effort the "+concern+" specialist proposes on, as {engine, model, effort}.", "The proposer's routing.", TOMLForm))

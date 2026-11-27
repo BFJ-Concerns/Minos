@@ -43,6 +43,9 @@ type Readings struct {
 	// value of each per-repository setting among them, and where each
 	// value comes from.
 	ServiceSettings func() ([]shell.SettingState, error)
+	// RepositoryDescription is the kept description of an enrolled
+	// repository, or nil if no description is available yet.
+	RepositoryDescription func(repo shell.RepoConfig) (*shell.RepositoryDescription, error)
 	// RepositorySettings is every setting of one enrolled repository and
 	// whether its own file, service.toml or the documented default sets it.
 	RepositorySettings func(repo shell.RepoConfig) ([]shell.SettingState, error)
@@ -61,6 +64,7 @@ func readingsFrom(state *shell.StateReader) Readings {
 		ReviewThreads:              state.ReviewThreads,
 		SettingsRepositories:       state.SettingsRepositories,
 		ServiceSettings:            state.ServiceSettings,
+		RepositoryDescription:      state.RepositoryDescription,
 		RepositorySettings:         state.RepositorySettings,
 	}
 }
