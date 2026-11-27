@@ -24,7 +24,6 @@ const expectedCallSites = new Map([
   ["judgement.js", 1],
   ["review.js", 1],
   ["review-briefs.js", 2],
-  ["review-scope.js", 1],
   ["review-stages.mjs", 3],
 ]);
 
@@ -143,7 +142,7 @@ const schemaSamples = {
       findingId: "a", verdict: "unsettled", confidence: 50, severity: "Medium",
       reason: "r", outsideFact: "f", wouldSettle: "w",
     }],
-    newFindings: [sampleFinding],
+    newFindings: [{ ...sampleFinding, foundWhileChecking: "a" }],
     outOfScopeObservations: [],
   },
 };
@@ -257,6 +256,8 @@ test("the installed runtime compiles every shipped stage schema and accepts a we
   }
   assert.ok(!validate({ ...schemaSamples.verifierSchema, verdicts: [{ ...schemaSamples.verifierSchema.verdicts[0], verdict: "upheld" }] }, contracts.verifierSchema),
     "a verdict outside the three is refused");
+  assert.ok(!validate({ ...schemaSamples.verifierSchema, newFindings: [sampleFinding] }, contracts.verifierSchema),
+    "a raised finding that does not name the finding it was found while checking is refused");
 });
 
 test("the installed runtime refuses a stage schema shape it cannot compile", async (t) => {

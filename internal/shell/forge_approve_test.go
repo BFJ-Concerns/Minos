@@ -92,6 +92,13 @@ func TestForgeApproveWritesNothingWhereTheServiceNeverBlocked(t *testing.T) {
 	if err := ForgeCommand(t.Context(), []string{"approve", state.headSHA(), state.targetSHA()}, &out); err != nil {
 		t.Fatalf("forge approve: %v", err)
 	}
+	out.Reset()
+	err := ForgeCommand(t.Context(), []string{"approve", "previous-head", state.targetSHA()}, &out)
+	var refused forge.WriteResult
+	if err == nil || json.Unmarshal(out.Bytes(), &refused) != nil || refused.Outcome != forge.WriteRejected || refused.Reason != "head moved" {
+		t.Fatalf("approve a superseded head: %v, %s", err, out.String())
+	}
+
 	if writes, _ := state.reviewWriteFacts(); writes != 0 {
 		t.Fatalf("review writes = %d, want none; printed %q", writes, out.String())
 	}

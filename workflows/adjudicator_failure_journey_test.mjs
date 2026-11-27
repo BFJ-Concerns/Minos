@@ -307,7 +307,7 @@ test("the executable adjudicator carries the launch contract through to a publis
 
   assert.equal(launch.command, process.execPath);
   assert.deepEqual(launch.args, [
-    "/opt/minos/runtime/ensemble.mjs",
+    join(workflowsDir, "..", "runtime", "ensemble.mjs"),
     "--json-args",
     `@${argsPath}`,
     workflowPath,

@@ -1,16 +1,17 @@
 # Minos
 
 Minos is a pull-request review service. An authenticated webhook or the
-periodic sweep starts one trusted lead, on Claude Code by default or on
-Codex (`MINOS_LEAD_ENGINE`). The lead may clone and read without an
-internal containment layer; it reviews and publishes to the forge, and
-nothing else.
+periodic sweep starts a run. The shipped `run-body.env` sets
+`MINOS_RUN_DRIVER`, so `run-body` starts the scripted driver. When the
+setting is absent or either companion judgement module is missing,
+`run-body` starts a resident lead on Claude Code by default or on Codex
+(`MINOS_LEAD_ENGINE`).
 
 ## Layout
 
 - `cmd/minos` — the service binary.
 - `internal/shell/` — the Go service: webhook receiver, sweep, run
-  lifecycle, configuration and the `minos forge` commands the lead runs.
+  lifecycle, configuration and the `minos forge` commands a run uses.
 - `internal/webpage/` — the web page the service serves its operator: the
   one sign-in, the layout and stylesheet, and one Go file and one template
   for each page. A page reads through `shell.StateReader`
@@ -21,15 +22,12 @@ nothing else.
   adaptation scripts and the write guards and markers built on it.
 - `internal/product/` — the status vocabulary Minos writes on a pull
   request and the head-and-target record a review body carries.
-- `workflows/` — the Ensemble review workflows, the Node modules the lead
-  runs around them, and their Node tests.
+- `workflows/` — the Ensemble review workflows, their Node modules and tests.
 - `workflows/review-briefs/` — the Markdown prompts the review legs
   receive; its `README.md` maps each file to its stage and slots.
 - `workflows/run-driver.mjs` and `workflows/run-steps/` — the scripted run
-  driver and its steps, one module each. It judges nothing: a step that
-  needs a judgement asks a judgement stage. `run-body` starts the lead and
-  nothing starts the driver, whose steps are unbuilt but for push
-  inspection.
+  driver and its steps, one module each. The driver carries the run from
+  claim to close, asking one-shot stages for judgements.
 - `workflows/judgements/` — the one-shot judgement stages, each a prompt
   and a definition of one name; its `README.md` says what a stage is, how
   one runs and how one is replayed on a recorded input.
@@ -48,15 +46,13 @@ nothing else.
   target, never writes to the pull-request branch, and dispatches no agent
   to modify the reviewed code. Fixing and landing belong to the author,
   and the forge's own CI is the build evidence.
-- Keep one accountable lead from claim through the review workflow, the
-  `.review/` briefs stage, verdict classification and publication.
-- Keep the review as Ensemble workflows the lead invokes through the
+- Both run modes invoke the Ensemble review workflows through the
   installed launcher and adjudication wrapper (`workflows/review.js`, then
   `workflows/review-briefs.js` for the reviewed repository's `.review/`
   briefs). In the main review an exploration leg plans the review and
-  concern specialists propose findings over the whole range the lead
-  chose; in the brief stage a planner selects the briefs the change gives
-  work to and divides them into units, each proposed on by its own leg.
+  concern specialists propose findings over the selected range. In the
+  brief stage a planner selects the briefs the change gives work to and
+  divides them into units, each proposed on by its own leg.
   Both then merge, where one leg groups the findings one fix would
   resolve, and verify, where verifier legs give each merged finding one
   verdict — `confirmed`, `refuted` or `unsettled`. Only a confirmed
@@ -79,9 +75,11 @@ nothing else.
   that does not complete or a finding without a complete verifier verdict
   makes the run incomplete: no review is published and no clean status is
   set.
-- The lead sizes each review by reading the change: nothing, the increment
-  since the head Minos last finished on, or the whole pull request
-  (`lifecycle/lifecycle.md`, step 2), choosing only among the outcomes
+- Push inspection reads the change to choose whether to skip review,
+  review the increment since the head Minos last finished on, or review
+  the whole pull request. The scripted driver calls the push-inspection
+  judgement stage and the resident lead follows step 2 of
+  `lifecycle/lifecycle.md`. Both choose among the outcomes
   the repository's `push-inspection.outcomes` setting allows
   (`MINOS_PUSH_INSPECTION_OUTCOMES`; all three by default, `full` always
   among them). That earlier head is known by the
@@ -90,15 +88,15 @@ nothing else.
   cache: without it, `minos forge earlier` looks among the newest 20 of
   the pull request's commits for one Minos marked clean by status or
   requested changes on by review, and a full review follows when none
-  qualifies. The lifecycle dispatches no scope workflow;
-  `workflows/review-scope.js` ships unused.
+  qualifies. The resident lead and the scripted driver use the same
+  brief engagement rules to constrain push inspection.
 - The pull request carries only what blocks it. A confirmed finding that
   neither blocks nor takes a class is advisory and goes to the configured
   filing destination, as do unverified observations from outside the
-  change where that destination is a `file` or an `issue`. A finding the
-  lead puts in one of the three never-gating classes is published and
-  filed nowhere, and stays in the run record: a gap the pull-request
-  description declares as known or out of scope (`declared-out-of-scope`),
+  change where that destination is a `file` or an `issue`. A finding in
+  one of the three never-gating classes stays in the run record alone:
+  a gap the pull-request description declares as known or out of scope
+  (`declared-out-of-scope`),
   a request for a safeguard against something the project is not shown to
   face (`speculative-hardening`), and a restatement of a finding the
   author already has (`already-raised`) (`lifecycle/lifecycle.md`, step 5;
@@ -106,10 +104,11 @@ nothing else.
   repository that sets `review.file-safeguard-requests`, off by default:
   its `speculative-hardening` findings go to the filing destination as
   safeguard requests, each marked as no defect.
-- The verdict is the lead's classification judgement, informed by the
-  configured severity threshold and never mechanically bound to it
-  (`workflows/verdict-classification.mjs` owns the digest and the
-  fail-closed decision validation).
+- Classification determines the verdict. The scripted driver calls the
+  verdict-classification judgement stage and the resident lead follows
+  step 5 of `lifecycle/lifecycle.md`. The configured severity threshold
+  informs the judgement. Both modes use the digest and fail-closed
+  decision validation in `workflows/verdict-classification.mjs`.
 - The forge carries the durable result through the current head's review,
   reactions and `Minos` status. The status is a best-effort write,
   informational only — it never serves as a required check. Scratch data
@@ -117,10 +116,10 @@ nothing else.
 - Webhooks and the sweep both reconcile current forge state. The
   completion marker is head-bound — a terminal Minos review of the current
   head, or a clean/attention status on it — and any head movement is the
-  author's, spending the marker. Every status is the lead's but one:
-  admission, from a webhook or the sweep, writes `attention` when a
-  continuation made no progress beyond its predecessor, and stops it
-  (`internal/shell/spawn.go`, `stopStalledContinuation`).
+  author's, spending the marker. The run writes its own statuses.
+  Admission also writes `attention` and stops a continuation that made no
+  progress beyond its predecessor (`stopStalledContinuation` in
+  `internal/shell/spawn.go`).
   `runs.max-concurrent` caps how many runs are live at once.
 - Minos carries no sandbox of its own: whatever isolates the deployment is
   the security boundary, and the docs recommend a dedicated container or

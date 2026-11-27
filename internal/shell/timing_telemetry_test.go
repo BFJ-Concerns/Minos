@@ -1073,6 +1073,16 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(runDir, "failure.log"), "review process stopped unexpectedly\n")
+	stageFiles := []string{
+		"review-args.json", "review-result.json", "review@2-args.json", "review@2-result.json",
+		"review-brief@2-result.json", "push-inspection-input.json",
+		"verdict-decision.json", "verdict-decision-brief.json",
+	}
+	for _, name := range stageFiles {
+		if err := os.WriteFile(filepath.Join(runDir, name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// Add a deterministic agent result under the nested layout the timing and
 	// archive scripts consume without talking to a model provider.
 	records := map[string]string{}
@@ -1197,6 +1207,11 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	for _, want := range []string{records["record-a"] + "/agents/0001/agent.json"} {
 		if !strings.Contains(string(archiveListing), want) {
 			t.Fatalf("delivered tarball omits %q:\n%s", want, archiveListing)
+		}
+	}
+	for _, name := range stageFiles {
+		if !strings.Contains(string(archiveListing), "./"+name+"\n") {
+			t.Fatalf("delivered tarball omits stage evidence %q:\n%s", name, archiveListing)
 		}
 	}
 	if !strings.Contains(string(archiveListing), "cgroup-death-evidence") {

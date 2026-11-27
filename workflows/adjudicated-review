@@ -14,25 +14,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { adjudicate } from "./run-record-adjudicator.mjs";
 import { attachOutOfScopeObservations } from "./out-of-scope-observations.mjs";
 
-const LAUNCHER = "/opt/minos/runtime/ensemble.mjs";
-
-// The engagement-gate workflow carries its decision on the envelope; copy a
-// valid one onto the verdict so the lead can read it there. Envelopes without
-// one — every other review workflow — leave the verdict untouched.
-function attachScopeDecision(verdict, envelope) {
-  const decision = envelope && envelope.scopeDecision;
-  if (
-    !decision || typeof decision !== "object" || Array.isArray(decision) ||
-    (decision.status !== "nothing-engages" && decision.status !== "review-required") ||
-    typeof decision.reason !== "string" || decision.reason === ""
-  ) return verdict;
-  return { ...verdict, scopeDecision: { status: decision.status, reason: decision.reason } };
-}
+const LAUNCHER = resolve(dirname(fileURLToPath(import.meta.url)), "..", "runtime", "ensemble.mjs");
 
 function noteRetentionFailure(failures, relativePath, error) {
   const detail = `${relativePath}: ${error.message}`;
@@ -183,10 +171,7 @@ try {
   const lines = stdout.split(/\r?\n/).filter((line) => line !== "");
   if (lines.length !== 1) throw new Error(`ensemble launcher emitted ${lines.length} stdout lines; expected one envelope`);
   envelope = JSON.parse(lines[0]);
-  verdict = attachScopeDecision(
-    attachOutOfScopeObservations(await adjudicate({ envelope, recordDir }), envelope),
-    envelope,
-  );
+  verdict = attachOutOfScopeObservations(await adjudicate({ envelope, recordDir }), envelope);
 } catch (error) {
   process.stderr.write(`adjudicated-review: ${error.message}\n`);
   verdict = incomplete(error.message, envelope);
