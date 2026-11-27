@@ -136,10 +136,14 @@ func TestAdmissionWebhookAndSweepExcludeWithoutWriting(t *testing.T) {
 	cfg := writeSweepFixtureConfigWithKnobs(t, state, labelMarkerKnobs+`
 [admission]
 labels = ["Ready"]
-paths = ["internal/"]
+paths = ["internal/*.go"]
 `)
 	defineMarkerLabels(state)
 	state.setPullRequestLabels(state.repositoryLabels[2:])
+	state.changedFilePages = [][]map[string]any{
+		{{"filename": "internal/eligible.go", "status": "added"}},
+	}
+	state.pullRequest["changed_files"] = 1
 	// The delivery has Ready, but the current forge snapshot has only the stale markers.
 	fixture := readFixture(t, "004-pull_request-label_updated.json")
 	routeConfig := cfg
@@ -176,39 +180,64 @@ paths = ["internal/"]
 		t.Fatal(err)
 	}
 	doc := projectionJSON(t, sweepDeferralsPath(cfg))
-	if row := projectionRow(t, doc, "deferrals"); row["reason"] != "admission label did not match" || starts != 0 || len(state.writeSequence) != 0 {
-		t.Fatalf("excluded request: row = %v, starts = %d, writes = %v", row, starts, state.writeSequence)
+	if row := projectionRow(t, doc, "deferrals"); row["reason"] != "admission label did not match" || starts != 0 || len(state.writeRequests) != 0 {
+		t.Fatalf("excluded request: row = %v, starts = %d, writes = %v", row, starts, state.writeRequests)
 	}
 	state.mu.Lock()
-	state.setPullRequestLabels(state.repositoryLabels[:1])
+	state.setPullRequestLabels(append(slices.Clone(state.repositoryLabels[:1]), state.repositoryLabels[2:]...))
 	state.changedFilePages = [][]map[string]any{
-		{{"filename": "docs/readme.md", "status": "added"}},
+		{{"filename": "internal/nested/file.go", "status": "added"}},
 	}
 	state.mu.Unlock()
 	if err := SweepCommand(t.Context(), []string{"--config", cfg.Root}); err != nil {
 		t.Fatal(err)
 	}
 	doc = projectionJSON(t, sweepDeferralsPath(cfg))
-	if row := projectionRow(t, doc, "deferrals"); row["reason"] != "admission paths did not match" || starts != 0 || len(state.writeSequence) != 0 {
-		t.Fatalf("excluded paths: row = %v, starts = %d, writes = %v", row, starts, state.writeSequence)
+	if row := projectionRow(t, doc, "deferrals"); row["reason"] != "admission paths did not match" || starts != 0 || len(state.writeRequests) != 0 {
+		t.Fatalf("excluded paths: row = %v, starts = %d, writes = %v", row, starts, state.writeRequests)
+	}
+
+	for _, test := range []struct {
+		name  string
+		count any
+		extra []map[string]any
+		error string
+	}{
+		{"incomplete", 2, nil, "incomplete changed-file list"},
+		{"missing count", nil, nil, "incomplete changed-file list"},
+		{"duplicate", 2, []map[string]any{{"filename": "internal/nested/file.go", "status": "added"}}, "duplicate changed-file records"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state.mu.Lock()
+			state.pullRequest["changed_files"] = test.count
+			state.changedFilePages = state.changedFilePages[:1]
+			if test.extra != nil {
+				state.changedFilePages = append(state.changedFilePages, test.extra)
+			}
+			state.mu.Unlock()
+
+			repos, err := LoadRepoConfigs(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, facts := state.service(t)
+			if _, err := reconcilePullRequest(t.Context(), cfg, repos[0], facts); err == nil || !strings.Contains(err.Error(), test.error) {
+				t.Fatalf("unusable files: error = %v, want %q", err, test.error)
+			}
+			if err := SweepCommand(t.Context(), []string{"--config", cfg.Root}); err != nil {
+				t.Fatal(err)
+			}
+			doc := projectionJSON(t, sweepDeferralsPath(cfg))
+			if row := projectionRow(t, doc, "deferrals"); row["pr"] != facts.PR || row["reason"] != "admission changed paths unavailable" || starts != 0 || len(state.writeRequests) != 0 {
+				t.Fatalf("unusable files: row = %v, starts = %d, writes = %v", row, starts, state.writeRequests)
+			}
+		})
 	}
 
 	state.mu.Lock()
-	state.changedFilePages = append(state.changedFilePages, state.changedFilePages[0])
-	state.mu.Unlock()
-	repos, err := LoadRepoConfigs(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, facts := state.service(t)
-	_, err = reconcilePullRequest(t.Context(), cfg, repos[0], facts)
-	if err == nil || !strings.Contains(err.Error(), "duplicate changed-file records") || starts != 0 || len(state.writeSequence) != 0 {
-		t.Fatalf("unusable files: error = %v, starts = %d, writes = %v", err, starts, state.writeSequence)
-	}
-
-	state.mu.Lock()
+	state.pullRequest["changed_files"] = 2
 	state.changedFilePages = append(state.changedFilePages[:1], []map[string]any{
-		{"filename": "archive/old.go", "previous_filename": "internal/nested/old.go", "status": "renamed"},
+		{"filename": "archive/old.go", "previous_filename": "internal/old.go", "status": "renamed"},
 	})
 	state.mu.Unlock()
 	if err := SweepCommand(t.Context(), []string{"--config", cfg.Root}); err != nil {
@@ -238,12 +267,14 @@ func TestAdmissionChangedPathsOnGitHub(t *testing.T) {
 	if err != nil || len(paths) != 102 || !slices.Contains(paths, "nested/old.txt") || !slices.Contains(paths, "docs/99.txt") {
 		t.Fatalf("changed paths count = %d, error = %v, paths = %v", len(paths), err, paths)
 	}
-	stale := guard
-	stale.TargetSHA = "earlier-target"
-	if _, err := adapter.ChangedPaths(t.Context(), stale, "main"); err == nil || !strings.Contains(err.Error(), "target moved") {
+	state.mu.Lock()
+	state.targetAfterFiles = "advanced-target"
+	state.mu.Unlock()
+	if _, err := adapter.ChangedPaths(t.Context(), guard, "main"); err == nil || !strings.Contains(err.Error(), "target moved") {
 		t.Fatalf("stale target error = %v", err)
 	}
 	state.mu.Lock()
+	state.baseTip = guard.TargetSHA
 	state.pullRequest["changed_files"] = len(state.changedFiles) + 1
 	state.mu.Unlock()
 	if _, err := adapter.ChangedPaths(t.Context(), guard, "main"); err == nil || !strings.Contains(err.Error(), "incomplete changed-file list") {

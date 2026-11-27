@@ -409,7 +409,10 @@ as `internal/`, including nested files. Other entries use Go
 directly in `docs/`. A rename can match either its old or new path, and
 a deletion can match the deleted path. Minos reads the pull request's
 file list from the forge only when a path filter is needed. An incomplete
-or unavailable file list leaves the pull request unstarted.
+or unavailable file list leaves the pull request unstarted, and the sweep
+names it in the deferral list. GitHub returns at most 3,000 files for a pull
+request. This limit affects admission only when Minos needs the list to
+evaluate a path filter.
 
 Webhook deliveries and the periodic sweep both use current forge facts.
 A pull request excluded by the rules gets no new run or forge write.
