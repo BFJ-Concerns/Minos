@@ -729,6 +729,39 @@ func TestSweepRunResidueFallsBackToLocalFailureLog(t *testing.T) {
 	}
 }
 
+func TestSalvageRejectsFailureDestinationsInsideRunScratch(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		wantError string
+	}{
+		{name: "local log", wantError: "runs.failure-log must be outside runs.dir"},
+		{name: "ledger checkout", wantError: "failures repository must be outside runs.dir"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := scratchTestConfig(t)
+			runDir := filepath.Join(cfg.Runs.Dir, "minos-run-crashed-pr1")
+			writeTestFile(t, filepath.Join(runDir, "report.md"), "crash evidence\n")
+			logPath := filepath.Join(runDir, "FAILURES.md")
+			writeTestFile(t, logPath, "existing failure\n")
+			if test.name == "local log" {
+				cfg.Runs.FailuresRepo = ""
+				cfg.Runs.FailureLog = logPath
+			} else {
+				cfg.Runs.FailuresRepo = runDir
+			}
+
+			appended, err := appendFailureDigest(runDir, cfg)
+			if appended || err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("append = %t, %v, want refusal containing %q", appended, err, test.wantError)
+			}
+			content, err := os.ReadFile(logPath)
+			if err != nil || string(content) != "existing failure\n" {
+				t.Fatalf("failure destination contents = %q, %v", content, err)
+			}
+		})
+	}
+}
+
 func TestConcurrentSalvageAppendsOneLocalFailureDigest(t *testing.T) {
 	cfg := scratchTestConfig(t)
 	cfg.Runs.FailuresRepo = ""

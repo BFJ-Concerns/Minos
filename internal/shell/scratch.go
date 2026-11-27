@@ -248,7 +248,9 @@ func appendFailureDigest(runDir string, cfg ServiceConfig) (bool, error) {
 	if err != nil || !found {
 		return false, err
 	}
-	flags := os.O_APPEND | os.O_WRONLY
+	// Inspect the opened file before writing. Non-blocking open lets us
+	// reject a FIFO even when it has no reader.
+	flags := os.O_APPEND | os.O_WRONLY | syscall.O_NONBLOCK
 	var path string
 	if repo := cfg.Runs.FailuresRepo; repo != "" {
 		if insideDirectory(repo, cfg.Runs.Dir) {
@@ -268,21 +270,20 @@ func appendFailureDigest(runDir string, cfg ServiceConfig) (bool, error) {
 		}
 		flags |= os.O_CREATE
 	}
-	info, err := os.Stat(path)
-	if err == nil {
-		if !info.Mode().IsRegular() {
-			return false, fmt.Errorf("failure log %s is not a regular file", path)
-		}
-	} else if !os.IsNotExist(err) || flags&os.O_CREATE == 0 {
-		return false, fmt.Errorf("inspect failure log %s: %w", path, err)
-	}
 	file, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
 		return false, fmt.Errorf("open failure log %s: %w", path, err)
 	}
+	info, err := file.Stat()
+	if err != nil {
+		return false, fmt.Errorf("inspect failure log %s: %w", path, errors.Join(err, file.Close()))
+	}
+	if !info.Mode().IsRegular() {
+		return false, errors.Join(fmt.Errorf("failure log %s is not a regular file", path), file.Close())
+	}
 	// A crash digest can contain transcript excerpts. A log created by
 	// the run driver may have inherited broader permissions.
-	if cfg.Runs.FailuresRepo == "" && info != nil && info.Mode().Perm()&0o077 != 0 {
+	if cfg.Runs.FailuresRepo == "" && info.Mode().Perm()&0o077 != 0 {
 		if err := file.Chmod(info.Mode().Perm() & 0o700); err != nil {
 			return false, fmt.Errorf("restrict local failure log %s: %w", path, errors.Join(err, file.Close()))
 		}
