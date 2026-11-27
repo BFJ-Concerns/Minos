@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { CONFIRMED, NO_VERDICT, UNSETTLED, findingDisposition, findingGrade } from "./finding-disposition.mjs";
 import { SEVERITIES } from "./review-contracts.mjs";
 
+import { reviewSummarySections } from "./review-summary-sections.mjs";
+
 const LOW_COMBINED_CONFIDENCE = 70;
 
 async function jsonAt(path) {
@@ -411,6 +413,7 @@ export async function adjudicate({ envelope, recordDir }) {
     confirmedFindings,
     unsettledFindings,
     operatorAttention,
+    ...(complete ? { summarySections: reviewSummarySections(envelope, confirmedFindings, { ran, skipped }) } : {}),
     ran,
     skipped,
     misconfigurations,

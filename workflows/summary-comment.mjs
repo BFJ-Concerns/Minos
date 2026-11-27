@@ -78,8 +78,17 @@ function outstanding({ outstanding = [] }) {
   if (outstanding.length === 0) return "";
   return [
     `**${plural(outstanding.length, "earlier blocking finding")} still outstanding:**`, "",
-    ...outstanding.map(({ path, line, head }) => `- \`${path}:${line}\`, raised at \`${short(head)}\``),
+    ...outstanding.map(({ path, line, head, title }) =>
+      `- ${title ? codeSpan(title) + " at " : ""}${codeSpan(`${path}:${line}`)}, raised at \`${short(head)}\``),
   ].join("\n");
+}
+
+// Literal titles and paths may themselves contain Markdown code spans.
+function codeSpan(text) {
+  const value = text.replace(/[\r\n]+/g, " ");
+  const longest = Math.max(0, ...[...value.matchAll(/`+/g)].map(([run]) => run.length));
+  const fence = "`".repeat(longest + 1);
+  return longest === 0 ? `${fence}${value}${fence}` : `${fence} ${value} ${fence}`;
 }
 
 export const PARTS = { state, sections, outstanding };

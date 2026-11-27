@@ -528,6 +528,12 @@ the run from claim to conclusion and launches one-shot judgement stages
 when a decision needs reading. An installation with either judgement
 module missing falls back to the resident lead.
 
+The scripted driver keeps the pull request's summary comment current. A
+clean or changes-requested summary records the result for the head it
+names. The commit status and reaction or label provide additional signals.
+An incomplete summary names the part of the run that stopped. The run
+report holds the detailed diagnostics for the operator.
+
 To use the resident lead, set `MINOS_RUN_DRIVER=""` in `run-body.env`. The
 lead runs on the configured engine and model. After useful run activity
 begins, `run-body` keeps resumable `done` and `blocked` turns alive. It
