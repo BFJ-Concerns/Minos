@@ -17,23 +17,8 @@ const { contractsFromInput } = await import("./review-contracts.mjs");
 const { routingFromInput } = await import("./role-routing.mjs");
 const { projectGuidanceFromInput, projectGuidanceSection } = await import("./orientation-guidance.mjs");
 const { pullRequestFromInput, pullRequestSection } = await import("./pull-request-description.mjs");
-const { promptFits, fillPrompt } = await import("./review-prompts.mjs");
+const { promptFits, fillPrompt, concernsFromInput, concernLine } = await import("./review-prompts.mjs");
 const { reviewStages, proposalsOf, subjectOf, proposedFindingOf, uncheckedFindingOf } = await import("./review-stages.mjs");
-
-function concernsFromInput(input) {
-  const concerns = input && input.concerns;
-  if (!Array.isArray(concerns) || concerns.length === 0) return null;
-  const names = new Set();
-  for (const concern of concerns) {
-    if (
-      !concern || typeof concern.name !== "string" || concern.name === "" ||
-      typeof concern.summary !== "string" || concern.summary === "" ||
-      names.has(concern.name)
-    ) return null;
-    names.add(concern.name);
-  }
-  return concerns;
-}
 
 function promptsFromInput(input, concerns) {
   const prompts = input && input.prompts;
@@ -46,10 +31,6 @@ function promptsFromInput(input, concerns) {
     !concerns.every((concern) => promptFits(prompts.specialist[concern.name], "specialist"))
   ) return null;
   return prompts;
-}
-
-function concernLine(concern) {
-  return `- \`${concern.name}\`: ${concern.summary}`;
 }
 
 function validExplorationResult(result) {

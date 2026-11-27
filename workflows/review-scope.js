@@ -11,8 +11,8 @@ export const meta = {
 // modules.
 const { routingFromInput } = await import("./role-routing.mjs");
 const { projectGuidanceFromInput, projectGuidanceSection } = await import("./orientation-guidance.mjs");
-
-const SCOPE_BRIEF_PATH = "workflows/review-briefs/scope.md";
+const { pullRequestFromInput, pullRequestSection } = await import("./pull-request-description.mjs");
+const { promptFits, fillPrompt, concernsFromInput, concernLine } = await import("./review-prompts.mjs");
 
 const scopeSchema = {
   type: "object",
@@ -29,16 +29,12 @@ const target = input && typeof input.target === "string" ? input.target : null;
 const head = input && typeof input.head === "string" ? input.head : null;
 const occasion = input && typeof input.occasion === "string" && input.occasion !== "" ? input.occasion : null;
 if (!target || !head)
-  throw new Error("review-scope workflow needs args {target, head, guidance, instructionBriefs, changedFiles, briefsEngage, briefDispositions}");
+  throw new Error("review-scope workflow needs args {target, head, guidance, concerns, prompts, changedFiles, briefsEngage, briefDispositions}");
 
-const scopeBrief = (Array.isArray(input.instructionBriefs) ? input.instructionBriefs : []).find(
-  (entry) =>
-    entry &&
-    entry.path === SCOPE_BRIEF_PATH &&
-    typeof entry.readPath === "string" &&
-    typeof entry.content === "string"
-);
-if (!scopeBrief) throw new Error("deterministic input omitted the shipped scope brief");
+const concerns = concernsFromInput(input);
+if (!concerns) throw new Error("deterministic input omitted the review concerns");
+const scopePrompt = input.prompts && input.prompts.scope;
+if (!promptFits(scopePrompt, "scope")) throw new Error("deterministic input omitted the shipped scope prompt");
 
 const guidance = projectGuidanceFromInput(input);
 if (!guidance) throw new Error("deterministic input omitted reviewed-project guidance");
@@ -88,19 +84,20 @@ const legs = [{ label: "review-scope", role: "scope", pinnedModel: routing["enga
 
 phase("Scope");
 const result = await agent(
-  `Your role brief follows; it is complete here, so there is no file to read for it.\n\n` +
-    `<role-brief path="${SCOPE_BRIEF_PATH}">\n${scopeBrief.content}\n</role-brief>\n\n` +
-    `Judge the change against the reviewed project's declared intent below — every guidance document its owner configured, ` +
-    `or its own checked-in guidance where none is configured. This project intent governs whether behaviour is correct.\n\n` +
-    `${projectGuidanceSection(guidance)}\n\n` +
-    `Judge ${target}...${head}. Changed files: ${JSON.stringify(changedFiles)}\n` +
-    `Every repository review brief has already settled deterministically as not applying to this change. ` +
-    `Decide only whether the change itself gives any reviewable concern real work.`,
+  fillPrompt(scopePrompt, {
+    target,
+    head,
+    "project-documents": projectGuidanceSection(guidance),
+    "pull-request": pullRequestSection(pullRequestFromInput(input)),
+    concerns: concerns.map(concernLine).join("\n"),
+    "changed-files": JSON.stringify(changedFiles, null, 2),
+  }),
   {
     engine: routing["engagement-gate"].engine,
     schema: scopeSchema,
     model: routing["engagement-gate"].model,
     effort: routing["engagement-gate"].effort,
+    strip: ["skills", "agents"],
     label: "review-scope",
     phase: "Scope",
   }

@@ -24,6 +24,7 @@ export const STAGE_RUN_SLOTS = {
   "brief-relevance": [...REVIEWED_CHANGE_SLOTS, "changed-paths", "relevance-conditions"],
   "brief-partition": [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "file-inventory"],
   assignment: ["target", "head", "brief-directory", "unit-concern", "unit-files"],
+  scope: [...REVIEWED_CHANGE_SLOTS, "concerns", "changed-files"],
   merge: ["target", "head", "findings"],
   verifier: [...REVIEWED_CHANGE_SLOTS, "findings"],
 };
@@ -106,8 +107,32 @@ export function reviewPrompts(repositoryRoot) {
         unit: prompt("assignment", "assignment/unit.md"),
         files: prompt("assignment", "assignment/files.md"),
       },
+      scope: prompt("scope", "scope.md"),
       merge: prompt("merge", "merge.md"),
       verifier: prompt("verifier", "verifier.md"),
     },
   };
+}
+
+// A workflow's check of the concerns its input builder attached from
+// reviewPrompts: each with a distinct name and a summary, or null.
+export function concernsFromInput(input) {
+  const concerns = input && input.concerns;
+  if (!Array.isArray(concerns) || concerns.length === 0) return null;
+  const names = new Set();
+  for (const concern of concerns) {
+    if (
+      !concern || typeof concern.name !== "string" || concern.name === "" ||
+      typeof concern.summary !== "string" || concern.summary === "" ||
+      names.has(concern.name)
+    ) return null;
+    names.add(concern.name);
+  }
+  return concerns;
+}
+
+// A concern as the planning and scope prompts list it: its name and the
+// summary that completes "reads the change for …".
+export function concernLine(concern) {
+  return `- \`${concern.name}\`: ${concern.summary}`;
 }
