@@ -114,16 +114,19 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 }
 
 func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot) (ReconcileResult, error) {
-	if snapshot.State != "open" || snapshot.Merged {
-		return ReconcileResult{Decision: ReconcileNothing}, nil
-	}
-	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
 	guard := forge.Guard{
 		Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
 		PullRequest: snapshot.PullRequest,
 		HeadSHA:     snapshot.HeadSHA,
 		TargetSHA:   snapshot.TargetSHA,
 	}
+	if pullRequestClosed(snapshot) {
+		return ReconcileResult{Decision: ReconcileNothing}, removeReviewedChange(cfg, facts.Forge, guard)
+	}
+	if snapshot.State != "open" {
+		return ReconcileResult{Decision: ReconcileNothing}, nil
+	}
+	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
 	for _, terminal := range []struct {
 		role   string
 		marker *forge.Marker

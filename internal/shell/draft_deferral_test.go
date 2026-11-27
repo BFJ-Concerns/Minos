@@ -128,7 +128,9 @@ func TestSweepStartsDraftWhenMarkedReady(t *testing.T) {
 
 func TestClosedOrMergedDraftHasNoDeferral(t *testing.T) {
 	for _, snapshot := range []forge.Snapshot{{State: "closed", Draft: true}, {State: "open", Merged: true, Draft: true}} {
-		result, err := reconcilePullRequestSnapshot(t.Context(), ServiceConfig{}, RepoConfig{}, Facts{}, nil, snapshot)
+		var cfg ServiceConfig
+		cfg.Runs.Dir = t.TempDir()
+		result, err := reconcilePullRequestSnapshot(t.Context(), cfg, RepoConfig{}, Facts{}, nil, snapshot)
 		if err != nil {
 			t.Fatal(err)
 		}

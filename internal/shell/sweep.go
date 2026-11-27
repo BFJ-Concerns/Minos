@@ -37,6 +37,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	reviewedEntries := readReviewedChangeEntries(cfg)
 	var candidates []sweepCandidate
 	// One unreadable repo must not stop the pass: the rest of the fleet is
 	// swept, and only a total outage fails the unit.
@@ -64,6 +65,9 @@ func SweepCommand(ctx context.Context, args []string) error {
 			skipped[slug] = err.Error()
 			log.Printf("attention: repo %s skipped this pass: %v", slug, err)
 			continue
+		}
+		if len(reviewedEntries) > 0 {
+			pruneClosedReviewedChanges(ctx, cfg, repo, reviewedEntries, pullRequests)
 		}
 		for _, facts := range pullRequests {
 			priority := 1
