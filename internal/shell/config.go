@@ -123,6 +123,7 @@ const (
 	defaultRunMemoryEnvelopeGiB        = 8
 	defaultRunDurationCeiling          = "12h"
 	defaultRunPressureThresholdPercent = 85
+	defaultEngineConcurrency           = 2
 )
 
 func (cfg ServiceConfig) runMemoryEnvelopeGiB() int {
@@ -310,6 +311,10 @@ type RepositoryKnobs struct {
 		// to the filing destination, each marked as such. Off, they are
 		// published and filed nowhere.
 		FileSafeguardRequests bool `toml:"file-safeguard-requests"`
+		// Depth is the review depth preset: how wide exploration plans and
+		// how deeply the specialists read, one of reviewDepths. It never
+		// bounds the findings a review returns.
+		Depth string `toml:"depth"`
 	} `toml:"review"`
 	PushInspection struct {
 		// Outcomes are the push-inspection outcomes a run may choose
@@ -473,9 +478,13 @@ func loadServiceConfigFile(root, path string) (ServiceConfig, error) {
 	if cfg.Runs.MaxConcurrent < 0 || cfg.MaxConcurrentRuns() > cfg.Runs.MemoryEnvelopeGiB {
 		return ServiceConfig{}, fmt.Errorf("service.toml: runs max-concurrent must be between 1 and %d — beyond that the shared %dG run memory envelope cannot give each run a useful share", cfg.Runs.MemoryEnvelopeGiB, cfg.Runs.MemoryEnvelopeGiB)
 	}
-	if cfg.Ensemble.ConcurrencyClaude == 0 && cfg.Ensemble.ConcurrencyCodex == 0 {
-		cfg.Ensemble.ConcurrencyClaude = 2
-		cfg.Ensemble.ConcurrencyCodex = 2
+	// Each engine's concurrency left unset takes the default on its own, so
+	// setting one leaves the other in force.
+	if !metadata.IsDefined("ensemble", "concurrency-claude") {
+		cfg.Ensemble.ConcurrencyClaude = defaultEngineConcurrency
+	}
+	if !metadata.IsDefined("ensemble", "concurrency-codex") {
+		cfg.Ensemble.ConcurrencyCodex = defaultEngineConcurrency
 	}
 	if cfg.Ensemble.ConcurrencyClaude < 1 || cfg.Ensemble.ConcurrencyCodex < 1 {
 		return ServiceConfig{}, fmt.Errorf("service.toml: ensemble concurrency-claude and concurrency-codex must be positive")
@@ -556,6 +565,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	if defined("review", "file-safeguard-requests") {
 		knobs.Review.FileSafeguardRequests = own.Review.FileSafeguardRequests
 	}
+	if defined("review", "depth") {
+		knobs.Review.Depth = own.Review.Depth
+	}
 	if defined("push-inspection", "outcomes") {
 		knobs.PushInspection.Outcomes = own.PushInspection.Outcomes
 	}
@@ -570,6 +582,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if knobs.Review.Threshold == "" {
 		knobs.Review.Threshold = "High"
+	}
+	if knobs.Review.Depth == "" {
+		knobs.Review.Depth = defaultReviewDepth
 	}
 	if knobs.PushInspection.Outcomes == nil {
 		knobs.PushInspection.Outcomes = slices.Clone(pushInspectionOutcomes)
@@ -595,6 +610,9 @@ func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
 	}
 	if knobs.Review.Threshold != "" && !validReviewThreshold(knobs.Review.Threshold) {
 		return fmt.Errorf("%s: review.threshold must be Critical, High, Medium or Low", where)
+	}
+	if knobs.Review.Depth != "" && !slices.Contains(reviewDepths, knobs.Review.Depth) {
+		return fmt.Errorf("%s: review.depth must be one of %s", where, strings.Join(reviewDepths, ", "))
 	}
 	if knobs.PushInspection.Outcomes != nil {
 		if err := validPushInspectionOutcomes(knobs.PushInspection.Outcomes); err != nil {
@@ -693,6 +711,14 @@ func validPushInspectionOutcomes(outcomes []string) error {
 	}
 	return nil
 }
+
+const defaultReviewDepth = "standard"
+
+// reviewDepths are the review depth presets, from the narrowest plan and
+// shallowest reading to the widest and deepest. Each names the passages
+// workflows/review-briefs/exploration-depth/ and specialist-depth/ hold for
+// it, and workflows/prompt-settings.mjs lists the same values.
+var reviewDepths = []string{"light", "standard", "thorough"}
 
 func validReviewThreshold(value string) bool {
 	switch value {

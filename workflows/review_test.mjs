@@ -33,6 +33,7 @@ function enumeratedArgs(
     routing,
     concernRouting,
     fileSafeguardRequests = "",
+    depth = "",
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "minos-review-inputs-"));
@@ -73,6 +74,7 @@ function enumeratedArgs(
         ...(routing === undefined ? { MINOS_ROUTING: "" } : { MINOS_ROUTING: JSON.stringify(routing) }),
         MINOS_CONCERN_ROUTING: concernRouting === undefined ? "" : JSON.stringify(concernRouting),
         MINOS_FILE_SAFEGUARD_REQUESTS: fileSafeguardRequests,
+        MINOS_REVIEW_DEPTH: depth,
       },
       stdio: ["ignore", "pipe", "pipe"],
     }));
@@ -418,20 +420,26 @@ test("both routes' verdicts reach the result when findings from two engines are 
 });
 
 test("a merged group is verified by the family that did not propose its primary, wherever the primary is listed", async () => {
-  const args = enumeratedArgs("aaa111", "bbb222", { concernRouting: { security: { engine: "claude" } } });
-  const plan = [unit("secure", "security"), unit("correct", "logic")];
-  const { calls } = await runScript(args, responder({
-    exploration: explorationFixture({ plan }),
-    merge: (_label, prompt) => {
-      const ids = findingsFromVerifierPrompt(prompt).map((entry) => entry.id);
-      assert.deepEqual(ids, ["specialist-1-security-claude:1", "specialist-2-logic-codex:1"]);
-      return { groups: [{ findingIds: ids, primary: ids[1], sharedCause: "One guard covers both." }] };
-    },
-  }));
-  const verified = calls
-    .filter((call) => call.opts.label?.startsWith("verify-"))
-    .map((call) => [call.opts.label, call.opts.engine, findingsFromVerifierPrompt(call.prompt).map((entry) => entry.id)]);
-  assert.deepEqual(verified, [["verify-1-claude", "claude", ["specialist-2-logic-codex:1"]]]);
+  // Both pairings: a Codex primary listed second, and a Claude primary
+  // listed first, which only a verifier chosen from the primary's own
+  // proposer, and not from the default proposer's engine, sends to Codex.
+  for (const [primary, verifiedOn] of [[1, ["verify-1-claude", "claude"]], [0, ["verify-1-codex", "codex"]]]) {
+    const args = enumeratedArgs("aaa111", "bbb222", { concernRouting: { security: { engine: "claude" } } });
+    const plan = [unit("secure", "security"), unit("correct", "logic")];
+    const { calls } = await runScript(args, responder({
+      exploration: explorationFixture({ plan }),
+      merge: (_label, prompt) => {
+        const ids = findingsFromVerifierPrompt(prompt).map((entry) => entry.id);
+        assert.deepEqual(ids, ["specialist-1-security-claude:1", "specialist-2-logic-codex:1"]);
+        return { groups: [{ findingIds: ids, primary: ids[primary], sharedCause: "One guard covers both." }] };
+      },
+    }));
+    const verified = calls
+      .filter((call) => call.opts.label?.startsWith("verify-"))
+      .map((call) => [call.opts.label, call.opts.engine, findingsFromVerifierPrompt(call.prompt).map((entry) => entry.id)]);
+    const primaryId = ["specialist-1-security-claude:1", "specialist-2-logic-codex:1"][primary];
+    assert.deepEqual(verified, [[...verifiedOn, [primaryId]]]);
+  }
 });
 
 test("the input builder hands the specialists and verifiers the safeguard-request passages the repository's setting chooses", async () => {
@@ -453,6 +461,24 @@ test("the input builder hands the specialists and verifiers the safeguard-reques
   }
   assert.throws(() => enumeratedArgs("aaa111", "bbb222", { fileSafeguardRequests: "yes" }),
     /MINOS_FILE_SAFEGUARD_REQUESTS must be one of false, true/);
+});
+
+test("the input builder hands the exploration leg and the specialists the depth passages the repository's setting chooses", async () => {
+  const passage = (slot, value) => readFileSync(new URL(`./review-briefs/${slot}/${value}.md`, import.meta.url), "utf8").trim();
+  for (const [setting, depth] of [["", "standard"], ["light", "light"], ["thorough", "thorough"]]) {
+    const args = enumeratedArgs("aaa111", "bbb222", { depth: setting });
+    const { calls } = await runScript(args, responder({ exploration: explorationFixture({ plan: [unit("correct", "logic")] }) }));
+    const exploration = calls.find((call) => call.opts.label?.startsWith("explor"));
+    const specialist = calls.find((call) => call.opts.label?.startsWith("specialist-"));
+    assert.ok(exploration.prompt.includes(passage("exploration-depth", depth)), `the dispatched exploration leg under ${JSON.stringify(setting)} reads ${depth}.md`);
+    assert.ok(specialist.prompt.includes(passage("specialist-depth", depth)), `the dispatched specialist under ${JSON.stringify(setting)} reads ${depth}.md`);
+    for (const other of ["light", "thorough"].filter((value) => value !== depth)) {
+      assert.ok(!exploration.prompt.includes(passage("exploration-depth", other)), `the exploration leg under ${depth} leaves out ${other}.md`);
+      assert.ok(!specialist.prompt.includes(passage("specialist-depth", other)), `the specialist under ${depth} leaves out ${other}.md`);
+    }
+  }
+  assert.throws(() => enumeratedArgs("aaa111", "bbb222", { depth: "deep" }),
+    /MINOS_REVIEW_DEPTH must be one of light, standard, thorough/);
 });
 
 test("the input builder refuses concern routing it cannot honour, and the workflow refuses input without it", async () => {
@@ -867,8 +893,8 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post the reviews in that order, one scripted review per entry/);
   assert.match(lifecycle, /compose-review-publication\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication" "\$MINOS_ORIENTATION" "\$MINOS_REVIEW_THRESHOLD"/);
   assert.match(lifecycle, /A request-changes plan contains one review with the blocking findings\s+from both review stages and nothing else[\s\S]*A clean plan has no posts/);
-  assert.match(lifecycle, /A finding that neither gates nor takes a class is advisory\. It goes to\s+the repository's configured filing destination on either outcome and\s+is never posted on the pull request/);
-  assert.match(lifecycle, /A finding that fits a class takes it at any severity[\s\S]*?A classed finding is never\s+published on the pull request, and with one exception it is filed\s+nowhere either[\s\S]*?`\$MINOS_FILE_SAFEGUARD_REQUESTS` is `true`: there the composer in step\s+6 sets each `speculative-hardening` finding aside for the filing\s+destination as a safeguard request[\s\S]*?A classed finding stays in the run record/);
+  assert.match(lifecycle, /A finding that neither gates nor takes a class is advisory\. It goes to\s+the repository's configured filing destination on either outcome and\s+is never part of the review, which carries only what blocks the pull\s+request\. Where that destination is a comment on the pull request, the\s+comment is filing/);
+  assert.match(lifecycle, /A finding that fits a class takes it at any severity[\s\S]*?A classed finding is never\s+part of the review step 6 posts, and with one exception it is filed\s+nowhere either[\s\S]*?`\$MINOS_FILE_SAFEGUARD_REQUESTS` is `true`: there the composer in step\s+6 sets each `speculative-hardening` finding aside for the filing\s+destination as a safeguard request[\s\S]*?A classed finding stays in the run record/);
   assert.match(lifecycle, /file-triage\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication\/triage-entries\.json" \\\s+"\$MINOS_ORIENTATION" \\\s+>/);
   assert.match(lifecycle, /`unfiled` means delivery\s+failed or the destination kind is unavailable[\s\S]*Filing failure never generates a pull-request comment,\s+never falls back to another surface, and changes no verdict/);
 });

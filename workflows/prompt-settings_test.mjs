@@ -14,12 +14,17 @@ const promptDirectory = join(repositoryRoot, "workflows", "review-briefs");
 const passage = (slot, value) => readFileSync(join(promptDirectory, slot, `${value}.md`), "utf8").trim();
 
 test("a setting's variable is read as one of its values, unset or empty as its default, and anything else refused", () => {
-  assert.deepEqual(promptSettingsFromEnvironment({}), { "file-safeguard-requests": "false" });
-  assert.deepEqual(promptSettingsFromEnvironment({ MINOS_FILE_SAFEGUARD_REQUESTS: "" }), { "file-safeguard-requests": "false" });
-  assert.deepEqual(promptSettingsFromEnvironment({ MINOS_FILE_SAFEGUARD_REQUESTS: "true" }), { "file-safeguard-requests": "true" });
+  const defaults = { "file-safeguard-requests": "false", depth: "standard" };
+  assert.deepEqual(promptSettingsFromEnvironment({}), defaults);
+  assert.deepEqual(promptSettingsFromEnvironment({ MINOS_FILE_SAFEGUARD_REQUESTS: "", MINOS_REVIEW_DEPTH: "" }), defaults);
+  assert.deepEqual(promptSettingsFromEnvironment({ MINOS_FILE_SAFEGUARD_REQUESTS: "true", MINOS_REVIEW_DEPTH: "thorough" }),
+    { "file-safeguard-requests": "true", depth: "thorough" });
   for (const value of ["yes", "TRUE", "1"])
     assert.throws(() => promptSettingsFromEnvironment({ MINOS_FILE_SAFEGUARD_REQUESTS: value }),
       /MINOS_FILE_SAFEGUARD_REQUESTS must be one of false, true/);
+  for (const value of ["deep", "Standard", "0"])
+    assert.throws(() => promptSettingsFromEnvironment({ MINOS_REVIEW_DEPTH: value }),
+      /MINOS_REVIEW_DEPTH must be one of light, standard, thorough/);
 });
 
 test("each of a setting's slots reads differently under each of its values", () => {
@@ -45,9 +50,33 @@ test("the specialists, the brief reviewer and the verifier read the safeguard-re
   }
 });
 
+// Depth reaches the plan and the specialists' reading and nothing else: the
+// prompts that judge, merge or filter findings read the same at every depth.
+test("the exploration leg and the specialists read the depth passages their repository's setting chooses, and no other prompt changes", () => {
+  const depths = PROMPT_SETTINGS.depth.values;
+  const under = Object.fromEntries(depths.map((depth) =>
+    [depth, reviewPrompts(repositoryRoot, promptSettingsFromEnvironment({ MINOS_REVIEW_DEPTH: depth })).prompts]));
+  for (const depth of depths) {
+    const { exploration, specialist } = under[depth];
+    for (const [slot, texts] of [["exploration-depth", [["exploration", exploration]]], ["specialist-depth", Object.entries(specialist)]]) {
+      for (const [label, text] of texts) {
+        assert.ok(!text.includes(`{{${slot}}}`), `${label} has the slot filled`);
+        for (const other of depths) {
+          const chosen = passage(slot, other);
+          if (chosen === "") continue;
+          assert.equal(text.includes(chosen), other === depth, `${label} under ${depth} ${other === depth ? "carries" : "leaves out"} ${slot}/${other}.md`);
+        }
+      }
+    }
+    for (const stage of ["repository", "briefRelevance", "briefPartition", "scope", "merge", "verifier"])
+      assert.equal(under[depth][stage], under.standard[stage], `${stage} reads the same under ${depth}`);
+  }
+});
+
 test("prompts are refused without a value for every setting, and when a value's passage is missing", (t) => {
   assert.throws(() => reviewPrompts(repositoryRoot, {}), /prompt setting file-safeguard-requests must be one of false, true/);
-  assert.throws(() => reviewPrompts(repositoryRoot, { "file-safeguard-requests": "maybe" }), /must be one of false, true/);
+  assert.throws(() => reviewPrompts(repositoryRoot, { "file-safeguard-requests": "maybe", depth: "standard" }), /must be one of false, true/);
+  assert.throws(() => reviewPrompts(repositoryRoot, { "file-safeguard-requests": "false" }), /prompt setting depth must be one of light, standard, thorough/);
   const root = mkdtempSync(join(tmpdir(), "minos-prompt-settings-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   cpSync(promptDirectory, join(root, "workflows", "review-briefs"), { recursive: true });

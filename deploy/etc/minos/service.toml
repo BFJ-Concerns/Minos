@@ -53,9 +53,9 @@ signature-header = "X-Forgejo-Signature"
 # Per-repository knobs, set once here for every opted-in repository; any
 # repository's own file under repos/ overrides a knob whole. Unset at both
 # levels, a repository gets: threshold High, no safeguard requests filed,
-# its own checked-in guidance (the first present of AGENTS.md, CLAUDE.md,
-# README.md), a pull-request comment as its filing destination, and no
-# work-in-progress prefixes.
+# standard review depth, its own checked-in guidance (the first present of
+# AGENTS.md, CLAUDE.md, README.md), a pull-request comment as its filing
+# destination, and no work-in-progress prefixes.
 [repositories]
 # work-in-progress-branch-prefixes = ["structural/"]
 # Admission defaults to ready pull requests from the same repository.
@@ -75,6 +75,10 @@ signature-header = "X-Forgejo-Signature"
 # never gates; set true, it goes to the filing destination marked as a
 # safeguard request, and unset or false it is filed nowhere.
 # file-safeguard-requests = false
+# The review depth preset steers how wide the exploration leg plans and how
+# deeply the specialists read: light, standard or thorough. It never bounds
+# the findings a review returns.
+# depth = "standard"
 # Push inspection reads each new head before any review and chooses no
 # review, a review of what changed since the head Minos last finished on,
 # or a full review. Outcomes lists the ones it may choose; full is required.

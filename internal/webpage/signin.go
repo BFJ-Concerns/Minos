@@ -111,7 +111,7 @@ func (site *site) showSignIn(w http.ResponseWriter, r *http.Request) {
 
 func (site *site) signIn(w http.ResponseWriter, r *http.Request) {
 	form := signInForm{Next: localPath(r.PostFormValue("next"))}
-	if !site.attempts.admit(time.Now()) {
+	if !site.attempts.admit(site.now()) {
 		site.render(w, http.StatusTooManyRequests, signInPage, form, "Too many attempts at once. Wait a moment and try again.")
 		return
 	}
@@ -241,9 +241,16 @@ func sameSecret(presented, held string) bool {
 }
 
 // localPath is next when it is a path on this site, and the overview
-// otherwise: sign-in sends the browser on to nowhere else.
+// otherwise: sign-in sends the browser on to nowhere else. A browser reads a
+// backslash as a slash and drops a tab or newline from an address before it
+// reads it, so "/\t/host" would be "//host", another host; next is
+// therefore refused outright when it holds any of them or any other control
+// character, and must then begin with one slash and no second.
 func localPath(next string) string {
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.Contains(next, `\`) {
+	if strings.ContainsFunc(next, func(r rune) bool { return r < 0x20 || r == 0x7f || r == '\\' }) {
+		return "/"
+	}
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
 		return "/"
 	}
 	return next
