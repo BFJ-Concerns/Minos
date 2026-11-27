@@ -8,17 +8,23 @@ slots and sends it.
 |---|---|---|
 | `exploration.md` | the leg that plans the review | the plan (`explorationSchema`) |
 | `specialist.md` | one proposing leg for each planned unit, with that unit's concern from `concerns/` | `specialistSchema` |
+| `general.md` | the general reviewers of a quick review, which has no plan and no concerns: one leg given the whole change, and one for each share where that leg divided the change | `generalWholeChangeSchema` from the leg given the whole change, `generalSchema` from a share's |
 | `brief-relevance.md` | one leg, for the `.review/` briefs that run only if their relevance condition is met | its own schema in `review-briefs.js` |
 | `brief-partition.md` | one leg for each `.review/` brief that reads its whole part with a `per-file` sweep | its own schema in `review-briefs.js` |
 | `repository.md` | one proposing leg for each unit of a reviewed repository's `.review/` brief | `specialistSchema` |
 | `merge.md` | one leg, between proposing and verifying | `mergeSchema` |
 | `verifier.md` | the verifier legs, a batch of findings each | `verifierSchema` |
 
-`reviewed-change.md`, `writing-a-finding.md` and `severity-scale.md` are
-sections several of those prompts share. They are never sent on their own.
-Neither are the files in `assignment/`, which make up the value of one slot
-of `repository.md`, nor the passages a repository's settings choose
-(*Settings* below).
+`reviewed-change.md`, `what-makes-a-finding.md`, `writing-a-finding.md` and
+`severity-scale.md` are sections several of those prompts share. They are
+never sent on their own. Neither are the files in `assignment/` and
+`general-assignment/`, which make up the value of one slot of
+`repository.md` and of `general.md`, nor the passages a repository's
+settings choose (*Settings* below).
+
+Which of `specialist.md` and `general.md` a pull request's main review is
+made with is its review mode (`workflows/review-mode.mjs`). The other
+prompts are the same under both.
 
 The schemas are in `workflows/review-contracts.mjs`, with what the merge and
 verifier legs are shown of each finding.
@@ -49,6 +55,25 @@ this order with a blank line between them:
 Each file is filled in a pass of its own before the result becomes the
 value of `{{assignment}}`.
 
+## General assignments
+
+`general.md` tells a general reviewer what it was given in a slot of the
+same name, `{{assignment}}`, whose value is one of the two files in
+`general-assignment/`, filled in a pass of its own:
+
+| File | Given to |
+|---|---|
+| `whole-change.md` | the reviewer given the whole change. It says when a change is divided and how the division is returned, in `shares` |
+| `share.md` | the reviewer of one share of a divided change. It carries that share and the others' |
+
+Whether a change is too large for one reader is the judgement of the
+reviewer given the whole of it, made before it reads closely, so that an
+ordinary change costs one proposing leg and no planning leg. A change is
+divided once: a share's reviewer answers on a schema with no `shares`. A
+share is what its reviewer must get through and never a bound on what it
+reads or reports, as a planned unit's scope is for a specialist that
+shares its concern.
+
 ## Settings
 
 Some of what a prompt says depends on a per-repository setting. Each such
@@ -58,9 +83,10 @@ for the repository's value.
 
 | Slot | In | Setting | Files |
 |---|---|---|---|
-| `{{safeguard-requests}}` | `specialist.md`, `repository.md` | `review.file-safeguard-requests` | `false.md`: reviewers leave out requests for a safeguard against a situation nothing suggests will arise. `true.md`: they report them, written as requests |
+| `{{safeguard-requests}}` | `specialist.md`, `general.md`, `repository.md` | `review.file-safeguard-requests` | `false.md`: reviewers leave out requests for a safeguard against a situation nothing suggests will arise. `true.md`: they report them, written as requests |
 | `{{exploration-depth}}` | `exploration.md` | `review.depth` | How wide the plan is. `light.md`: a concern is engaged by the change's own lines and the code that uses them directly, and divided only when one specialist could not get through it. `standard.md`: a concern is divided only when the change is too large for one reading. `thorough.md`: the change's effects are followed to what depends on them indirectly, and a concern is divided sooner |
 | `{{specialist-depth}}` | `specialist.md` | `review.depth` | How far a specialist reads around each changed hunk. `light.md`: the code the hunk sits in, and further only for a reason it can name. `standard.md`: empty, so the specialist reads as far as its own judgement takes it. `thorough.md`: the callers and readers, the neighbouring code and the history of every hunk |
+| `{{general-depth}}` | `general.md` | `review.depth` | How far a general reviewer reads around each changed hunk it was given, in the three files `specialist-depth/` has, written for a reader of every kind of problem |
 | `{{verifier-safeguard-requests}}` | `verifier.md` | `review.file-safeguard-requests` | `false.md`: empty, so a verifier judges every finding as a claimed fault. `true.md`: what each verdict means for a request for a safeguard, that a confirmed one is filed as a suggestion and never sent to the author as a defect, and that a request whose situation does arise is refuted and its fault returned as the verifier's own finding |
 
 A file is empty where its value adds nothing to the prompt, and it is still
@@ -75,9 +101,13 @@ shows, so that no reader is given a rule and then its amendment. A passage
 is read without its siblings: it says what its own value asks for and does
 not compare itself with another value.
 
-Depth sets how wide the review plans and how far its specialists read. It
-never bounds what a leg returns: no depth passage caps or thins
-findings, and every changed hunk is considered at every depth. The verifier
+Depth sets how wide the review plans and how far its specialists or its
+general reviewers read. It never bounds what a leg returns: no depth
+passage caps or thins findings, and every changed hunk is considered at
+every depth. A quick review has no plan for depth to widen: the reviewer
+given the whole change divides it when one reader could not give every
+hunk the reading its depth asks for, so a deeper reading divides a change
+sooner without a passage of its own. The verifier
 and the `.review/` brief prompts take no depth passage. A finding is checked
 in the same way at every depth, and how much a brief's reviewer reads is set
 by the brief's own extent and sweep. `workflows/prompt-settings.mjs` lists the
@@ -88,7 +118,8 @@ settings, their values and their slots.
 A prompt is its file with every `{{slot}}` filled.
 
 File slots take the text of another file here: `{{reviewed-change}}`,
-`{{writing-a-finding}}`, `{{severity-scale}}`, `{{concern}}`, which takes
+`{{what-makes-a-finding}}`, `{{writing-a-finding}}`, `{{severity-scale}}`,
+`{{concern}}`, which takes
 a concern file's body without its front matter, and the setting slots
 above.
 
@@ -106,7 +137,9 @@ Run slots take a value from the run:
 | `{{planned-focus}}` | the planned unit's `concern` sentence and its `scope` paths |
 | `{{same-concern-units}}` | every other planned unit of the same concern, each in the form `{{planned-focus}}` takes, or nothing when the unit is its concern's only one |
 | `{{brief-path}}`, `{{brief}}` | a `.review/` brief's path and text |
-| `{{assignment}}` | the scope and extent a `.review/` brief's reviewer was given, built from the files in `assignment/` |
+| `{{assignment}}` | in `repository.md`, the scope and extent a `.review/` brief's reviewer was given, built from the files in `assignment/`; in `general.md`, what a general reviewer was given, from the files in `general-assignment/` |
+| `{{share}}` | a share of a divided change: its `focus` sentence and its `paths`, in the form `{{planned-focus}}` takes |
+| `{{other-shares}}` | every other share of the change, each in the form `{{share}}` takes |
 | `{{brief-directory}}` | the directory a brief covers, as a path from the repository root with a trailing slash; `./` for a brief at the top of `.review/` |
 | `{{unit-concern}}` | the `concern` sentence the partition gave the unit |
 | `{{unit-files}}` | a list line for each of the unit's files, or of the whole part's where it was not partitioned |
@@ -126,22 +159,27 @@ workflow before it dispatches.
 A review proposes, merges, then verifies.
 
 1. Every proposing leg's `findings` and `outsideConcernFindings` are proposed
-   findings alike.
+   findings alike. A general reviewer has no concern and returns `findings`
+   alone, those of a reviewer that went on to divide the change included.
 2. The merge leg groups all of a workflow's proposed findings at once, before
    they are batched for verification. It is skipped when there are fewer than
    two. Each group goes on as one finding: its primary write-up, with the
    group's other write-ups beside it.
 3. A verifier leg gives each finding one verdict, which stands for every
-   write-up in its group. A finding a verifier raises itself, in
+   write-up in its group. A finding from a whole-scope brief is shown with
+   `wholeScope`, the brief's directory, and `wholeScopeBrief`, the brief's
+   path, which the verifier reads to tell whether a defect it meets in
+   untouched code there falls under the brief. A finding a verifier raises itself, in
    `newFindings`, is a proposed finding too: it is merged with whatever else
    its round raised and verified in the next round, by a leg other than the
    one that raised it. It names the finding its verifier was checking, and
    where that finding is a whole-scope brief's and the raised one lies under
-   the brief's directory, the raised one is verified as whole-scope too. A
+   the brief's directory, the raised one is verified as whole-scope too,
+   under the same brief. A
    workflow runs `VERIFICATION_ROUNDS` rounds (`review-contracts.mjs`), and
    what the last of them raises has no verdict, which leaves the run
    incomplete.
 
-`workflows/review-stages.mjs` runs the merge and the verification for both
-review workflows. `workflows/finding-disposition.mjs` says what each verdict
+`workflows/review-stages.mjs` runs the merge and the verification for
+every review workflow. `workflows/finding-disposition.mjs` says what each verdict
 makes of its finding, and what becomes of one left unsettled.

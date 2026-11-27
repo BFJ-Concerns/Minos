@@ -260,6 +260,7 @@ test("a safeguard request filed with no blocker beside it leaves the round clean
     environment: { MINOS_FILE_SAFEGUARD_REQUESTS: "true" },
   });
   assert.equal(result.status, 0, result.stderr);
+  assert.equal(plan.verdict, "clean");
   assert.deepEqual(plan.posts, []);
   assert.deepEqual(readJson(plan.triage.entries).map(({ kind, title }) => ({ kind, title })),
     [{ kind: "safeguard-request", title: "Guard the retry" }]);

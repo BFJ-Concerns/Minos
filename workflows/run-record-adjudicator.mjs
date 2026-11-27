@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { CONFIRMED, NO_VERDICT, UNSETTLED, findingDisposition, findingGrade } from "./finding-disposition.mjs";
 import { SEVERITIES } from "./review-contracts.mjs";
+import { MODES } from "./review-mode.mjs";
 
 import { reviewSummarySections } from "./review-summary-sections.mjs";
 
@@ -408,6 +409,9 @@ export async function adjudicate({ envelope, recordDir }) {
     status: complete ? "complete" : "incomplete",
     complete,
     reviewed: reviewedFrom(envelope),
+    // The review mode the workflow named for itself (review-mode.mjs). The
+    // brief stage names none.
+    ...(MODES.includes(envelope.mode) ? { mode: envelope.mode } : {}),
     incomplete,
     infrastructureFailure: null,
     confirmedFindings,

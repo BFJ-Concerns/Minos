@@ -252,6 +252,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_COMMIT_STATUS":              strconv.FormatBool(repo.Review.CommitStatus),
 		"MINOS_REQUEST_CHANGES_ROUNDS":     strconv.Itoa(repo.requestChangesRounds()),
 		"MINOS_REVIEW_DEPTH":               repo.Review.Depth,
+		"MINOS_REVIEW_MODE":                repo.Review.Mode,
 		"MINOS_COMMIT_AUTHOR_NAME":         cfg.Service.CommitAuthorName,
 		"MINOS_COMMIT_AUTHOR_EMAIL":        cfg.Service.CommitAuthorEmail,
 		"MINOS_STATUS_CONTEXT":             cfg.Service.StatusContext,

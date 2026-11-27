@@ -36,7 +36,11 @@ author, and the forge's own CI remains the build evidence.
    files gets a full review.
 4. An exploration pass plans the review and dispatches the specialists the
    change gives work to: logic, failure handling, security, tests, and fit
-   with the project. Findings that one fix would resolve are merged, and a
+   with the project. A repository set to the quick review
+   (`review.mode = "quick"`) has no plan and no specialists: one general
+   reviewer reads the change for every kind of problem, and divides it
+   among several general reviewers only when it is too large for one.
+   Either way, findings that one fix would resolve are merged, and a
    verifier checks each of the rest against the code and finds it confirmed,
    refuted or unsettled. Only a confirmed finding is treated as a defect; an
    unsettled one is filed as an open question where the filing destination
@@ -81,7 +85,7 @@ inspecting, reviewing, finished clean, requesting changes or incomplete.
 For an incomplete run it tells you which part of the run stopped.
 
 The table gives one row for each dispatched specialist concern and each
-repository review brief. A completed section counts the confirmed findings
+repository review brief; a quick review's general reviewers share one row. A completed section counts the confirmed findings
 it contributed, including advisory findings. If several write-ups merge
 into one finding, it counts once per section that contributed a write-up.
 Skipped sections give the reason they were skipped. If inspection finishes
@@ -262,6 +266,8 @@ Per-repository settings take their defaults from `[repositories]` in
 |---------|---------|--------|
 | `admission` | Ready pull requests from the same repository | Filters by labels, author, base branch, draft state, title, touched paths and fork source. [Admission settings](docs/deployment.md#pull-request-admission) |
 | `review.threshold` | `High` | Severity threshold the lead weighs when classifying: `Critical`, `High`, `Medium` or `Low` |
+| `review.depth` | `standard` | How widely exploration plans and how far each reviewer reads around the change: `light`, `standard` or `thorough`; it never bounds the findings a review returns |
+| `review.mode` | `specialist` | Which review a head gets: `specialist`, planned by exploration with a specialist for each concern, or `quick`, made by general reviewers with no concerns. Both merge and verify every finding alike |
 | `review.file-safeguard-requests` | `false` | Whether a confirmed request for a safeguard against a failure nobody has observed goes to the filing destination, marked as a safeguard request; it never gates either way |
 | `push-inspection.outcomes` | `["no-review", "increment", "full"]` | Which reviews Minos may choose for a new head before reviewing it: none, only what changed since the head it last finished on, or the whole pull request; `full` is always among them |
 | `filing-destination.kind` | `pull-request-comment` | Where findings that do not block go: committed to a `file` in a repository, filed as an `issue`, posted as a `pull-request-comment`, or `none` |

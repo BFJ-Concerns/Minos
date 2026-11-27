@@ -319,6 +319,12 @@ type RepositoryKnobs struct {
 		// how deeply the specialists read, one of reviewDepths. It never
 		// bounds the findings a review returns.
 		Depth string `toml:"depth"`
+		// Mode is the review a head gets, one of reviewModes: the
+		// specialist review, planned by exploration and proposed on by a
+		// specialist for each concern, or the quick review, proposed on by
+		// general reviewers with no concerns. Either is merged and verified
+		// alike.
+		Mode string `toml:"mode"`
 	} `toml:"review"`
 	PushInspection struct {
 		// Outcomes are the push-inspection outcomes a run may choose
@@ -607,6 +613,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	if defined("review", "depth") {
 		knobs.Review.Depth = own.Review.Depth
 	}
+	if defined("review", "mode") {
+		knobs.Review.Mode = own.Review.Mode
+	}
 	if defined("push-inspection", "outcomes") {
 		knobs.PushInspection.Outcomes = own.PushInspection.Outcomes
 	}
@@ -627,6 +636,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if knobs.Review.Depth == "" {
 		knobs.Review.Depth = defaultReviewDepth
+	}
+	if knobs.Review.Mode == "" {
+		knobs.Review.Mode = defaultReviewMode
 	}
 	if knobs.PushInspection.Outcomes == nil {
 		knobs.PushInspection.Outcomes = slices.Clone(pushInspectionOutcomes)
@@ -658,6 +670,9 @@ func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
 	}
 	if knobs.Review.Depth != "" && !slices.Contains(reviewDepths, knobs.Review.Depth) {
 		return fmt.Errorf("%s: review.depth must be one of %s", where, strings.Join(reviewDepths, ", "))
+	}
+	if knobs.Review.Mode != "" && !slices.Contains(reviewModes, knobs.Review.Mode) {
+		return fmt.Errorf("%s: review.mode must be one of %s", where, strings.Join(reviewModes, ", "))
 	}
 	if knobs.PushInspection.Outcomes != nil {
 		if err := validPushInspectionOutcomes(knobs.PushInspection.Outcomes); err != nil {
@@ -770,9 +785,17 @@ const defaultReviewDepth = "standard"
 
 // reviewDepths are the review depth presets, from the narrowest plan and
 // shallowest reading to the widest and deepest. Each names the passages
-// workflows/review-briefs/exploration-depth/ and specialist-depth/ hold for
-// it, and workflows/prompt-settings.mjs lists the same values.
+// workflows/review-briefs/exploration-depth/, specialist-depth/ and
+// general-depth/ hold for it, and workflows/prompt-settings.mjs lists the
+// same values.
 var reviewDepths = []string{"light", "standard", "thorough"}
+
+const defaultReviewMode = "specialist"
+
+// reviewModes are the values review.mode takes, each the review every head
+// of the repository gets. workflows/review-mode.mjs lists the same values
+// as MODE_SETTINGS and names each mode's workflow.
+var reviewModes = []string{"specialist", "quick"}
 
 func validReviewThreshold(value string) bool {
 	switch value {

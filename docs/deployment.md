@@ -157,7 +157,8 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    destination lives on the archive host, bound into the key's forced
    command below, so the box never names it.
 
-   Per-repository knobs — admission rules, review threshold, whether
+   Per-repository knobs — admission rules, review threshold, review depth,
+   whether a head gets the specialist or the quick review, whether
    safeguard requests are filed, the outcomes push inspection may choose,
    work-in-progress branch
    prefixes, the guidance sources a review is grounded on, the filing

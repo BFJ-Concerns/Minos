@@ -23,7 +23,7 @@ export const PROMPT_SETTINGS = {
     variable: "MINOS_REVIEW_DEPTH",
     values: ["light", "standard", "thorough"],
     unset: "standard",
-    slots: ["exploration-depth", "specialist-depth"],
+    slots: ["exploration-depth", "specialist-depth", "general-depth"],
   },
 };
 

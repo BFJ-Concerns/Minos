@@ -442,6 +442,21 @@ write, matching the target rule above.)
    reproduce it or hand-author its `guidance`, `pullRequest`, `routing`,
    `concerns`, `prompts` or `contracts` entries.
 
+   Which review the head gets is the repository's `review.mode` setting,
+   which reaches you as `$MINOS_REVIEW_MODE`. When it is `quick`, the
+   review is made by general reviewers in place of exploration and the
+   specialists: build the input with `quick-review-inputs.mjs` where the
+   command above has `review-inputs.mjs`, and dispatch `quick-review.js`
+   where the command below has `review.js`. The arguments, the file names
+   and the stage name `review` stay as they are, and everything in this
+   step and after it applies to both reviews alike. Under any other value,
+   or none, build and dispatch the specialist review as written here. The
+   setting is carried out as it reads and is not yours to weigh against
+   the change. A value that leaves the review to be chosen for each head
+   is honoured only by the scripted driver, which asks an agent stage for
+   the choice: on meeting one, give the head the specialist review and say
+   in the run report that no choice was made in this run.
+
    Choose exactly one branch:
 
    - **Carried result:** If `$MINOS_RUN_DIR/carried-review-result.json`

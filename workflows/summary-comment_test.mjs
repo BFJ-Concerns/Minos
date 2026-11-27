@@ -2,7 +2,7 @@ import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BRIEF, CONCERN, INSPECTING, PARTS, REVIEWING, STATES, composeSummary, shippedTemplate } from "./summary-comment.mjs";
+import { BRIEF, CONCERN, GENERAL, GENERAL_SECTION, INSPECTING, PARTS, REVIEWING, STATES, composeSummary, shippedTemplate } from "./summary-comment.mjs";
 import { slotNames } from "./review-prompts.mjs";
 import { CHANGES_REQUESTED, CLEAN, INCOMPLETE } from "./run-endings.mjs";
 
@@ -46,6 +46,14 @@ test("a judged head shows its sections and the earlier findings that stand", () 
   ].join("\n"));
 });
 
+test("a quick review's general reviewers show as one section", () => {
+  const text = composeSummary({
+    state: CHANGES_REQUESTED, head, target,
+    sections: [{ kind: GENERAL, name: GENERAL_SECTION, findings: 3 }, { kind: BRIEF, name: ".review/api.md", findings: 0 }],
+  });
+  assert.match(text, /\| Section \| Findings \|\n\|---\|---\|\n\| General review \| 3 \|\n\| Brief `\.review\/api\.md` \| none \|/);
+});
+
 test("a part with nothing to say leaves no gap", () => {
   assert.equal(composeSummary({ state: CLEAN, head, target }),
     "**Minos: no blocking findings.**\n\nHead `aaaaaaa` against target `bbbbbbb`.");
@@ -75,7 +83,7 @@ test("facts the parts cannot render and slots that name no part are refused", ()
   assert.throws(() => composeSummary({ state: CLEAN, head: "", target }), /needs the head/);
   assert.throws(() => composeSummary({ state: CLEAN, head, target, sections: [{ kind: CONCERN, name: "x" }] }), /either its count of findings or why it was skipped/);
   assert.throws(() => composeSummary({ state: CLEAN, head, target, sections: [{ kind: CONCERN, name: "x", findings: 1, skipped: "why" }] }), /either its count/);
-  assert.throws(() => composeSummary({ state: CLEAN, head, target, sections: [{ kind: "stage", name: "x", findings: 1 }] }), /names a concern or a brief/);
+  assert.throws(() => composeSummary({ state: CLEAN, head, target, sections: [{ kind: "stage", name: "x", findings: 1 }] }), /names a concern, the general review or a brief/);
   assert.throws(() => composeSummary({ state: CLEAN, head, target, outstanding: [{ path: "a.go" }] }), /names its path, line and head/);
   assert.throws(() => composeSummary({ state: CLEAN, head, target }, { template: "{{state}}\n\n{{walkthrough}}" }), /no part named walkthrough/);
   assert.throws(() => composeSummary({ state: CLEAN, head, target }, { hidden: ["walkthrough"] }), /no part named walkthrough/);

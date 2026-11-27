@@ -2,7 +2,10 @@
 // input builder reads each prompt through reviewPrompts: its Markdown file
 // under workflows/review-briefs with every file slot filled, from the shared
 // sections, the passages the repository's settings choose
-// (prompt-settings.mjs) and for a specialist its concern's body. A workflow
+// (prompt-settings.mjs) and for a specialist its concern's body. The prompts
+// of both review modes (review-mode.mjs) are read on every call, whichever
+// mode a run is in, so a prompt no repository has yet been reviewed with is
+// found broken when any input is built. A workflow
 // checks what it was handed with promptFits and fills the run slots with
 // fillPrompt, in one pass, once the values it alone knows exist, so that a
 // value is never itself read for slots. workflows/review-briefs/README.md
@@ -15,7 +18,7 @@ import { settingSections } from "./prompt-settings.mjs";
 
 export const PROMPT_DIRECTORY = "workflows/review-briefs";
 
-const SHARED_SECTIONS = ["reviewed-change", "writing-a-finding", "severity-scale"];
+const SHARED_SECTIONS = ["reviewed-change", "what-makes-a-finding", "writing-a-finding", "severity-scale"];
 // The run slots the `reviewed-change` section carries into any prompt that
 // includes it.
 export const REVIEWED_CHANGE_SLOTS = ["target", "head", "project-documents", "repository-description", "pull-request"];
@@ -25,6 +28,8 @@ export const REVIEWED_CHANGE_SLOTS = ["target", "head", "project-documents", "re
 export const STAGE_RUN_SLOTS = {
   exploration: [...REVIEWED_CHANGE_SLOTS, "concerns"],
   specialist: [...REVIEWED_CHANGE_SLOTS, "concern-name", "other-concerns", "planned-focus", "same-concern-units"],
+  general: [...REVIEWED_CHANGE_SLOTS, "assignment"],
+  "general-assignment": ["target", "head", "share", "other-shares"],
   repository: [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "assignment"],
   "brief-relevance": [...REVIEWED_CHANGE_SLOTS, "changed-paths", "relevance-conditions"],
   "brief-partition": [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "file-inventory"],
@@ -113,6 +118,11 @@ export function reviewPrompts(repositoryRoot, settings) {
       exploration: prompt("exploration", "exploration.md"),
       specialist: Object.fromEntries(concerns.map((concern) =>
         [concern.name, prompt("specialist", "specialist.md", { concern: concern.body })])),
+      general: prompt("general", "general.md"),
+      generalAssignment: {
+        wholeChange: prompt("general-assignment", "general-assignment/whole-change.md"),
+        share: prompt("general-assignment", "general-assignment/share.md"),
+      },
       repository: prompt("repository", "repository.md"),
       briefRelevance: prompt("brief-relevance", "brief-relevance.md"),
       briefPartition: prompt("brief-partition", "brief-partition.md"),
