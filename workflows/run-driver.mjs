@@ -76,7 +76,10 @@ export async function driveRun(run, { course = COURSE, closing = CLOSING, report
       const result = await step(run, settled);
       settled = { ...settled, ...result };
       const boundary = pressureBoundaries.get(step);
-      if (run.runDir && boundary && result && await continueRun(run, boundary)) {
+      // A blocking review spends this head for admission. This run still
+      // owns the terminal status and marker writes after posting it.
+      const blockingReviewPosted = settled.publication?.plan.verdict === "request-changes";
+      if (run.runDir && boundary && result && !blockingReviewPosted && await continueRun(run, boundary)) {
         ending = { outcome: CONTINUATION, step: boundary, cause: "memory pressure" };
         break;
       }

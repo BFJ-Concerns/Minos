@@ -27,7 +27,7 @@ function decision(verdict, findings = []) {
   return { verdict, basis: "Fixture decision.", findings };
 }
 
-function fixture(t, { skip = false, outstanding = false, blocking = false, refusedReview = false, incomplete = false, pressure = false, moved = false, carry = false, killedFirstReview = false } = {}) {
+function fixture(t, { skip = false, outstanding = false, blocking = false, refusedReview = false, incomplete = false, pressure = false, pressureOnPublish = false, moved = false, carry = false, killedFirstReview = false } = {}) {
   const runDir = operationRoot(t, "minos-course-");
   const workspace = join(runDir, "workspace");
   const orientation = join(runDir, "orientation.json");
@@ -87,6 +87,7 @@ function fixture(t, { skip = false, outstanding = false, blocking = false, refus
       if (operation === "review") {
         drafts.push(JSON.parse(readFileSync(args[4], "utf8")));
         if (refusedReview) return { outcome: "uncertain", reason: "findings review was not confirmed" };
+        if (pressureOnPublish) writeFileSync(join(runDir, "memory-pressure"), "fixture pressure");
       }
       if (operation === "marker" && args[3] === "remove" && (blocking || incomplete || moved || outstanding)) {
         assert.ok(existsSync(failureLog), "the failure was recorded before removing in-flight");
@@ -206,6 +207,19 @@ test("a memory handoff records durable progress and keeps in-flight for the succ
   assert.deepEqual(f.json("handoff.json").progress, { stage: "review", head: f.run.head, latestReview: 7 });
   assert.equal(f.read("lead-complete"), "continuation\n");
   assert.equal(existsSync(f.failureLog), false);
+});
+
+test("a published blocking review finishes terminal work under memory pressure", async (t) => {
+  const f = fixture(t, { blocking: true, pressureOnPublish: true });
+  assert.deepEqual(await f.drive(), { outcome: "changes-requested" });
+  assert.equal(f.drafts.length, 1);
+  assert.deepEqual(f.calls.slice(-3), [
+    ["status", f.run.head, target, "attention"],
+    ["marker", f.run.head, target, "attention", "add"],
+    ["marker", f.run.head, target, "in-flight", "remove"],
+  ]);
+  assert.equal(f.read("lead-complete"), "non-clean\n");
+  assert.equal(existsSync(join(f.runDir, "handoff.json")), false);
 });
 
 test("a matching carried main verdict goes through classification without re-dispatch", async (t) => {
