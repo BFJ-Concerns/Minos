@@ -558,9 +558,11 @@ func respellTOML(written string, want, have any) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Each field keeps the separator written before it; a new field takes
+	// the last one written, or ", " where the table had one field or none.
 	separator := ", "
-	if len(fields) > 1 {
-		separator = written[fields[0].valueEnd:fields[1].start]
+	if count := len(fields); count > 1 {
+		separator = written[fields[count-2].valueEnd:fields[count-1].start]
 	}
 	opening, closing := "", ""
 	if len(fields) > 0 {
@@ -573,9 +575,9 @@ func respellTOML(written string, want, have any) (string, error) {
 	for _, field := range fields {
 		sharing[field.key[0]]++
 	}
-	var spelled []string
+	var spelled, before []string
 	seen := map[string]bool{}
-	for _, field := range fields {
+	for index, field := range fields {
 		name := field.key[0]
 		first := !seen[name]
 		seen[name] = true
@@ -605,6 +607,10 @@ func respellTOML(written string, want, have any) (string, error) {
 			fieldText = tomlKeySegment(name) + " = " + inline
 		}
 		spelled = append(spelled, fieldText)
+		before = append(before, separator)
+		if index > 0 {
+			before[len(before)-1] = written[fields[index-1].valueEnd:field.start]
+		}
 	}
 	for _, name := range sortedTOMLKeys(wantTable) {
 		if seen[name] {
@@ -615,11 +621,19 @@ func respellTOML(written string, want, have any) (string, error) {
 			return "", err
 		}
 		spelled = append(spelled, tomlKeySegment(name)+" = "+inline)
+		before = append(before, separator)
 	}
 	if len(spelled) == 0 {
 		return "{}", nil
 	}
-	return "{" + opening + strings.Join(spelled, separator) + closing + "}", nil
+	var joined strings.Builder
+	for index, field := range spelled {
+		if index > 0 {
+			joined.WriteString(before[index])
+		}
+		joined.WriteString(field)
+	}
+	return "{" + opening + joined.String() + closing + "}", nil
 }
 
 // inlineTOMLField is one key and value of an inline table: its key starts at

@@ -294,6 +294,18 @@ func TestEditTOMLLeavesWhatTheEditDidNotAskToChange(t *testing.T) {
 			value: map[string]any{"engine": "claude"},
 			want:  "r = { p = {engine = \"claude\"}, v = 1 }\n",
 		},
+		"each separator between fields stays as written": {
+			text:  "routing = { proposer.engine = 'codex',  verifier.engine = 'claude',\tjudgement.engine = 'claude' }\n",
+			key:   []string{"routing", "proposer"},
+			value: map[string]any{"engine": "claude"},
+			want:  "routing = { proposer = {engine = \"claude\"},  verifier.engine = 'claude',\tjudgement.engine = 'claude' }\n",
+		},
+		"a field joins after the last separator written": {
+			text:  "m = {a = 1,b = 2,\tc = 3}\n",
+			key:   []string{"m", "d"},
+			value: 4,
+			want:  "m = {a = 1,b = 2,\tc = 3,\td = 4}\n",
+		},
 		"a file without a final newline keeps none": {
 			text:  "a = 1",
 			key:   []string{"a"},
