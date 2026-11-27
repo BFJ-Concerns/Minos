@@ -259,7 +259,9 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    Claude defaults to `claude-opus-5-5`; on Codex the `proposer` defaults to
    `gpt-6.2-astra` and every other role to `gpt-6.1-sol`. Default effort is `high` for
    `exploration` and `brief-planner`, and `medium` for `proposer`,
-   `verifier` and `engagement-gate`. The verifier's routing also carries
+   `verifier` and `engagement-gate`. An effort is one of the Ensemble
+   runtime's levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+   or `max`. The verifier's routing also carries
    the leg that merges findings one fix would resolve before they are
    verified. A finding a verifier raises while checking another is
    verified on the `proposer`'s routing when that runs on the other engine,

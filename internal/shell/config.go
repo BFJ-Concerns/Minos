@@ -237,8 +237,9 @@ var routingEngines = []string{"claude", "codex"}
 
 // routingEfforts is the Ensemble runtime's canonical effort domain
 // (CANONICAL_EFFORT_DOMAIN in runtime/ensemble.mjs); the run-time resolver
-// in workflows/role-routing.mjs carries the same list.
-var routingEfforts = []string{"minimal", "low", "medium", "high", "xhigh"}
+// in workflows/role-routing.mjs carries the same list, and a test holds
+// both to the vendored runtime's.
+var routingEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 func validateRouting(where string, routing Routing) error {
 	entries := map[string]RoleRouting{}

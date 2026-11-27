@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -427,7 +428,7 @@ func TestLoadServiceConfigDecodesAndValidatesRouting(t *testing.T) {
 	for _, test := range []struct{ name, toml, want string }{
 		{name: "unknown engine", toml: "[routing.proposer]\nengine = \"opencode\"\n", want: "routing.proposer.engine must be one of claude, codex"},
 		{name: "model without engine", toml: "[routing.proposer]\nmodel = \"gpt-6-astra\"\n", want: "routing.proposer.model needs routing.proposer.engine"},
-		{name: "unknown effort", toml: "[routing.exploration]\neffort = \"maximal\"\n", want: "routing.exploration.effort must be one of minimal, low, medium, high, xhigh"},
+		{name: "unknown effort", toml: "[routing.exploration]\neffort = \"maximal\"\n", want: "routing.exploration.effort must be one of none, minimal, low, medium, high, xhigh, max"},
 		{name: "unknown role", toml: "[routing.judge]\nengine = \"claude\"\n", want: "unknown TOML keys: routing.judge"},
 		{name: "unknown concern", toml: "[routing.concerns.style]\nengine = \"claude\"\n", want: "routing.concerns.style is not a specialist concern; the concerns are failure, fit, logic, security, tests"},
 		{name: "concern model without engine", toml: "[routing.concerns.security]\nmodel = \"claude-opus-5-5\"\n", want: "routing.concerns.security.model needs routing.concerns.security.engine"},
@@ -659,5 +660,26 @@ model = "claude-opus-5-5"
 	writeRepoConfig(t, root, "overrides.toml", repoConfig("[routing.concerns.style]\neffort = \"low\"\n"))
 	if _, err := LoadRepoConfigs(cfg); err == nil || !strings.Contains(err.Error(), "overrides.toml: routing.concerns.style is not a specialist concern") {
 		t.Fatalf("error = %v, want the repository file named with the unknown concern", err)
+	}
+}
+
+// The loader refuses any effort outside routingEfforts, so a level the
+// vendored runtime dispatches and this list lacks is one no operator can
+// set; the two lists are held equal here.
+func TestRoutingEffortsAreTheVendoredRuntimesDomain(t *testing.T) {
+	bundle, err := os.ReadFile(filepath.Join("..", "..", "runtime", "ensemble.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`var CANONICAL_EFFORT_DOMAIN = \[([^\]]*)\];`).FindSubmatch(bundle)
+	if match == nil {
+		t.Fatal("runtime/ensemble.mjs declares no CANONICAL_EFFORT_DOMAIN")
+	}
+	var domain []string
+	for _, level := range strings.Split(string(match[1]), ",") {
+		domain = append(domain, strings.Trim(strings.TrimSpace(level), `"`))
+	}
+	if !slices.Equal(domain, routingEfforts) {
+		t.Fatalf("runtime effort domain = %v, routingEfforts = %v", domain, routingEfforts)
 	}
 }
