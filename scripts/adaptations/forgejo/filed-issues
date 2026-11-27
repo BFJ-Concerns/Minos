@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+owner="$1"; repo="$2"; login="$3"
+list_filed_issues() {
+  page=1
+  previous=''
+  while :; do
+    current="$(api_read "/api/v1/repos/$owner/$repo/issues?state=open&type=issues&sort=oldest&limit=50&page=$page")" || return 1
+    count="$(printf '%s' "$current" | jq -e 'if type == "array" then length else error("expected an issue array") end')" || return 1
+    [ "$count" -gt 0 ] || break
+    ! repeats_previous_page "$current" "$previous" || return 1
+    printf '%s' "$current" | jq -c --arg login "$login" '
+      .[] | select(.pull_request == null and .state == "open" and (.user.login // .user.username) == $login)
+          | select((.body // "") | test("<!-- minos:[A-Za-z0-9_-]+ -->"))
+          | {title, body}' || return 1
+    previous="$current"
+    page=$((page + 1))
+  done
+}
+
+issues="$(list_filed_issues)"
+printf '%s' "$issues" | jq -cs '.'

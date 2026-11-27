@@ -125,6 +125,24 @@ test("the runner prints a stage's answer and fails a stage that gave none with n
   assert.match(invalid.stderr, /stage push-inspection gave an unusable answer: the reason is blank/);
 });
 
+test("the runner rejects an invalid recorded input before launching the workflow", async (t) => {
+  const stage = await loadStage("push-inspection");
+  const launched = join(operationRoot(t, "minos-judgement-launch-"), "launched");
+  const root = installedTree(t, `
+    import { writeFileSync } from "node:fs";
+    writeFileSync(${JSON.stringify(launched)}, "yes");
+  `);
+  const args = judgementArgs(stage, inspectionInput, { env: { MINOS_PROVISIONED_ENGINES: "claude" } });
+  const argsFile = join(root, "args.json");
+  writeFileSync(argsFile, JSON.stringify({ ...args, input: { ...inspectionInput, head: "" } }));
+  const result = spawnSync(join(root, "workflows", "run-judgement"),
+    [join(root, "workflows", "judgement.js"), "--json-args", `@${argsFile}`], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /push-inspection input:/);
+  assert.equal(existsSync(launched), false);
+});
+
 test("dispatch records a failed stage and publishes no result for a semantically invalid answer", async (t) => {
   const root = installedTree(t, answeringLauncher);
   const stage = await loadStage("push-inspection");

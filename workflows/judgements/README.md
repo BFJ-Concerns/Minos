@@ -180,3 +180,8 @@ prompt. `walkthrough.enabled` changes only whether the duty asks at all.
 Write `NAME.md` and `NAME.mjs` here, the step that gathers its input and
 carries out its answer under `workflows/run-steps/`, and a row in the
 table above.
+
+Add a representative input to `judgementSamples` in
+`workflows/runtime_bundle_compatibility_test.mjs`. The compatibility check
+uses that input to build the stage's arguments and validate them with the
+installed runtime.

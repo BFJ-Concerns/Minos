@@ -39,7 +39,7 @@ export function groupFindings(verdict, threshold) {
   });
 }
 
-// Supply the advice the file or pull-request filing path already holds.
+// Supply the advice the filing destination already holds.
 export async function filedEntries(run, destination, snapshot) {
   if (destination.kind === "none") return "This repository files nothing, so no entries are on file.";
   if (destination.kind === "pull-request-comment") {
@@ -58,6 +58,18 @@ export async function filedEntries(run, destination, snapshot) {
       return text.trim() === "" ? `${destination.path} is empty.` : text;
     } catch {
       return `The filing file ${destination.path} on the default branch of ${repository} could not be read in this run.`;
+    }
+  }
+  if (destination.kind === "issue") {
+    try {
+      const issues = await run.forge("filed-issues", destination.repository);
+      if (!Array.isArray(issues) || issues.some((issue) =>
+        !issue || typeof issue.title !== "string" || typeof issue.body !== "string"))
+        throw new Error("forge did not return readable issues");
+      return issues.map(({ title, body }) => `${title}\n\n${body.trim()}`).join("\n\n") ||
+        `Minos has filed no open issues on ${destination.repository}.`;
+    } catch {
+      return `The open issues on ${destination.repository} could not be read in this run.`;
     }
   }
   return `The filing destination (${destination.kind} on ${destination.repository}) could not be read in this run.`;

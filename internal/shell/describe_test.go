@@ -114,13 +114,31 @@ func setenvValue(args []string, key string) (string, bool) {
 
 func TestSweepStartsADescriptionUnitOnlyWhenOneIsDue(t *testing.T) {
 	fixture := newDescribeFixture(t)
+	adaptation := filepath.Join(fixture.root, "adaptation")
+	if err := os.Mkdir(adaptation, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, filepath.Join(adaptation, "list-open-prs"), "#!/bin/sh\nexit 0\n")
+	credential := filepath.Join(fixture.root, "token")
+	if err := os.WriteFile(credential, []byte("fixture-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	servicePath := filepath.Join(fixture.root, "service.toml")
+	service, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := strings.NewReplacer("/tmp/adapt", adaptation, "/tmp/token", credential).Replace(string(service))
+	if err := os.WriteFile(servicePath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	fixture.enrol(t, "off", false)
 	repos := fixture.enrol(t, "widgets", true)
 	widgets := repoNamed(repos, "widgets")
 	started := describeSystemd(t)
 	asked := describeTip(t, describedTip)
 
-	if err := reconcileRepositoryDescriptions(t.Context(), fixture.cfg, repos); err != nil {
+	if err := SweepCommand(t.Context(), []string{"-config", fixture.root}); err != nil {
 		t.Fatal(err)
 	}
 	if *asked != 1 || len(*started) != 1 {
@@ -147,7 +165,7 @@ func TestSweepStartsADescriptionUnitOnlyWhenOneIsDue(t *testing.T) {
 		t.Fatal(err)
 	}
 	*started = nil
-	if err := reconcileRepositoryDescriptions(t.Context(), fixture.cfg, repos); err != nil {
+	if err := SweepCommand(t.Context(), []string{"-config", fixture.root}); err != nil {
 		t.Fatal(err)
 	}
 	if len(*started) != 0 {
@@ -156,7 +174,7 @@ func TestSweepStartsADescriptionUnitOnlyWhenOneIsDue(t *testing.T) {
 
 	// The default branch moved: due again.
 	describeTip(t, strings.Repeat("4", 40))
-	if err := reconcileRepositoryDescriptions(t.Context(), fixture.cfg, repos); err != nil {
+	if err := SweepCommand(t.Context(), []string{"-config", fixture.root}); err != nil {
 		t.Fatal(err)
 	}
 	if len(*started) != 1 {

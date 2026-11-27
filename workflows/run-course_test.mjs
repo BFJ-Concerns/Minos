@@ -38,7 +38,7 @@ function fixture(t, {
   skip = false, outstanding = false, blocking = false, briefBlocks = false, advisory = false,
   refusedReview = false, refusedMarker = false, failedSettlement = false, incomplete = false,
   pressure = false, pressureOnPublish = false, moved = false, movedAtSnapshot, movedOnReview = false,
-  carry = false, killedFirstReview = false, refusedSummary, refusedStatus, movedOnSummary,
+  carry = false, killedFirstReview = false, refusedSummary, refusedStatus, movedOnSummary, movedOnMarker,
 } = {}) {
   const runDir = operationRoot(t, "minos-course-");
   const workspace = join(runDir, "workspace");
@@ -62,10 +62,17 @@ function fixture(t, {
     incomplete: [], confirmedFindings: [], ran: [], skipped: [],
   };
   write("orientation.json", {
-    repository: workspace, source: { owner: "owner", repo: "repo" },
+    repository: workspace, source: { owner: "owner", repo: "repo", pr: "7", date: "2026-11-27" },
     guidance: [{ source: { path: "AGENTS.md" }, location: guidance, origin: "checked-in" }],
     misconfigurations: [],
   });
+  const filingAttempts = join(runDir, "filing-attempts");
+  const minos = join(runDir, "minos");
+  writeFileSync(minos, `#!/bin/sh
+[ "$1:$2:$3" = "forge:file-issue:owner/issues" ] || exit 2
+printf '%s\\n' 'attempted' >> "$MINOS_RUN_DIR/filing-attempts"
+printf '%s\\n' '{"outcome":"applied","written":1}'
+`, { mode: 0o700 });
   const setup = fileURLToPath(new URL("../scripts/run-body/setup-workspace", import.meta.url));
   const failureLog = join(runDir, "failure-log");
   const calls = [];
@@ -74,7 +81,7 @@ function fixture(t, {
   let snapshots = 0;
   let headMoved = moved;
   const env = {
-    ...process.env, MINOS_SETUP_WORKSPACE: setup, MINOS_ORIENTATION: orientation, MINOS_WORKSPACE: workspace,
+    ...process.env, MINOS_BIN: minos, MINOS_SETUP_WORKSPACE: setup, MINOS_ORIENTATION: orientation, MINOS_WORKSPACE: workspace,
     MINOS_REVIEW_THRESHOLD: "High", MINOS_PROVISIONED_ENGINES: "claude", MINOS_ROUTING: "{}",
     MINOS_RUN_DIR: runDir, MINOS_HANDOFF: join(runDir, "handoff.json"), MINOS_FAILURE_LOG: failureLog,
     MINOS_FILING_DESTINATION: advisory ? '{"kind":"issue","repository":"owner/issues"}' : '{"kind":"none"}', MINOS_COMMIT_AUTHOR_NAME: "Minos",
@@ -98,6 +105,7 @@ function fixture(t, {
           reviews: [{ id: 7, user: "minos", commit_id: run.head }, { id: 12, user: "author", commit_id: run.head }],
         };
       }
+      if (operation === "filed-issues") return [];
       if (operation === "earlier") return {
         head: briefBase, ancestor: true, outcome: "clean", changed_paths: ["parser.go"],
       };
@@ -134,6 +142,10 @@ function fixture(t, {
         if (refusedReview) return { outcome: "uncertain", reason: "findings review was not confirmed" };
         drafts.push(JSON.parse(readFileSync(args[4], "utf8")));
         if (pressureOnPublish) writeFileSync(join(runDir, "memory-pressure"), "fixture pressure");
+      }
+      if (operation === "marker" && args[2] === movedOnMarker && args[3] === "add") {
+        headMoved = true;
+        return { outcome: "rejected", reason: "head moved" };
       }
       if (operation === "marker" && args[2] === "attention" && args[3] === "add" && refusedMarker)
         return { outcome: "uncertain", reason: "reaction write failed" };
@@ -201,7 +213,7 @@ function fixture(t, {
     ? { ...verdict, reviewed: { ...verdict.reviewed, target: run.head } }
     : verdict);
   return {
-    calls, drafts, summaries, run, json, failureLog, runDir,
+    calls, drafts, summaries, run, json, failureLog, runDir, filingAttempts,
     drive: () => driveRun(run, { complete: true }),
     read: (name) => readFileSync(join(runDir, name), "utf8"),
   };
@@ -313,6 +325,13 @@ test("a brief's blocker alone publishes a request for changes", async (t) => {
   assert.equal(existsSync(join(f.runDir, "judgements/earlier-findings.json")), false);
 });
 
+test("a current advisory-only run files its finding", async (t) => {
+  const f = fixture(t, { advisory: true });
+  assert.deepEqual(await f.drive(), { outcome: "clean" });
+  assert.equal(f.read("filing-attempts"), "attempted\n");
+  assert.equal(f.json("triage-result.json").written, 1);
+});
+
 test("a moved head observed during classification, settlement or filing stops an advisory-only run", async (t) => {
   for (const [movedAtSnapshot, step] of [[2, "classify"], [3, "settleEarlierFindings"], [4, "publish"]]) {
     const f = fixture(t, { advisory: true, movedAtSnapshot });
@@ -320,6 +339,7 @@ test("a moved head observed during classification, settlement or filing stops an
     assert.equal(ending.outcome, "superseded");
     assert.equal(ending.step, step);
     assert.equal(existsSync(join(f.runDir, "triage-result.json")), false);
+    assert.equal(existsSync(f.filingAttempts), false, "no filing was attempted for the moved head");
     assert.equal(f.calls.some(([op]) => op === "review" || op === "approve"), false);
     assert.deepEqual(f.calls.at(-1), ["marker", head, reviewBase, "in-flight", "remove"]);
   }
@@ -343,11 +363,35 @@ test("a missing terminal reaction is reported after a durable blocking review", 
   assert.equal(f.calls.some(([op, , , state]) => op === "status" && state === "incomplete"), false);
 });
 
+test("a terminal marker refused after a head move withdraws the superseded run", async (t) => {
+  const f = fixture(t, { blocking: true, movedOnMarker: "attention" });
+  assert.deepEqual(await f.drive(), { outcome: "superseded", step: "conclude", cause: "forge marker: head moved" });
+  assert.equal(f.drafts.length, 1);
+  assert.deepEqual(f.calls.slice(-3), [
+    ["marker", f.run.head, target, "attention", "add"],
+    ["snapshot"],
+    ["marker", head, reviewBase, "in-flight", "remove"],
+  ]);
+  assert.equal(f.read("lead-complete"), "non-clean\n");
+});
+
 test("a memory handoff records durable progress and keeps in-flight for the successor", async (t) => {
   const f = fixture(t, { pressure: true });
+  const predecessorProgress = { stage: "review", head: f.run.head, latestReview: 6 };
+  f.run.env.MINOS_PREDECESSOR_PROGRESS = JSON.stringify(predecessorProgress);
   assert.deepEqual(await f.drive(), { outcome: "continuation", step: "review", cause: "memory pressure" });
   assert.deepEqual(f.calls.slice(-2), [["snapshot"], ["status", f.run.head, reviewBase, "continuation"]]);
-  assert.deepEqual(f.json("handoff.json").progress, { stage: "review", head: f.run.head, latestReview: 7 });
+  const { writtenAt, ...handoff } = f.json("handoff.json");
+  assert.ok(Number.isFinite(Date.parse(writtenAt)));
+  assert.deepEqual(handoff, {
+    kind: "minos-run-handoff-v1",
+    pullRequest: { owner: "owner", repo: "repo", number: "7" },
+    head: f.run.head,
+    runDir: f.runDir,
+    stoppedAt: "review",
+    predecessorProgress,
+    progress: { stage: "review", head: f.run.head, latestReview: 7 },
+  });
   assert.equal(f.read("lead-complete"), "continuation\n");
   assert.deepEqual(f.summaries.map(({ state }) => state), ["inspecting", "reviewing"]);
   assert.equal(existsSync(f.failureLog), false);

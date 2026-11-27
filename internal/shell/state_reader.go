@@ -137,16 +137,18 @@ func (reader *StateReader) RecentRuns(ctx context.Context, hours, limit int) ([]
 	return reader.recent.recentRuns(ctx, cfg, hours, limit)
 }
 
-// RepositoryDescription reads the description kept of one enrolled
-// repository, with the commit of its default branch it was made from and
-// when it was kept. Nil means none is kept: the description is off for the
-// repository, or its first has not been written yet.
-func (reader *StateReader) RepositoryDescription(repo RepoConfig) (*RepositoryDescription, error) {
+// RepositoryDescription reads the kept description and the last failure, if either exists.
+func (reader *StateReader) RepositoryDescription(repo RepoConfig) (*RepositoryDescription, *DescriptionFailure, error) {
 	cfg, err := LoadServiceConfig(reader.root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return readRepositoryDescription(repositoryDescriptionPath(cfg, repo))
+	description, err := readRepositoryDescription(repositoryDescriptionPath(cfg, repo))
+	if err != nil {
+		return nil, nil, err
+	}
+	failure, err := readDescriptionFailure(cfg, repo)
+	return description, failure, err
 }
 
 // ReviewThreads reads the inline threads Minos opened on one pull request as
