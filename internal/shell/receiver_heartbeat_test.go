@@ -1,7 +1,10 @@
 package shell
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +24,20 @@ func TestProjectionReceiverListening(t *testing.T) {
 	writeTestFile(t, filepath.Join(cfg.Root, "service.toml"), strings.ReplaceAll(string(content), `bind = ":0"`, `bind = "127.0.0.1:0"`))
 	original := serveReceiver
 	t.Cleanup(func() { serveReceiver = original })
+	originalCommand := commandCombinedOutput
+	originalLog := log.Writer()
+	t.Cleanup(func() {
+		commandCombinedOutput = originalCommand
+		log.SetOutput(originalLog)
+	})
+	var messages bytes.Buffer
+	log.SetOutput(&messages)
+	commandCombinedOutput = func(_ context.Context, command string, args ...string) ([]byte, error) {
+		if command != "systemctl" || strings.Join(args, " ") != "--user show minos-runs.slice --property=LoadState --property=FragmentPath --property=MemoryMax" {
+			t.Fatalf("unexpected startup command: %s %v", command, args)
+		}
+		return []byte("LoadState=loaded\nFragmentPath=/fixture/minos-runs.slice\nMemoryMax=infinity\n"), nil
+	}
 	stopped := errors.New("test listener stopped")
 	var observed bool
 	serveReceiver = func(server *http.Server, listener net.Listener) error {
@@ -28,6 +45,9 @@ func TestProjectionReceiverListening(t *testing.T) {
 			t.Fatalf("receiver timeouts: read=%s write=%s", server.ReadTimeout, server.WriteTimeout)
 		}
 		observed = true
+		if !strings.Contains(messages.String(), "warning: minos-runs.slice MemoryMax=infinity differs from the configured 8 GiB run envelope") {
+			t.Fatalf("receiver served before warning of memory drift: %s", &messages)
+		}
 		doc := projectionJSON(t, receiverHeartbeatPath(cfg))
 		if doc["activity"] != "listening" || doc["bind"] != listener.Addr().String() {
 			t.Fatalf("successful listen not recorded before serving: %#v", doc)

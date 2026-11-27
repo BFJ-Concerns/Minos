@@ -2,6 +2,7 @@ package shell
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BFJ-Concerns/Minos/deploy"
 )
@@ -16,6 +18,33 @@ import (
 // Runs share the configured envelope live through this slice; each run's
 // MemoryMax is also the backstop on a box without the slice installed.
 const runsSliceUnit = "minos-runs.slice"
+
+func checkRunsSliceMemory(ctx context.Context, cfg ServiceConfig) error {
+	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := commandCombinedOutput(probe, "systemctl", "--user", "show", runsSliceUnit, "--property=LoadState", "--property=FragmentPath", "--property=MemoryMax")
+	if err != nil {
+		return fmt.Errorf("could not check %s MemoryMax: %w: %s", runsSliceUnit, err, strings.TrimSpace(string(out)))
+	}
+	settings := make(map[string]string)
+	for _, line := range strings.Split(string(out), "\n") {
+		if key, value, found := strings.Cut(line, "="); found {
+			settings[key] = value
+		}
+	}
+	if settings["LoadState"] == "not-found" || (settings["LoadState"] == "loaded" && settings["FragmentPath"] == "") {
+		return nil // The per-run ceiling covers installations without a slice.
+	}
+	actual := settings["MemoryMax"]
+	if settings["LoadState"] != "loaded" || actual == "" {
+		return fmt.Errorf("could not read %s MemoryMax from the user manager", runsSliceUnit)
+	}
+	envelope := cfg.runMemoryEnvelopeGiB()
+	if actual != fmt.Sprint(int64(envelope)<<30) {
+		return fmt.Errorf("%s MemoryMax=%s differs from the configured %d GiB run envelope; reinstall the user units and reload systemd", runsSliceUnit, actual, envelope)
+	}
+	return nil
+}
 
 // InstallUnitsCommand writes the shipped systemd user units into the
 // directory the user manager reads, rendered for this deployment: every
