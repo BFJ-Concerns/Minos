@@ -48,7 +48,12 @@ title-pattern = '^(feat|fix)\b'
 run-body = "/opt/minos/run-body/run-body"
 `,
 	} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o640); err != nil {
+		// The mode is set apart from the write, which the umask narrows.
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o640); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -197,7 +202,7 @@ func TestEditTOMLKeepsEveryOtherByte(t *testing.T) {
 			value: 3,
 			want:  "a = 3 # one\nb = 2\n",
 		},
-		"a key inside an inline table rewrites that table": {
+		"a key inside an inline table changes within its braces": {
 			text:  "[markers]\nclean = {reaction = \"+1\"}\n",
 			key:   []string{"markers", "clean", "reaction"},
 			value: "heart",
@@ -237,5 +242,116 @@ func TestEditTOMLKeepsEveryOtherByte(t *testing.T) {
 				t.Errorf("got:\n%s\nwant:\n%s", got, test.want)
 			}
 		})
+	}
+}
+
+func TestEditTOMLLeavesWhatTheEditDidNotAskToChange(t *testing.T) {
+	for name, test := range map[string]struct {
+		text  string
+		key   []string
+		value any
+		want  string
+	}{
+		"a removed key leaves the comment beside it": {
+			text:  "a = 1 # kept for the audit\nb = 2\n",
+			key:   []string{"a"},
+			value: nil,
+			want:  "# kept for the audit\nb = 2\n",
+		},
+		"a key dropped from a table leaves the comment beside it": {
+			text:  "[t]\na = 1 # why a\nb = 2\n",
+			key:   []string{"t"},
+			value: map[string]any{"b": 2},
+			want:  "[t]\n# why a\nb = 2\n",
+		},
+		"one field of an inline table changes alone": {
+			text:  "[markers]\nclean = { reaction = '+1', label = \"x\" }\n",
+			key:   []string{"markers", "clean", "reaction"},
+			value: "heart",
+			want:  "[markers]\nclean = { reaction = \"heart\", label = \"x\" }\n",
+		},
+		"a field leaves an inline table and the rest stay as written": {
+			text:  "m = {b = 'two', a = 1}\n",
+			key:   []string{"m"},
+			value: map[string]any{"b": "two"},
+			want:  "m = {b = 'two'}\n",
+		},
+		"a field joins an inline table after the others": {
+			text:  "m = {b = 'two'}\n",
+			key:   []string{"m", "a"},
+			value: 1,
+			want:  "m = {b = 'two', a = 1}\n",
+		},
+		"a file without a final newline keeps none": {
+			text:  "a = 1",
+			key:   []string{"a"},
+			value: 2,
+			want:  "a = 2",
+		},
+		"an edit that changes nothing changes no byte": {
+			text:  "a = 1",
+			key:   []string{"a"},
+			value: 1,
+			want:  "a = 1",
+		},
+		"the last dotted key of a table goes with the table": {
+			text:  "forge = \"f\"\nreview.threshold = \"Low\"\n",
+			key:   []string{"review", "threshold"},
+			value: nil,
+			want:  "forge = \"f\"\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := editTOML(test.text, test.key, test.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Errorf("got:\n%q\nwant:\n%q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestServiceWideChangeThatWouldNotLoadIsRefusedAndNothingWritten(t *testing.T) {
+	root, _ := settingsRoot(t)
+	path := filepath.Join(root, "service.toml")
+	before := readSettingsFile(t, path)
+	for _, change := range []struct {
+		key   []string
+		value any
+		want  string
+	}{
+		{[]string{"repositories", "review", "threshold"}, "Urgent", "review.threshold must be"},
+		{[]string{"service", "bot-login"}, nil, "bot login"},
+		{[]string{"runs", "max-concurrent"}, 64, "max-concurrent must be"},
+	} {
+		err := WriteServiceSetting(root, change.key, change.value)
+		if err == nil || !strings.Contains(err.Error(), change.want) {
+			t.Errorf("%v = %v: error = %v, want the loader's refusal %q", change.key, change.value, err, change.want)
+		}
+	}
+	if after := readSettingsFile(t, path); after != before {
+		t.Errorf("a refused change reached service.toml:\n%s", after)
+	}
+}
+
+func TestServiceWideRoutingIsWrittenAtTheRootOfServiceTOML(t *testing.T) {
+	root, repo := settingsRoot(t)
+	key := []string{"routing", "verifier"}
+	if got := ServiceWideKey(key); strings.Join(got, ".") != "routing.verifier" {
+		t.Fatalf("service-wide key = %v, want routing.verifier", got)
+	}
+	if got := ServiceWideKey([]string{"admission"}); strings.Join(got, ".") != "repositories.admission" {
+		t.Fatalf("service-wide key = %v, want repositories.admission", got)
+	}
+	if err := WriteServiceSetting(root, ServiceWideKey(key), RoleRouting{Engine: "claude", Effort: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	if level, err := RepositorySettingLevel(root, repo, key); err != nil || level != SetServiceWide {
+		t.Fatalf("level = %q (%v), want service-wide", level, err)
+	}
+	if got := loadSettingsRepo(t, root).Routing.Verifier; got != (RoleRouting{Engine: "claude", Effort: "high"}) {
+		t.Fatalf("verifier routing = %+v, want the service-wide route", got)
 	}
 }

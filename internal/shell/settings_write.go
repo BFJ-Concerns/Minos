@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -20,8 +21,9 @@ import (
 //
 // A setting is named by its key path in the file it is written to. A
 // per-repository setting has the same key in a repository's file and, for
-// its service-wide value, under "repositories" in service.toml: {"admission"}
-// and {"repositories", "admission"}. The value is the whole setting, because
+// its service-wide value, the key ServiceWideKey gives in service.toml:
+// {"admission"} and {"repositories", "admission"}, but {"routing", "proposer"}
+// in both. The value is the whole setting, because
 // a repository overrides a service-wide value whole; nil removes the key, so
 // the next level out applies again: the service-wide value for a repository,
 // the documented default for the service.
@@ -110,13 +112,24 @@ func writeSetting(path string, key []string, value any, loads func(candidate str
 	return os.Rename(candidate.Name(), path)
 }
 
+// ServiceWideKey is the key in service.toml of the service-wide value of the
+// per-repository setting at key. Routing stands at the root of service.toml
+// as it does in a repository's own file; every other per-repository setting
+// stands under [repositories].
+func ServiceWideKey(key []string) []string {
+	if len(key) > 0 && key[0] == "routing" {
+		return slices.Clone(key)
+	}
+	return append([]string{"repositories"}, key...)
+}
+
 // SettingLevel says where the value a repository's run will honour is set.
 type SettingLevel string
 
 const (
 	// SetForRepository: the repository's own file sets the key.
 	SetForRepository SettingLevel = "repository"
-	// SetServiceWide: service.toml sets it under [repositories].
+	// SetServiceWide: service.toml sets it, at its ServiceWideKey.
 	SetServiceWide SettingLevel = "service"
 	// SetNowhere: neither does, and the documented default applies.
 	SetNowhere SettingLevel = "default"
@@ -132,7 +145,7 @@ func RepositorySettingLevel(root string, repo RepoConfig, key []string) (Setting
 		key   []string
 	}{
 		{SetForRepository, repo.Path, key},
-		{SetServiceWide, filepath.Join(root, "service.toml"), append([]string{"repositories"}, key...)},
+		{SetServiceWide, filepath.Join(root, "service.toml"), ServiceWideKey(key)},
 	} {
 		metadata, err := toml.DecodeFile(level.path, &map[string]any{})
 		if err != nil {

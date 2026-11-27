@@ -24,13 +24,18 @@ import (
 // result is decoded, and it must equal the original decoded with that one
 // key changed. A file laid out in a way the edit cannot place is therefore
 // refused with an error, never written wrong. A value is changed where its
-// statement stands; a new key joins its table's section, or opens one at the
-// end of the file. An array of tables is replaced as a unit, and comments
-// between its elements stay where they were.
-func editTOML(text string, key []string, value any) (string, error) {
+// statement stands, and a field of an inline table within the braces, its
+// other fields as they were written; a new key joins its table's section, or
+// opens one at the end of the file. A removed key leaves the comment written
+// beside it, and a table that only the removed key's dotted name defined goes
+// with it. An array of tables is replaced as a unit, and comments between its
+// elements stay where they were. A file that ends without a newline still
+// does after the edit.
+func editTOML(original string, key []string, value any) (string, error) {
 	if len(key) == 0 {
 		return "", errors.New("a setting needs a key")
 	}
+	text := original
 	if text != "" && !strings.HasSuffix(text, "\n") {
 		text += "\n"
 	}
@@ -72,14 +77,49 @@ func editTOML(text string, key []string, value any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", dottedTOMLKey(key), err)
 	}
+	if edited == text {
+		return original, nil
+	}
 	after, err := decodeTOMLGeneric(edited)
 	if err != nil {
 		return "", fmt.Errorf("%s: the edited file would not parse: %w", dottedTOMLKey(key), err)
 	}
+	if !defined {
+		if err := pruneImpliedTables(expected, key, edited); err != nil {
+			return "", err
+		}
+	}
 	if !reflect.DeepEqual(after, expected) {
 		return "", fmt.Errorf("%s: this file's layout is one the edit cannot place the key in without changing something else", dottedTOMLKey(key))
 	}
+	if !strings.HasSuffix(original, "\n") {
+		edited = strings.TrimSuffix(edited, "\n")
+	}
 	return edited, nil
+}
+
+// pruneImpliedTables drops from expected each table above a removed key that
+// is left empty and that no statement of edited names any more: a table the
+// removed key's dotted name alone defined, which goes with the key.
+func pruneImpliedTables(expected map[string]any, key []string, edited string) error {
+	statements, err := scanTOML(edited)
+	if err != nil {
+		return err
+	}
+	for depth := len(key) - 1; depth >= 1; depth-- {
+		table, _ := lookupTOMLPath(expected, key[:depth])
+		if fields, isTable := table.(map[string]any); !isTable || len(fields) > 0 {
+			return nil
+		}
+		for _, statement := range statements {
+			if hasTOMLPrefix(statement.key, key[:depth]) {
+				return nil
+			}
+		}
+		parent, _ := lookupTOMLPath(expected, key[:depth-1])
+		delete(parent.(map[string]any), key[depth-1])
+	}
+	return nil
 }
 
 // tomlStatement is one statement of a TOML file: a table header, or a key
@@ -92,6 +132,9 @@ type tomlStatement struct {
 	// after its last line's newline; the value lies in [valueStart, valueEnd).
 	start, end           int
 	valueStart, valueEnd int
+	// comment is the comment written after the statement on its last line,
+	// from its "#", or empty.
+	comment string
 }
 
 // scanTOML finds each statement's extent. It reads only as much TOML as that
@@ -123,8 +166,9 @@ func scanTOML(text string) ([]tomlStatement, error) {
 			if !strings.HasPrefix(text[next:], closing) {
 				return nil, fmt.Errorf("unreadable table header at byte %d", start)
 			}
-			pos = endOfTOMLLine(text, next)
-			statements = append(statements, tomlStatement{key: key, header: true, array: array, start: start, end: pos})
+			after := next + len(closing)
+			pos = endOfTOMLLine(text, after)
+			statements = append(statements, tomlStatement{key: key, header: true, array: array, start: start, end: pos, comment: trailingTOMLComment(text, after)})
 			table = key
 		default:
 			key, next, err := scanTOMLKey(text, pos)
@@ -143,6 +187,7 @@ func scanTOML(text string) ([]tomlStatement, error) {
 			statements = append(statements, tomlStatement{
 				key:   append(append([]string{}, table...), key...),
 				start: start, end: pos, valueStart: valueStart, valueEnd: valueEnd,
+				comment: trailingTOMLComment(text, valueEnd),
 			})
 		}
 	}
@@ -154,6 +199,26 @@ func skipTOMLSpace(text string, pos int) int {
 		pos++
 	}
 	return pos
+}
+
+// trailingTOMLComment is the comment that follows pos on its line, from its
+// "#" to the end of the line, or empty where none does.
+func trailingTOMLComment(text string, pos int) string {
+	pos = skipTOMLSpace(text, pos)
+	if pos >= len(text) || text[pos] != '#' {
+		return ""
+	}
+	return strings.TrimRight(text[pos:endOfTOMLLine(text, pos)], "\r\n")
+}
+
+// withoutTOMLStatement is text with statement deleted and the comment beside
+// it, if any, kept on a line of its own where the statement stood.
+func withoutTOMLStatement(text string, statement tomlStatement) string {
+	kept := ""
+	if statement.comment != "" {
+		kept = statement.comment + "\n"
+	}
+	return text[:statement.start] + kept + text[statement.end:]
 }
 
 // endOfTOMLLine is the byte after the newline that ends pos's line.
@@ -306,7 +371,7 @@ func setTOML(text string, path []string, want, have any, haveDefined bool) (stri
 	}
 	for _, statement := range statements {
 		if !statement.header && slices.Equal(statement.key, path) {
-			inline, err := inlineTOML(want)
+			inline, err := respellTOML(text[statement.valueStart:statement.valueEnd], want, have)
 			if err != nil {
 				return "", err
 			}
@@ -391,7 +456,7 @@ func setTOMLTableArray(text string, path []string, want []any) (string, error) {
 		if !hasTOMLPrefix(statement.key, path) {
 			continue
 		}
-		text = text[:statement.start] + text[statement.end:]
+		text = withoutTOMLStatement(text, statement)
 		// Blocks may stand only where a header stood: put in place of a key
 		// in another table's body they would take the keys that follow it.
 		at = -1
@@ -406,7 +471,8 @@ func setTOMLTableArray(text string, path []string, want []any) (string, error) {
 }
 
 // removeTOML deletes every statement that sets path or anything beneath it,
-// headers included, and nothing else: a comment beside a removed key stays.
+// headers included, and nothing else: a comment beside a removed key stays,
+// on the line where the key stood.
 func removeTOML(text string, path []string) (string, error) {
 	statements, err := scanTOML(text)
 	if err != nil {
@@ -414,7 +480,7 @@ func removeTOML(text string, path []string) (string, error) {
 	}
 	for index := len(statements) - 1; index >= 0; index-- {
 		if statement := statements[index]; hasTOMLPrefix(statement.key, path) {
-			text = text[:statement.start] + text[statement.end:]
+			text = withoutTOMLStatement(text, statement)
 		}
 	}
 	return text, nil
@@ -475,6 +541,156 @@ func appendTOMLSection(text, section string) string {
 		text += "\n"
 	}
 	return text + section
+}
+
+// respellTOML spells want in place of written, the value text the file holds
+// now, which decodes to have. Where both are tables and written is an inline
+// table, a field whose value stays keeps its spelling and place, a changed
+// field is respelt where it stands, a dropped field goes, and a new field
+// follows the others; any other value is spelt afresh.
+func respellTOML(written string, want, have any) (string, error) {
+	wantTable, wantIsTable := want.(map[string]any)
+	haveTable, haveIsTable := have.(map[string]any)
+	if !wantIsTable || !haveIsTable || !strings.HasPrefix(written, "{") {
+		return inlineTOML(want)
+	}
+	fields, err := scanInlineTOMLTable(written)
+	if err != nil {
+		return "", err
+	}
+	separator := ", "
+	if len(fields) > 1 {
+		separator = written[fields[0].valueEnd:fields[1].start]
+	}
+	opening, closing := "", ""
+	if len(fields) > 0 {
+		opening = written[1:fields[0].start]
+		closing = written[fields[len(fields)-1].valueEnd : len(written)-1]
+	}
+	var spelled []string
+	seen := map[string]bool{}
+	for _, field := range fields {
+		if len(field.key) != 1 {
+			// A dotted field sets a table of its own; the whole value is
+			// spelt afresh rather than taken apart.
+			return inlineTOML(want)
+		}
+		name := field.key[0]
+		seen[name] = true
+		value, kept := wantTable[name]
+		if !kept {
+			continue
+		}
+		valueText := written[field.valueStart:field.valueEnd]
+		if !reflect.DeepEqual(value, haveTable[name]) {
+			if valueText, err = respellTOML(valueText, value, haveTable[name]); err != nil {
+				return "", err
+			}
+		}
+		spelled = append(spelled, written[field.start:field.valueStart]+valueText)
+	}
+	for _, name := range sortedTOMLKeys(wantTable) {
+		if seen[name] {
+			continue
+		}
+		inline, err := inlineTOML(wantTable[name])
+		if err != nil {
+			return "", err
+		}
+		spelled = append(spelled, tomlKeySegment(name)+" = "+inline)
+	}
+	if len(spelled) == 0 {
+		return "{}", nil
+	}
+	return "{" + opening + strings.Join(spelled, separator) + closing + "}", nil
+}
+
+// inlineTOMLField is one key and value of an inline table: its key starts at
+// start and its value lies in [valueStart, valueEnd), offsets into the table.
+type inlineTOMLField struct {
+	key                         []string
+	start, valueStart, valueEnd int
+}
+
+// scanInlineTOMLTable reads the fields of the inline table that is the whole
+// of written, braces included.
+func scanInlineTOMLTable(written string) ([]inlineTOMLField, error) {
+	var fields []inlineTOMLField
+	pos := 1
+	for {
+		pos = skipTOMLSpace(written, pos)
+		if pos >= len(written) {
+			return nil, errors.New("an inline table never closes")
+		}
+		if written[pos] == '}' && len(fields) == 0 {
+			return fields, nil
+		}
+		start := pos
+		key, next, err := scanTOMLKey(written, pos)
+		if err != nil {
+			return nil, err
+		}
+		if next >= len(written) || written[next] != '=' {
+			return nil, fmt.Errorf("unreadable inline table field at byte %d", start)
+		}
+		valueStart := skipTOMLSpace(written, next+1)
+		valueEnd, err := scanInlineTOMLValue(written, valueStart)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, inlineTOMLField{key: key, start: start, valueStart: valueStart, valueEnd: valueEnd})
+		pos = skipTOMLSpace(written, valueEnd)
+		if pos >= len(written) {
+			return nil, errors.New("an inline table never closes")
+		}
+		switch written[pos] {
+		case ',':
+			pos++
+		case '}':
+			return fields, nil
+		default:
+			return nil, fmt.Errorf("unreadable inline table at byte %d", pos)
+		}
+	}
+}
+
+// scanInlineTOMLValue returns the byte after the value of an inline table's
+// field that starts at pos: the last byte before the comma or brace that
+// ends it.
+func scanInlineTOMLValue(text string, pos int) (int, error) {
+	depth, last := 0, pos
+	for i := pos; i < len(text); {
+		switch c := text[i]; c {
+		case '"', '\'':
+			closing, err := endOfTOMLString(text, i)
+			if err != nil {
+				return 0, err
+			}
+			i, last = closing, closing
+		case '[', '{':
+			depth++
+			i++
+			last = i
+		case ']', '}':
+			if depth == 0 {
+				return endOfTOMLValue(pos, last)
+			}
+			depth--
+			i++
+			last = i
+		case ',':
+			if depth == 0 {
+				return endOfTOMLValue(pos, last)
+			}
+			i++
+		case ' ', '\t', '\r', '\n':
+			i++
+		default:
+			i++
+			last = i
+		}
+	}
+	return 0, errors.New("an inline table never closes")
 }
 
 // inlineTOML spells a decoded value as it is written after an equals sign.
