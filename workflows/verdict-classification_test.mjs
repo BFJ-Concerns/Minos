@@ -153,7 +153,7 @@ test("a defect label is a non-empty string whose members gate alike", () => {
   // One labelled defect is published or withheld as one, so a label whose
   // members carry different classes is refused too.
   const mixed = decision(digest, { verdict: "clean",
-    findings: [{ key: first.key, gating: false, class: "already-raised", defect: "retry-bound" }, { key: second.key, gating: false, class: "declared-out-of-scope", defect: "retry-bound" }],
+    findings: [{ key: first.key, gating: false, class: "speculative-hardening", defect: "retry-bound" }, { key: second.key, gating: false, class: "declared-out-of-scope", defect: "retry-bound" }],
   });
   assert.match(validateVerdictDecision(mixed, digest).reason, /labelled one defect are classed differently: retry-bound/);
 
@@ -161,6 +161,29 @@ test("a defect label is a non-empty string whose members gate alike", () => {
     findings: [{ key: first.key, gating: true, defect: "retry-bound" }, { key: second.key, gating: true, defect: "retry-bound" }],
   });
   assert.deepEqual(validateVerdictDecision(labelled, digest), { ok: true });
+});
+
+test("a defect label's already-raised members stand apart from the call its other sites take", () => {
+  const digest = completeDigest([
+    finding(),
+    finding({ id: "specialist-2:1", title: "Retry bound short by one at the loop exit", line: 57 }),
+    finding({ id: "specialist-3:1", title: "Retry bound short by one in the backoff", line: 71 }),
+  ]);
+  const [earlier, fresh, other] = digest.findings;
+  const raised = { key: earlier.key, gating: false, class: "already-raised", defect: "retry-bound" };
+  const gated = decision(digest, {
+    findings: [raised, { key: fresh.key, gating: true, defect: "retry-bound" }, { key: other.key, gating: true, defect: "retry-bound" }],
+  });
+  assert.deepEqual(validateVerdictDecision(gated, digest), { ok: true });
+  const advisory = decision(digest, { verdict: "clean",
+    findings: [raised, { key: fresh.key, gating: false, class: "declared-out-of-scope", defect: "retry-bound" }, { key: other.key, gating: false, class: "declared-out-of-scope", defect: "retry-bound" }],
+  });
+  assert.deepEqual(validateVerdictDecision(advisory, digest), { ok: true });
+  // The sites the author has not been told of still take one call.
+  const split = decision(digest, {
+    findings: [raised, { key: fresh.key, gating: true, defect: "retry-bound" }, { key: other.key, gating: false, class: "speculative-hardening", defect: "retry-bound" }],
+  });
+  assert.match(validateVerdictDecision(split, digest).reason, /labelled one defect gate differently: retry-bound/);
 });
 
 test("a coherent decision validates", () => {
