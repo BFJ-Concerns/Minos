@@ -210,6 +210,18 @@ func TestMonitoringReadsCurrentConfigOnExistingRoutes(t *testing.T) {
 		t.Fatalf("initial archive listing: %d %s", response.Code, response.Body.String())
 	}
 
+	// Change only the TTL and age the entry beyond it, while keeping it
+	// younger than the old TTL. The already mounted route must list again.
+	reader.recent.entries[recentRunsWindow{defaultRecentWindowHours, defaultRecentRecords}].reading.takenAt =
+		time.Now().Add(-30 * time.Second)
+	cfg.Runs.RecentTimingsCacheSeconds = 10
+	writeMonitoringConfig(t, cfg)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || countListings(t, firstTally) != 2 {
+		t.Fatalf("shortened TTL did not refresh the same listing: %d %s", response.Code, response.Body.String())
+	}
+
 	newRuns := t.TempDir()
 	secondTally := filepath.Join(newRuns, "listings")
 	cfg.Runs.Dir = newRuns
@@ -224,7 +236,7 @@ func TestMonitoringReadsCurrentConfigOnExistingRoutes(t *testing.T) {
 	response = httptest.NewRecorder()
 	mux.ServeHTTP(response, statusRequest)
 	var status StatusDocument
-	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil || status.MaxConcurrent != 5 || status.Sweep == nil {
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil || status.MaxConcurrent != 5 || status.Sweep == nil || status.TimingsConfigured {
 		t.Fatalf("reloaded status: %d %s", response.Code, response.Body.String())
 	}
 	sweep, err := reader.Sweep()

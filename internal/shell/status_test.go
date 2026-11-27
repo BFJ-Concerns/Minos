@@ -85,6 +85,9 @@ run-body = "/opt/minos/run-body/run-body"
 
 	document := readStatusDocument(t, cfg)
 
+	if !document.TimingsConfigured {
+		t.Fatal("configured live timing command was not reported by /status")
+	}
 	if document.Kind != statusDocumentKind {
 		t.Fatalf("kind = %q, want %q", document.Kind, statusDocumentKind)
 	}
