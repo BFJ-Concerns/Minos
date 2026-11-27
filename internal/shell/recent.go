@@ -64,12 +64,12 @@ type timingIdentity struct {
 	} `json:"pull_request"`
 }
 
-func handleRecentRuns(ctx context.Context, cfg ServiceConfig, cache *recentRunsCache, w http.ResponseWriter, r *http.Request) error {
+func handleRecentRuns(ctx context.Context, tokenFile string, read func(context.Context, int, int) ([]RecentRun, time.Time, error), w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return nil
 	}
-	token, err := ReadSecret(cfg.Listener.StatusTokenFile)
+	token, err := ReadSecret(tokenFile)
 	if err != nil {
 		http.Error(w, "status token unavailable", http.StatusInternalServerError)
 		return err
@@ -87,14 +87,14 @@ func handleRecentRuns(ctx context.Context, cfg ServiceConfig, cache *recentRunsC
 		Limit:       limit,
 		Runs:        []recentRun{},
 	}
-	if cfg.Runs.RecentTimingsCommand != "" {
-		reading, err := cache.read(ctx, cfg, hours, limit)
-		if err != nil {
-			http.Error(w, "archived runs unavailable", http.StatusBadGateway)
-			return err
-		}
-		document.GeneratedAt = reading.takenAt.UTC().Format(time.RFC3339)
-		document.Runs = reading.runs
+	runs, takenAt, err := read(ctx, hours, limit)
+	if err != nil {
+		http.Error(w, "archived runs unavailable", http.StatusBadGateway)
+		return err
+	}
+	if !takenAt.IsZero() {
+		document.GeneratedAt = takenAt.UTC().Format(time.RFC3339)
+		document.Runs = runs
 	}
 	body, err := json.Marshal(document)
 	if err != nil {
@@ -124,8 +124,8 @@ func boundedQuery(raw string, fallback, ceiling int) int {
 // worth reporting.
 func archivedRuns(ctx context.Context, cfg ServiceConfig, hours, limit int) ([]recentRun, error) {
 	cutoff := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(archiveTimestampLayout)
-	out, err := commandCombinedOutput(ctx, cfg.Runs.RecentTimingsCommand,
-		cutoff, strconv.Itoa(limit))
+	out, err := processGroupCommandContext(ctx, cfg.Runs.RecentTimingsCommand,
+		cutoff, strconv.Itoa(limit)).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("list archived timing records: %w: %s", err, strings.TrimSpace(string(out)))
 	}

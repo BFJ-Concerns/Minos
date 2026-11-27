@@ -50,13 +50,11 @@ func ReceiveCommand(ctx context.Context, args []string, surfaces ...Surface) err
 }
 
 // receiverRoutes mounts the listener's surface. The status projection is
-// mounted only when a token file is configured for it, so a deployment that
-// has not been given one serves the webhook route alone. Every surface reads
-// through the one StateReader, which shares the status routes' cache.
+// mounted only when a token file is configured. Operator pages can mount
+// independently. The pages and the status routes use the same StateReader.
 func receiverRoutes(ctx context.Context, cfg ServiceConfig, surfaces ...Surface) *http.ServeMux {
 	mux := http.NewServeMux()
-	// One archive-listing cache is shared by the listener surfaces.
-	recentRuns := newRecentRunsCache(cfg.RecentTimingsCacheTTL())
+	state := newStateReader(cfg.Root)
 	mux.HandleFunc("POST /hooks/", func(w http.ResponseWriter, r *http.Request) {
 		deliveryConfig, err := LoadServiceConfig(cfg.Root)
 		if err != nil {
@@ -70,17 +68,16 @@ func receiverRoutes(ctx context.Context, cfg ServiceConfig, surfaces ...Surface)
 	})
 	if cfg.Listener.StatusTokenFile != "" {
 		mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-			if err := handleStatus(ctx, cfg, w, r); err != nil {
+			if err := handleStatus(r.Context(), cfg.Listener.StatusTokenFile, state.Status, w, r); err != nil {
 				log.Printf("status failed: %v", err)
 			}
 		})
 		mux.HandleFunc("/runs/recent", func(w http.ResponseWriter, r *http.Request) {
-			if err := handleRecentRuns(ctx, cfg, recentRuns, w, r); err != nil {
+			if err := handleRecentRuns(r.Context(), cfg.Listener.StatusTokenFile, state.RecentRuns, w, r); err != nil {
 				log.Printf("recent runs failed: %v", err)
 			}
 		})
 	}
-	state := newStateReader(cfg, recentRuns)
 	for _, mount := range surfaces {
 		mount(mux, cfg, state)
 	}

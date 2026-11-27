@@ -30,7 +30,7 @@ func TestOperatorQueueShowsSweepReasons(t *testing.T) {
 		t.Fatal(err)
 	}
 	reading := &sweep
-	site, _ := testSite(t, Readings{Sweep: func() *shell.SweepDeferralDocument { return reading }}, Settings{})
+	site, _ := testSite(t, Readings{Sweep: func() (*shell.SweepDeferralDocument, error) { return reading, nil }}, Settings{})
 	if response := visit(site, "/queue", nil); response.Code != http.StatusSeeOther {
 		t.Fatalf("queue without session returned %d", response.Code)
 	}
@@ -48,11 +48,11 @@ func TestOperatorQueueShowsSweepReasons(t *testing.T) {
 func TestOperatorLiveRunsShowStatusWithoutOpeningRunDirectories(t *testing.T) {
 	var status shell.StatusDocument
 	if err := json.Unmarshal([]byte(`{
-		"max_concurrent":2,"runs":[
+		"timings_configured":true,"max_concurrent":2,"runs":[
 			{"unit":"run-1","run_dir":"/nonexistent","owner":"acme","repo":"widget","pr":"3","head":"abcdef",
 			"stage":"review","stages":[{"name":"review","attempt":2,"state":"running"}],
 			"timings":{"workers":[{"label":"Explore","phase":"explore","engine":"codex","status":"running"}]}},
-			{"unit":"run-2","stage":"starting","error":"run directory could not be read"}
+			{"unit":"run-2","run_dir":"/nonexistent","stage":"starting","error":"timings command failed","timings":null}
 		]
 	}`), &status); err != nil {
 		t.Fatal(err)
@@ -60,10 +60,17 @@ func TestOperatorLiveRunsShowStatusWithoutOpeningRunDirectories(t *testing.T) {
 	site, _ := testSite(t, Readings{Status: func(context.Context) (shell.StatusDocument, error) {
 		return status, nil
 	}}, Settings{})
-	response := visit(site, "/live", signIn(t, site))
+	session := signIn(t, site)
+	response := visit(site, "/live", session)
 	assertMonitoringPage(t, response.Code, response.Body.String(), "2 of 2 run slots occupied",
 		"acme/widget #3", "abcdef", "review (attempt 2)", "Explore", "explore codex",
-		"run-2", "starting", "run directory could not be read")
+		"run-2", "starting", "timings command failed", "Worker timing records could not be read.")
+	status.TimingsConfigured = false
+	response = visit(site, "/live", session)
+	assertMonitoringPage(t, response.Code, response.Body.String(), "Worker timings are disabled.")
+	if strings.Contains(response.Body.String(), "No dispatched workers are recorded yet.") {
+		t.Error("disabled worker timings were shown as a pending recording")
+	}
 }
 
 func TestOperatorRecentRunsShowArchivedEvidenceAndLegacyTimings(t *testing.T) {
