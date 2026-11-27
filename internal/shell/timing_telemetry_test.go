@@ -1077,6 +1077,7 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 		"review-args.json", "review-result.json", "review@2-args.json", "review@2-result.json",
 		"review-brief@2-result.json", "push-inspection-input.json",
 		"verdict-decision.json", "verdict-decision-brief.json",
+		"review.log", "push-inspection@2.log", "forge.log", "stage-stopped",
 	}
 	for _, name := range stageFiles {
 		if err := os.WriteFile(filepath.Join(runDir, name), []byte("{}\n"), 0o600); err != nil {
