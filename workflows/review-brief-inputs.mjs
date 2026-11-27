@@ -10,6 +10,7 @@ import { briefRecords } from "./brief-dispositions.mjs";
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
 import { pullRequestFromOrientation } from "./pull-request-description.mjs";
 import { reviewContracts } from "./review-contracts.mjs";
+import { promptSettingsFromEnvironment } from "./prompt-settings.mjs";
 import { reviewPrompts } from "./review-prompts.mjs";
 import { routingFromEnvironment } from "./role-routing.mjs";
 
@@ -53,7 +54,7 @@ if (argumentError) {
   }
 
   const pullRequest = pullRequestFromOrientation(orientation);
-  const { concerns, prompts } = reviewPrompts(workflowRoot);
+  const { concerns, prompts } = reviewPrompts(workflowRoot, promptSettingsFromEnvironment());
 
   const workflowInput = {
     target,

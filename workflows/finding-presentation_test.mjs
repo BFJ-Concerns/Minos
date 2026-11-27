@@ -149,6 +149,14 @@ test("an issue-log entry is one list item carrying the finding, its site, proven
       "Filed by Minos from owner/repository#17, 2026-09-12.",
   );
   for (const leaked of LEAKS) assert.ok(!entry.includes(leaked), `entry leaked ${leaked}`);
+  assert.equal(
+    issueLogEntry({ ...confirmed, kind: "safeguard-request", alsoAt: ["internal/store.go:60"] }, attribution),
+    "- **Safeguard request · High: Lost update on concurrent write** (`internal/store.go:41`, also at `internal/store.go:60`) — " +
+      "Two writers read the same revision and the later write wins silently. " +
+      "This asks for a safeguard against a failure nobody has observed: a hardening suggestion, not a defect. " +
+      "Proposed by `gpt-6.1-sol-served` (pinned `gpt-6.1-sol`); verified by `claude-opus-5-5`. " +
+      "Filed by Minos from owner/repository#17, 2026-09-12.",
+  );
   assert.throws(() => issueLogEntry({ kind: "something-else" }, attribution), /unknown entry kind/);
   assert.equal(
     issueLogEntry({

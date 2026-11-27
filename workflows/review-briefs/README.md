@@ -18,7 +18,8 @@ slots and sends it.
 `reviewed-change.md`, `writing-a-finding.md` and `severity-scale.md` are
 sections several of those prompts share. They are never sent on their own.
 Neither are the files in `assignment/`, which make up the value of one slot
-of `repository.md`.
+of `repository.md`, nor the passages a repository's settings choose
+(*Settings* below).
 
 The schemas are in `workflows/review-contracts.mjs`, with what the merge and
 verifier legs are shown of each finding.
@@ -49,13 +50,31 @@ this order with a blank line between them:
 Each file is filled in a pass of its own before the result becomes the
 value of `{{assignment}}`.
 
+## Settings
+
+Some of what a prompt says depends on a per-repository setting. Each such
+passage has a slot and a directory of the slot's name, holding one file for
+each value the setting takes, named for the value. The slot takes the file
+for the repository's value.
+
+| Slot | In | Setting | Files |
+|---|---|---|---|
+| `{{safeguard-requests}}` | `specialist.md`, `repository.md` | `review.file-safeguard-requests` | `false.md`: reviewers leave out requests for a safeguard against a situation nothing suggests will arise. `true.md`: they report them, written as requests |
+| `{{verifier-safeguard-requests}}` | `verifier.md` | `review.file-safeguard-requests` | `false.md`: empty, so a verifier judges every finding as a claimed fault. `true.md`: what each verdict means for a request for a safeguard, and that a confirmed one is filed as a suggestion and never sent to the author as a defect |
+
+A file is empty where its value adds nothing to the prompt, and it is still
+there. A setting that changes two prompts in different ways has a slot and
+a directory for each passage. `workflows/prompt-settings.mjs` lists the
+settings, their values and their slots.
+
 ## Slots
 
 A prompt is its file with every `{{slot}}` filled.
 
 File slots take the text of another file here: `{{reviewed-change}}`,
-`{{writing-a-finding}}`, `{{severity-scale}}`, and `{{concern}}`, which takes
-a concern file's body without its front matter.
+`{{writing-a-finding}}`, `{{severity-scale}}`, `{{concern}}`, which takes
+a concern file's body without its front matter, and the setting slots
+above.
 
 Run slots take a value from the run:
 

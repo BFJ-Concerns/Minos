@@ -39,7 +39,7 @@ test("concern routing that cannot be honoured is refused", () => {
     [{ logic: { engin: "claude" } }, /routing\.concerns\.logic\.engin is not a routing field/],
     [{ logic: { engine: "opencode" } }, /routing\.concerns\.logic\.engine must be one of claude, codex/],
     [{ logic: { engine: "claude", model: "" } }, /routing\.concerns\.logic\.model must be a non-empty string/],
-    [{ logic: { effort: "max" } }, /routing\.concerns\.logic\.effort must be one of/],
+    [{ logic: { effort: "maximal" } }, /routing\.concerns\.logic\.effort must be one of/],
     [{ logic: { model: "claude-opus-5-5" } }, /routing\.concerns\.logic\.model needs routing\.concerns\.logic\.engine/],
     [[], /concern routing must be an object keyed by concern/],
   ]) assert.throws(() => resolveConcernRouting({ configured, concerns: CONCERNS, proposer, provisioned: BOTH }), message);

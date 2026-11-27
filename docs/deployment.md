@@ -154,8 +154,9 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    destination lives on the archive host, bound into the key's forced
    command below, so the box never names it.
 
-   Per-repository knobs — admission rules, review threshold, the outcomes
-   push inspection may choose, work-in-progress branch
+   Per-repository knobs — admission rules, review threshold, whether
+   safeguard requests are filed, the outcomes push inspection may choose,
+   work-in-progress branch
    prefixes, the guidance sources a review is grounded on, the filing
    destination for advisory material and configuration diagnostics,
    and the markers Minos writes on a pull request — are set once under
@@ -263,7 +264,9 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    `exploration` and `brief-planner`, and `medium` for `proposer`,
    `verifier`, `engagement-gate` and `judgement`. `judgement` is the role
    of the run driver's one-shot judgement stages
-   (`workflows/judgements/`). The verifier's routing also carries
+   (`workflows/judgements/`). An effort is one of the Ensemble
+   runtime's levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+   or `max`. The verifier's routing also carries
    the leg that merges findings one fix would resolve before they are
    verified. A finding a verifier raises while checking another is
    verified on the `proposer`'s routing when that runs on the other engine,

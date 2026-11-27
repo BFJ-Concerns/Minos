@@ -38,6 +38,28 @@ told, and the stage's agent works in the clone, where it reads the code
 for itself. The definition's comment on `inputProblem` gives the input's
 fields.
 
+## Repository settings
+
+A stage's prompt is the same text for every repository. It takes no passage
+chosen by a repository's setting, and its definition reads no environment.
+A setting reaches a stage in one of two ways, by what it changes.
+
+A setting that changes what the stage should decide is a field of its
+input. The driver step reads the setting and puts it there, the definition
+checks it in `inputProblem` and gives it to the prompt as a run slot, and
+the record then holds it, so a replay answers under the value the run had.
+`verdict-classification` takes `review.threshold` this way, as
+`{{threshold}}`.
+
+A setting that changes only what the driver does with an answer is not
+given to the stage. The prompt says what the answer leads to under each
+value, in one wording that is true whichever holds, and says that the
+stage's decision is the same under all of them.
+`verdict-classification` does this for `review.file-safeguard-requests`:
+a finding takes the `speculative-hardening` class for what it asks for,
+and the publication composer alone decides whether a finding of that class
+is then filed.
+
 ## How a stage runs
 
 The driver step gathers the input by mechanical means and calls

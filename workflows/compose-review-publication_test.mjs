@@ -60,7 +60,7 @@ function decision(verdictName, findings) {
   };
 }
 
-function compose(t, { main, mainDecision, brief, briefDecision, threshold = "High", orientation = { repository: "/run/minos/review-17/workspace", source: { owner: "owner", repo: "repo" }, misconfigurations: [] } }) {
+function compose(t, { main, mainDecision, brief, briefDecision, threshold = "High", environment = {}, orientation = { repository: "/run/minos/review-17/workspace", source: { owner: "owner", repo: "repo" }, misconfigurations: [] } }) {
   const scratch = mkdtempSync(join(tmpdir(), "compose-review-publication-"));
   t.after(() => rmSync(scratch, { recursive: true, force: true }));
   const write = (name, value) => {
@@ -70,7 +70,7 @@ function compose(t, { main, mainDecision, brief, briefDecision, threshold = "Hig
   };
   const args = [cliPath, join(scratch, "out"), write("orientation.json", orientation), threshold, write("main.json", main), write("main-decision.json", mainDecision)];
   if (brief) args.push(write("brief.json", brief), write("brief-decision.json", briefDecision));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(MINOS_|ENSEMBLE_)/.test(name)));
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(MINOS_|ENSEMBLE_)/.test(name))), ...environment };
   const result = spawnSync(process.execPath, args, { encoding: "utf8", env });
   const plan = result.status === 0 ? JSON.parse(result.stdout) : null;
   return { result, plan, scratch, read: (path) => readFileSync(path, "utf8"), readJson: (path) => JSON.parse(readFileSync(path, "utf8")) };
@@ -97,7 +97,7 @@ test("a blocking round posts only what blocks and files the rest", (t) => {
   const entries = readJson(plan.triage.entries);
   assert.deepEqual(entries.map((entry) => [entry.kind, entry.severity]),
     [["advisory-finding", "Medium"], ["advisory-finding", "Low"], ["out-of-scope-observation", undefined]]);
-  assert.deepEqual(plan.triage, { entries: plan.triage.entries, advisory: 2, unsettled: 0, observations: 1, misconfigurations: 0, guidanceMisconfigurations: 0 });
+  assert.deepEqual(plan.triage, { entries: plan.triage.entries, advisory: 2, safeguardRequests: 0, unsettled: 0, observations: 1, misconfigurations: 0, guidanceMisconfigurations: 0 });
 });
 
 test("an unsettled finding is filed as an open question and never posted or classified", (t) => {
@@ -213,6 +213,55 @@ test("a finding classed as speculative hardening reaches no review and no filing
   assert.deepEqual(readJson(plan.triage.entries), []);
   assert.equal(plan.speculativeHardening, 2);
   assert.equal(plan.alreadyRaised, 0);
+});
+
+test("a repository that files safeguard requests gets each classed one filed as such, never in the review", (t) => {
+  const confirmed = [
+    finding("a"),
+    finding("b", { severity: "Medium", line: 7, title: "Guard the retry" }),
+    finding("c", { line: 9, title: "Guard the retry again" }),
+    finding("d", { line: 11, severity: "Low" }),
+  ];
+  const mainDecision = decision("request-changes", [
+    { key: "a", gating: true },
+    { key: "b", gating: false, class: "speculative-hardening", defect: "retry-guard" },
+    { key: "c", gating: false, class: "speculative-hardening", defect: "retry-guard" },
+    { key: "d", gating: false },
+  ]);
+  const { result, plan, readJson } = compose(t, {
+    main: verdict(confirmed), mainDecision, environment: { MINOS_FILE_SAFEGUARD_REQUESTS: "true" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readJson(plan.posts[0].comments).map((comment) => comment.line), [42]);
+  const entries = readJson(plan.triage.entries);
+  assert.deepEqual(entries.map(({ kind, title, line, alsoAt }) => ({ kind, title, line, alsoAt })), [
+    { kind: "advisory-finding", title: "Finding d", line: 11, alsoAt: undefined },
+    { kind: "safeguard-request", title: "Guard the retry again", line: 9, alsoAt: ["internal/review.go:7"] },
+  ]);
+  assert.equal(plan.triage.safeguardRequests, 1);
+  assert.equal(plan.triage.advisory, 1);
+  assert.equal(plan.speculativeHardening, 1);
+
+  for (const value of [undefined, "false"]) {
+    const off = compose(t, {
+      main: verdict(confirmed), mainDecision,
+      environment: value === undefined ? {} : { MINOS_FILE_SAFEGUARD_REQUESTS: value },
+    });
+    assert.equal(off.result.status, 0, off.result.stderr);
+    assert.deepEqual(off.readJson(off.plan.triage.entries).map((entry) => entry.kind), ["advisory-finding"]);
+    assert.equal(off.plan.triage.safeguardRequests, 0);
+  }
+});
+
+test("a safeguard-request setting that is neither true nor false stops the composer with nothing written", (t) => {
+  const { result, scratch } = compose(t, {
+    main: verdict([finding("a")]),
+    mainDecision: decision("clean", [{ key: "a", gating: false, class: "speculative-hardening" }]),
+    environment: { MINOS_FILE_SAFEGUARD_REQUESTS: "yes" },
+  });
+  assert.equal(result.status, 2);
+  assert.equal(result.stderr, "MINOS_FILE_SAFEGUARD_REQUESTS must be one of false, true\n");
+  assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
 });
 
 // Shaped as setup-workspace writes it: `repository` is the workspace path,
