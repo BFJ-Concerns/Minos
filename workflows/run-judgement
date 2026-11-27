@@ -12,8 +12,11 @@
 // mistakes a missing judgement for one.
 
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { answerFrom, loadStage } from "./judgement-stage.mjs";
 
 const LAUNCHER = resolve(dirname(fileURLToPath(import.meta.url)), "..", "runtime", "ensemble.mjs");
 
@@ -38,14 +41,14 @@ try {
   if (!workflowScript || flag !== "--json-args" || !jsonArgs || !jsonArgs.startsWith("@") || extra.length > 0)
     throw new Error("usage: run-judgement <workflow-script-abs-path> --json-args @<argsfile>");
   if (!isAbsolute(workflowScript)) throw new Error("workflow script path must be absolute");
+  const args = JSON.parse(readFileSync(jsonArgs.slice(1), "utf8"));
+  const stage = await loadStage(args.stage);
+  const problem = stage.inputProblem(args.input);
+  if (problem) throw new Error(`${stage.name} input: ${problem}`);
   const lines = (await launch(jsonArgs, workflowScript)).split(/\r?\n/).filter((line) => line !== "");
   if (lines.length !== 1) throw new Error(`ensemble launcher emitted ${lines.length} stdout lines; expected one result`);
-  const result = JSON.parse(lines[0]);
-  if (!result || typeof result.stage !== "string" || result.stage === "")
-    throw new Error("the judgement workflow returned no stage name");
-  if (!result.answer || typeof result.answer !== "object" || Array.isArray(result.answer))
-    throw new Error(`stage ${result.stage} gave no answer`);
-  process.stdout.write(`${JSON.stringify({ stage: result.stage, answer: result.answer })}\n`);
+  const answer = answerFrom(stage, args.input, JSON.parse(lines[0]));
+  process.stdout.write(`${JSON.stringify({ stage: stage.name, answer })}\n`);
 } catch (error) {
   process.stderr.write(`run-judgement: ${error.message}\n`);
   process.exitCode = 1;
