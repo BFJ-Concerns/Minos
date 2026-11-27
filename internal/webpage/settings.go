@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 
 	"github.com/BFJ-Concerns/Minos/internal/shell"
 )
@@ -162,9 +163,11 @@ func (view settingsView) finish(r *http.Request) settingsView {
 		for s := range view.Groups[g].Settings {
 			row := &view.Groups[g].Settings[s]
 			row.Field = row.Typed
-			if row.Level == shell.SetNowhere && row.Form == shell.ChoiceForm {
-				// The choice that applies is the default, so the select
-				// opens on it and saving it unchanged writes what is in force.
+			if row.Form == shell.ChoiceForm && !slices.Contains(row.Choices, row.Field) {
+				// Unset, or set to a value the loader resolves to the
+				// default (an empty threshold is High): the choice that
+				// applies is the default, so the select opens on it and
+				// saving it unchanged writes what is in force.
 				row.Field = row.Default
 			}
 			if submitted != "" && row.Name() == submitted {

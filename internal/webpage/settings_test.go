@@ -267,6 +267,20 @@ func TestChoiceAtItsDefaultOpensOnTheDefault(t *testing.T) {
 	}
 }
 
+func TestChoiceSetEmptyOpensOnTheDefaultItResolvesTo(t *testing.T) {
+	root, read, write := configurationRoot(t)
+	path := filepath.Join(root, "repos", "estate.toml")
+	if err := os.WriteFile(path, []byte(strings.Replace(fileText(t, path), `threshold = "Low"`, `threshold = ""`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	row := settingRowHTML(t, visit(site, "/repositories/forgejo/bfj/estate/settings", session).Body.String(), "review.threshold")
+	if !strings.Contains(row, "<option selected>High</option>") || strings.Contains(row, "<option selected>Critical</option>") {
+		t.Errorf("an empty threshold, which the loader resolves to High, does not open on High:\n%s", row)
+	}
+}
+
 func TestOneEngineConcurrencySetFromTheDefaultsIsSaved(t *testing.T) {
 	root, read, write := configurationRoot(t)
 	site, _ := testSite(t, read, write)
