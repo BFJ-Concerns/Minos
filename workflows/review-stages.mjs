@@ -175,7 +175,7 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
         ? subject.members.map(({ finding }) => ({ title: finding.title, explanation: finding.explanation }))
         : undefined,
       wholeScope: subject.wholeScope,
-      wholeScopeBrief: subject.wholeScopeBrief,
+      brief: subject.brief,
     }, contracts.verifierFindingFields);
   }
 
@@ -274,7 +274,7 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
         raised.push({
           id: `${batch.label}:raised:${findingIndex + 1}`,
           finding,
-          ...(lendsScope ? { wholeScope: checked.wholeScope, wholeScopeBrief: checked.wholeScopeBrief } : {}),
+          ...(lendsScope ? { wholeScope: checked.wholeScope, brief: checked.brief } : {}),
           source: "verification",
           reportedBy: "verification",
           outsideConcern: false,
@@ -321,10 +321,11 @@ export function pathWithinScope(path, scope) {
 }
 
 // One finding to verify: a merged group's primary write-up, with what the
-// group's other write-ups add, or a finding a verifier raised. A group
-// holding a whole-scope brief's finding is verified as whole-scope, under
-// the first such write-up's directory and brief, whichever write-up is
-// primary.
+// group's other write-ups add, or a finding a verifier raised. It is
+// judged under the brief its primary write-up was made under, if any. A
+// group holding a whole-scope brief's finding is verified as whole-scope,
+// under the first such write-up's directory and brief, whichever write-up
+// is primary.
 export function subjectOf({ primary, members }) {
   const writeUps = [primary, ...members];
   const dependsOn = [...new Set(writeUps
@@ -333,7 +334,7 @@ export function subjectOf({ primary, members }) {
   const whole = writeUps.find((item) => item.wholeScope !== undefined);
   return {
     ...primary,
-    ...(whole ? { wholeScope: whole.wholeScope, wholeScopeBrief: whole.wholeScopeBrief } : {}),
+    ...(whole ? { wholeScope: whole.wholeScope, brief: whole.brief } : {}),
     finding: { ...primary.finding, dependsOn },
     members,
   };
@@ -347,7 +348,8 @@ export function proposedFindingOf(subject) {
     ...subject.finding,
     source: subject.source,
     ...(subject.outsideConcern ? { outsideConcern: true } : {}),
-    ...(subject.wholeScope !== undefined ? { wholeScope: subject.wholeScope, wholeScopeBrief: subject.wholeScopeBrief } : {}),
+    ...(subject.brief !== undefined ? { brief: subject.brief } : {}),
+    ...(subject.wholeScope !== undefined ? { wholeScope: subject.wholeScope } : {}),
     ...(subject.members.length > 0 ? {
       mergedFrom: subject.members.map((member) => ({
         id: member.id,

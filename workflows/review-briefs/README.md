@@ -166,10 +166,12 @@ A review proposes, merges, then verifies.
    two. Each group goes on as one finding: its primary write-up, with the
    group's other write-ups beside it.
 3. A verifier leg gives each finding one verdict, which stands for every
-   write-up in its group. A finding from a whole-scope brief is shown with
-   `wholeScope`, the brief's directory, and `wholeScopeBrief`, the brief's
-   path, which the verifier reads to tell whether a defect it meets in
-   untouched code there falls under the brief. A finding a verifier raises itself, in
+   write-up in its group. A finding made under a `.review/` brief is shown
+   with `brief`, the brief's path, which the verifier reads to judge the
+   finding under the brief's rule. A finding from a whole-scope brief also
+   carries `wholeScope`, the brief's directory, which tells the verifier
+   that a defect it meets in untouched code there is within the review
+   where it falls under the brief. A finding a verifier raises itself, in
    `newFindings`, is a proposed finding too: it is merged with whatever else
    its round raised and verified in the next round, by a leg other than the
    one that raised it. It names the finding its verifier was checking, and

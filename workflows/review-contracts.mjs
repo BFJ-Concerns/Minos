@@ -173,8 +173,9 @@ export const generalWholeChangeSchema = {
 // general reviewer, or `verification` for a finding a verifier raised.
 // `outsideConcern` says whether the finding came back in
 // `outsideConcernFindings`, and is false for a reviewer with no concern.
-// Nor is it shown `wholeScope` or `wholeScopeBrief`: a group carries the scope of any whole-scope write-up
-// in it, whichever is primary, so grouping need not weigh it.
+// Nor is it shown `wholeScope` or `brief`: a group carries the scope and
+// brief of any whole-scope write-up in it, whichever is primary, so
+// grouping need not weigh them.
 export const MERGE_FINDING_FIELDS = ["id", "reportedBy", "outsideConcern", "title", "path", "line", "explanation", "dependsOn"];
 
 // What the merge leg returns, on merge.md. A schema cannot say the rest of
@@ -208,12 +209,14 @@ export const mergeSchema = {
 // severity or confidence, so the verifier's grade is its own. `dependsOn`
 // joins what every write-up in the group named. `alsoReportedAs` holds the
 // group's other write-ups as `{ title, explanation }` and is left out for a
-// group of one. `wholeScope` is the directory a whole-scope repository
-// brief audits and `wholeScopeBrief` that brief's path in the reviewed
-// repository, which the verifier reads to tell whether a defect it meets
-// in untouched code there falls under the brief; both are left out for a
-// finding about the change.
-export const VERIFIER_FINDING_FIELDS = ["id", "title", "path", "line", "explanation", "dependsOn", "alsoReportedAs", "wholeScope", "wholeScopeBrief"];
+// group of one. `brief` is the path in the reviewed repository of the
+// `.review/` brief the finding was made under, whatever the brief's
+// extent, which the verifier reads to judge the finding under the brief's
+// rule; it is left out for a finding of the main review. `wholeScope` is
+// the directory a whole-scope brief audits, which tells the verifier that
+// untouched code there is within the review where it is a fault under that
+// brief; it is left out for a finding about the change.
+export const VERIFIER_FINDING_FIELDS = ["id", "title", "path", "line", "explanation", "dependsOn", "alsoReportedAs", "brief", "wholeScope"];
 
 // One verifier verdict. `severity` is the verifier's own grade and the one
 // the finding carries from here on; it is `None` exactly when the finding
