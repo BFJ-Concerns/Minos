@@ -1,7 +1,7 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -754,6 +754,42 @@ test("the enumerator emits large deterministic input directly as JSON and reject
     }),
     /usage:/,
   );
+});
+
+test("the brief stage's input builder hands its reviewers and verifiers the safeguard-request passages the setting chooses, and no depth passage", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "minos-brief-settings-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", ["-C", root, "config", "user.name", "Fixture"]);
+  execFileSync("git", ["-C", root, "config", "user.email", "fixture@example.test"]);
+  writeFileSync(join(root, "AGENTS.md"), "Guidance.\n");
+  writeFileSync(join(root, "code.txt"), "before\n");
+  execFileSync("git", ["-C", root, "add", "."]);
+  execFileSync("git", ["-C", root, "commit", "-qm", "base"]);
+  const target = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  writeFileSync(join(root, "code.txt"), "after\n");
+  execFileSync("git", ["-C", root, "commit", "-qam", "head"]);
+  const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const orientationPath = join(root, "orientation.json");
+  writeFileSync(orientationPath, JSON.stringify({
+    repository: root,
+    guidance: [{ source: { path: "AGENTS.md" }, location: join(root, "AGENTS.md"), origin: "checked-in" }],
+    misconfigurations: [],
+  }));
+  const build = (settings) => JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "", MINOS_FILE_SAFEGUARD_REQUESTS: "", MINOS_REVIEW_DEPTH: "", ...settings },
+  })).prompts;
+  const passage = (slot, value) => readFileSync(new URL(`./review-briefs/${slot}/${value}.md`, import.meta.url), "utf8").trim();
+  const off = build({});
+  const on = build({ MINOS_FILE_SAFEGUARD_REQUESTS: "true" });
+  assert.ok(off.repository.includes(passage("safeguard-requests", "false")), "a brief's reviewer reads false.md by default");
+  assert.ok(on.repository.includes(passage("safeguard-requests", "true")), "a brief's reviewer reads true.md with filing on");
+  assert.ok(!on.repository.includes(passage("safeguard-requests", "false")), "a brief's reviewer with filing on leaves out false.md");
+  assert.ok(on.verifier.includes(passage("verifier-safeguard-requests", "true")), "a brief's verifier reads the request section with filing on");
+  assert.ok(!off.verifier.includes(passage("verifier-safeguard-requests", "true")), "a brief's verifier reads no request section by default");
+  for (const depth of ["light", "thorough"])
+    assert.deepEqual(build({ MINOS_REVIEW_DEPTH: depth }), off, `the brief stage reads the same under ${depth} depth`);
 });
 
 test("a brief verifier observation reaches the result alongside its verdicts", async () => {

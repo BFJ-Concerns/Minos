@@ -420,20 +420,26 @@ test("both routes' verdicts reach the result when findings from two engines are 
 });
 
 test("a merged group is verified by the family that did not propose its primary, wherever the primary is listed", async () => {
-  const args = enumeratedArgs("aaa111", "bbb222", { concernRouting: { security: { engine: "claude" } } });
-  const plan = [unit("secure", "security"), unit("correct", "logic")];
-  const { calls } = await runScript(args, responder({
-    exploration: explorationFixture({ plan }),
-    merge: (_label, prompt) => {
-      const ids = findingsFromVerifierPrompt(prompt).map((entry) => entry.id);
-      assert.deepEqual(ids, ["specialist-1-security-claude:1", "specialist-2-logic-codex:1"]);
-      return { groups: [{ findingIds: ids, primary: ids[1], sharedCause: "One guard covers both." }] };
-    },
-  }));
-  const verified = calls
-    .filter((call) => call.opts.label?.startsWith("verify-"))
-    .map((call) => [call.opts.label, call.opts.engine, findingsFromVerifierPrompt(call.prompt).map((entry) => entry.id)]);
-  assert.deepEqual(verified, [["verify-1-claude", "claude", ["specialist-2-logic-codex:1"]]]);
+  // Both pairings: a Codex primary listed second, and a Claude primary
+  // listed first, which only a verifier chosen from the primary's own
+  // proposer, and not from the default proposer's engine, sends to Codex.
+  for (const [primary, verifiedOn] of [[1, ["verify-1-claude", "claude"]], [0, ["verify-1-codex", "codex"]]]) {
+    const args = enumeratedArgs("aaa111", "bbb222", { concernRouting: { security: { engine: "claude" } } });
+    const plan = [unit("secure", "security"), unit("correct", "logic")];
+    const { calls } = await runScript(args, responder({
+      exploration: explorationFixture({ plan }),
+      merge: (_label, prompt) => {
+        const ids = findingsFromVerifierPrompt(prompt).map((entry) => entry.id);
+        assert.deepEqual(ids, ["specialist-1-security-claude:1", "specialist-2-logic-codex:1"]);
+        return { groups: [{ findingIds: ids, primary: ids[primary], sharedCause: "One guard covers both." }] };
+      },
+    }));
+    const verified = calls
+      .filter((call) => call.opts.label?.startsWith("verify-"))
+      .map((call) => [call.opts.label, call.opts.engine, findingsFromVerifierPrompt(call.prompt).map((entry) => entry.id)]);
+    const primaryId = ["specialist-1-security-claude:1", "specialist-2-logic-codex:1"][primary];
+    assert.deepEqual(verified, [[...verifiedOn, [primaryId]]]);
+  }
 });
 
 test("the input builder hands the specialists and verifiers the safeguard-request passages the repository's setting chooses", async () => {
