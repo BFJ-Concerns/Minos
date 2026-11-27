@@ -27,8 +27,8 @@ type (
 
 // StateReader reads the state the service already keeps, for a surface that
 // shows it: the configuration on disk, the runs directory, the sweep's
-// record of its last completed pass, the archived timing records and the
-// forge. It writes nothing and holds nothing but the recent-runs cache, so
+// record of its last completed pass, the archived timing records, the
+// repository descriptions and the forge. It writes nothing and holds nothing but the recent-runs cache, so
 // what a surface shows is what the files and the forge say at that moment,
 // and the JSON status routes and a surface reading through it cannot
 // disagree. One is made for the listener's lifetime.
@@ -107,6 +107,18 @@ func (reader *StateReader) RecentRuns(ctx context.Context, hours, limit int) ([]
 		return nil, time.Time{}, err
 	}
 	return reader.recent.recentRuns(ctx, cfg, hours, limit)
+}
+
+// RepositoryDescription reads the description kept of one enrolled
+// repository, with the commit of its default branch it was made from and
+// when it was kept. Nil means none is kept: the description is off for the
+// repository, or its first has not been written yet.
+func (reader *StateReader) RepositoryDescription(repo RepoConfig) (*RepositoryDescription, error) {
+	cfg, err := LoadServiceConfig(reader.root)
+	if err != nil {
+		return nil, err
+	}
+	return readRepositoryDescription(repositoryDescriptionPath(cfg, repo))
 }
 
 // ReviewThreads reads the inline threads Minos opened on one pull request as
