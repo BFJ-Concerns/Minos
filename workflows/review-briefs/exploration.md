@@ -20,14 +20,17 @@ change for:
 Every concern defaults to zero units; give one a unit only where the change
 gives that concern real work. A concern's only specialist reads the whole
 change for its own kind of problem, so one unit for each engaged concern is
-the ordinary plan. A second unit of the same concern is earned only by a
-change too large for one reading of that kind. That concern's units then
-divide the change between them: each unit's `scope` is its share, the changed
-paths its specialist answers for, and every changed path falls in one of
-those shares, so that no part of the change goes unread for the concern.
-A small change with one live concern is one unit. What licenses a wide plan on
-a small diff is blast radius — how far the change's effects reach beyond its
-own lines — never line or file counts, which neither buy breadth nor cap it.
+the ordinary plan, and a small change with one live concern is one unit. What
+licenses a wide plan on a small diff is blast radius — how far the change's
+effects reach beyond its own lines — never line or file counts, which neither
+buy breadth nor cap it.
+
+{{exploration-depth}}
+
+Where a concern has more than one unit, its units divide the change between
+them: each unit's `scope` is its share, the changed paths its specialist
+answers for, and every changed path falls in one of those shares, so that no
+part of the change goes unread for the concern.
 A change that engages no reviewable concern gets an empty plan: return the
 file inventory with no units, and the review completes clean with no findings
 — a valid outcome, not a failure to plan. The plan is done when every unit it

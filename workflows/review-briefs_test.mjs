@@ -1,7 +1,7 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -682,6 +682,52 @@ test("a whole-scope finding keeps its scope through the merge when a finding abo
   ]);
 });
 
+// A whole-scope brief's request whose fault lies in code the change never
+// touched is raised by its verifier, naming the request, and verified in
+// the next round as whole-scope; a raised finding outside the scope, or
+// naming nothing in the batch, is judged as a claim about the change.
+test("a finding a verifier raises while checking a whole-scope finding takes that scope only for a path within it", async () => {
+  const whole = brief(".review/pkg/errors.md", "---\nextent: full\n---\n# Errors\nJudge error paths.");
+  const { result, calls } = await run(args({
+    briefs: [whole],
+    trackedFiles: [{ path: "pkg/x.go" }, { path: "pkg/legacy.go" }],
+  }), responder({
+    specialist: () => specialistResult([finding({ title: "guard the retry" })]),
+    verify: (label, prompt) => {
+      const entries = findingsFromVerifierPrompt(prompt);
+      const firstRound = !label.includes("-round-");
+      return {
+        verdicts: entries.map((entry) => verdictFor(entry.id, firstRound
+          ? { verdict: "refuted", severity: "None", confidence: 92, reason: "the situation arises at pkg/legacy.go:11" }
+          : { confidence: 92, reason: "confirmed" })),
+        newFindings: firstRound ? [
+          finding({ title: "legacy retry fault", path: "pkg/legacy.go", line: 11, foundWhileChecking: entries[0].id }),
+          finding({ title: "command fault", path: "cmd/main.go", line: 3, foundWhileChecking: entries[0].id }),
+          finding({ title: "unnamed fault", path: "pkg/other.go", line: 5, foundWhileChecking: "nothing-in-the-batch" }),
+        ] : [],
+        outOfScopeObservations: [],
+      };
+    },
+  }));
+
+  const secondRound = calls.filter((call) => call.opts.label?.startsWith("verify-brief-round-2"));
+  assert.equal(secondRound.length, 1);
+  const shown = findingsFromVerifierPrompt(secondRound[0].prompt);
+  assert.deepEqual(shown.map(({ title, wholeScope }) => ({ title, wholeScope })), [
+    { title: "legacy retry fault", wholeScope: "pkg/" },
+    { title: "command fault", wholeScope: undefined },
+    { title: "unnamed fault", wholeScope: undefined },
+  ]);
+  assert.ok(shown.every((entry) => !("foundWhileChecking" in entry)), "the next verifier is not shown the provenance name");
+  const raised = result.proposedFindings.filter((entry) => entry.source === "verification");
+  assert.deepEqual(raised.map(({ title, wholeScope }) => ({ title, wholeScope })), [
+    { title: "legacy retry fault", wholeScope: "pkg/" },
+    { title: "command fault", wholeScope: undefined },
+    { title: "unnamed fault", wholeScope: undefined },
+  ]);
+  assert.ok(raised.every((entry) => !("foundWhileChecking" in entry)), "the run record carries no provenance name");
+});
+
 test("slug-colliding brief labels retain verdicts for their own findings", async () => {
   const first = brief(".review/pkg/check.one.md", "# First\nJudge the first concern.");
   const second = brief(".review/pkg/check-one.md", "# Second\nJudge the second concern.");
@@ -754,6 +800,42 @@ test("the enumerator emits large deterministic input directly as JSON and reject
     }),
     /usage:/,
   );
+});
+
+test("the brief stage's input builder hands its reviewers and verifiers the safeguard-request passages the setting chooses, and no depth passage", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "minos-brief-settings-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", ["-C", root, "config", "user.name", "Fixture"]);
+  execFileSync("git", ["-C", root, "config", "user.email", "fixture@example.test"]);
+  writeFileSync(join(root, "AGENTS.md"), "Guidance.\n");
+  writeFileSync(join(root, "code.txt"), "before\n");
+  execFileSync("git", ["-C", root, "add", "."]);
+  execFileSync("git", ["-C", root, "commit", "-qm", "base"]);
+  const target = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  writeFileSync(join(root, "code.txt"), "after\n");
+  execFileSync("git", ["-C", root, "commit", "-qam", "head"]);
+  const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const orientationPath = join(root, "orientation.json");
+  writeFileSync(orientationPath, JSON.stringify({
+    repository: root,
+    guidance: [{ source: { path: "AGENTS.md" }, location: join(root, "AGENTS.md"), origin: "checked-in" }],
+    misconfigurations: [],
+  }));
+  const build = (settings) => JSON.parse(execFileSync(process.execPath, [inputScriptPath, target, head], {
+    encoding: "utf8",
+    env: { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "", MINOS_FILE_SAFEGUARD_REQUESTS: "", MINOS_REVIEW_DEPTH: "", ...settings },
+  })).prompts;
+  const passage = (slot, value) => readFileSync(new URL(`./review-briefs/${slot}/${value}.md`, import.meta.url), "utf8").trim();
+  const off = build({});
+  const on = build({ MINOS_FILE_SAFEGUARD_REQUESTS: "true" });
+  assert.ok(off.repository.includes(passage("safeguard-requests", "false")), "a brief's reviewer reads false.md by default");
+  assert.ok(on.repository.includes(passage("safeguard-requests", "true")), "a brief's reviewer reads true.md with filing on");
+  assert.ok(!on.repository.includes(passage("safeguard-requests", "false")), "a brief's reviewer with filing on leaves out false.md");
+  assert.ok(on.verifier.includes(passage("verifier-safeguard-requests", "true")), "a brief's verifier reads the request section with filing on");
+  assert.ok(!off.verifier.includes(passage("verifier-safeguard-requests", "true")), "a brief's verifier reads no request section by default");
+  for (const depth of ["light", "thorough"])
+    assert.deepEqual(build({ MINOS_REVIEW_DEPTH: depth }), off, `the brief stage reads the same under ${depth} depth`);
 });
 
 test("a brief verifier observation reaches the result alongside its verdicts", async () => {

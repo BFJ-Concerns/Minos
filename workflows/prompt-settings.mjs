@@ -19,6 +19,12 @@ export const PROMPT_SETTINGS = {
     unset: "false",
     slots: ["safeguard-requests", "verifier-safeguard-requests"],
   },
+  depth: {
+    variable: "MINOS_REVIEW_DEPTH",
+    values: ["light", "standard", "thorough"],
+    unset: "standard",
+    slots: ["exploration-depth", "specialist-depth"],
+  },
 };
 
 // Every setting's value for this run. A variable holding anything but one

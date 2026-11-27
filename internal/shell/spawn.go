@@ -240,6 +240,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_RUN_BODY":                   repo.Adaptation.RunBody,
 		"MINOS_REVIEW_THRESHOLD":           repo.Review.Threshold,
 		"MINOS_FILE_SAFEGUARD_REQUESTS":    strconv.FormatBool(repo.Review.FileSafeguardRequests),
+		"MINOS_REVIEW_DEPTH":               repo.Review.Depth,
 		"MINOS_COMMIT_AUTHOR_NAME":         cfg.Service.CommitAuthorName,
 		"MINOS_COMMIT_AUTHOR_EMAIL":        cfg.Service.CommitAuthorEmail,
 		"MINOS_STATUS_CONTEXT":             cfg.Service.StatusContext,
