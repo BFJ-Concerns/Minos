@@ -806,14 +806,17 @@ func scriptedDriverFixture(t *testing.T, body string) runBodyFixture {
 }
 
 // silentStageDriver starts a stage that never writes, in a session of its
-// own, and records the driver's and the stage's process ids.
+// own, and a worker whose launcher exits at once, leaving it re-parented
+// outside the driver's tree. It records the driver's, the stage's and the
+// worker's process ids.
 const silentStageDriver = `
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 const runDir = process.env.MINOS_RUN_DIR;
 const stage = spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
-writeFileSync(join(runDir, "driver-pids"), ` + "`${process.pid} ${stage.pid}\n`" + `);
+const worker = execFileSync("sh", ["-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!"], { encoding: "utf8" }).trim();
+writeFileSync(join(runDir, "driver-pids"), ` + "`${process.pid} ${stage.pid} ${worker}\n`" + `);
 `
 
 func TestRunBodyStopsAScriptedDriversSilentStageAndLetsTheDriverClose(t *testing.T) {
@@ -844,11 +847,26 @@ const helper = spawn("sleep", ["300"], { stdio: "ignore" });
 writeFileSync(join(runDir, "helper-pid"), `+"`${helper.pid}\n`"+`);
 setInterval(() => {}, 1000);
 `)
-	output, err := fixture.execute(map[string]string{"MINOS_LEAD_SILENCE_TIMEOUT": "1"})
+	// The archive hook runs after the stop: everything the driver started
+	// must already be gone when it looks.
+	archive := filepath.Join(fixture.root, "archive-run")
+	writeScript(t, archive, `#!/usr/bin/env sh
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  alive=""
+  for pid in $(cat "$1/driver-pids" "$1/helper-pid"); do
+    if kill -0 "$pid" 2>/dev/null; then alive="$alive $pid"; fi
+  done
+  [ -n "$alive" ] || break
+  sleep 0.1
+done
+printf '%s\n' "${alive:-none}" >"$1/alive-at-archive"
+`)
+	output, err := fixture.execute(map[string]string{"MINOS_LEAD_SILENCE_TIMEOUT": "1", "MINOS_ARCHIVE_RUN": archive})
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
 		t.Fatalf("scripted run exit = %v, want 1\n%s", err, output)
 	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "alive-at-archive"), "none")
 	assertFailureLine(t, fixture.failureLog, "stage=run-driver",
 		"cause=scripted driver did not end within 1 seconds of its silent stage being stopped")
 	pids := recordedPIDs(t, filepath.Join(fixture.runDir, "driver-pids"))

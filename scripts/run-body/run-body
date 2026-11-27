@@ -106,23 +106,37 @@ lead_stop_codex() {
   fi
 }
 
-# process_tree ROOT prints ROOT and every process descended from it, so
-# a stage the driver dispatched, a forge write or a publication helper is
-# found whichever process group or session it put itself in.
-process_tree() {
-  ps -e -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
+# run_processes ROOT prints ROOT, every process descended from it, and
+# every other process carrying this run's MINOS_RUN_DIR in its environment.
+# Descent finds a stage the driver dispatched, a forge write or a
+# publication helper whichever process group or session it put itself in;
+# the environment finds a worker whose launcher exited and left it
+# re-parented outside the tree, as a background session is. This
+# supervisor, its own helpers (descendants of it other than ROOT) and its
+# ancestors are never printed.
+run_processes() {
+  tagged=""
+  if [ -n "${MINOS_RUN_DIR:-}" ]; then
+    tagged="$(grep -lzxsF "MINOS_RUN_DIR=$MINOS_RUN_DIR" /proc/[0-9]*/environ 2>/dev/null |
+      sed -n 's|^/proc/\([0-9]*\)/environ$|\1|p' | tr '\n' ' ')" || tagged=""
+  fi
+  ps -e -o pid= -o ppid= 2>/dev/null | awk -v root="$1" -v self="$$" -v tagged="$tagged" '
+    BEGIN { count = split(tagged, list, " "); for (i = 1; i <= count; i++) carries[list[i]] = 1 }
     { parent[$1] = $2 }
     END {
+      for (ancestor = self; (ancestor in parent) && ancestor > 1; ancestor = parent[ancestor]) mine[ancestor] = 1
       for (pid in parent) {
+        if (pid in mine) continue
         ancestor = pid
-        while (ancestor != root && (ancestor in parent) && ancestor > 1) ancestor = parent[ancestor]
-        if (ancestor == root) print pid
+        while (ancestor != root && ancestor != self && (ancestor in parent) && ancestor > 1) ancestor = parent[ancestor]
+        if (ancestor == root || (ancestor != self && (pid in carries))) print pid
       }
     }'
 }
 
-# stop_process_tree ROOT [descendants] kills ROOT's process tree, or only
-# its descendants. The tree is frozen first and re-read until no new
+# stop_process_tree ROOT [descendants] kills ROOT and the run's processes
+# around it (run_processes), or all of those but ROOT. They are frozen
+# first and re-read until no new
 # process appears, so nothing forks past the kill, and is then killed
 # outright: what it was doing is abandoned with the run.
 stop_process_tree() {
@@ -130,7 +144,7 @@ stop_process_tree() {
   stop_scope="${2:-tree}"
   stopped_pids=""
   for _ in 1 2 3 4 5 6 7 8; do
-    tree_pids="$(process_tree "$stop_root")"
+    tree_pids="$(run_processes "$stop_root")"
     [ "$stop_scope" = tree ] || tree_pids="$(printf '%s\n' "$tree_pids" | grep -vx "$stop_root" || true)"
     new_pids=""
     for pid in $tree_pids; do
