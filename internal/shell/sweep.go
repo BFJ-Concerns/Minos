@@ -62,15 +62,15 @@ func SweepCommand(ctx context.Context, args []string) error {
 			continue
 		}
 		pullRequests, err := adaptation.ListOpenPRs(ctx, repo.Forge, repo.Owner, repo.Repo)
-		prefix := reviewedChangePrefix(repo.Forge, forge.Repository{Owner: repo.Owner, Name: repo.Repo})
-		if numbers := reviewedEntries[prefix]; len(numbers) > 0 {
-			pruneRetiredReviewedChanges(ctx, cfg, repo, numbers, pullRequests)
-		}
 		if err != nil {
 			unreadable++
 			skipped[slug] = err.Error()
 			log.Printf("attention: repo %s skipped this pass: %v", slug, err)
 			continue
+		}
+		prefix := reviewedChangePrefix(repo.Forge, forge.Repository{Owner: repo.Owner, Name: repo.Repo})
+		if numbers := reviewedEntries[prefix]; len(numbers) > 0 {
+			pruneRetiredReviewedChanges(ctx, cfg, repo, numbers, pullRequests)
 		}
 		for _, facts := range pullRequests {
 			priority := 1

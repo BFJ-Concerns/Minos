@@ -3,7 +3,7 @@ set -eu
 # shellcheck source-path=SCRIPTDIR
 . "$(dirname "$0")/common.sh"
 
-github_authenticate "$1" "$2" public
+github_authenticate "$1" "$2"
 api_with_status GET "/repos/$1/$2/pulls/$3"
 
 case "$api_status_code" in
