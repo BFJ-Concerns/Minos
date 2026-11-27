@@ -40,6 +40,11 @@ export const REVIEWS = {
 
 export const MODES = Object.keys(REVIEWS);
 
+// The role a quick review's reviewers are recorded under, on their legs
+// and in the envelope's `reviewers`, and the `reportedBy` their findings
+// carry to the merge leg.
+export const GENERAL_REVIEWER = "general";
+
 export const MODE_VARIABLE = "MINOS_REVIEW_MODE";
 
 // The values `review.mode` takes. Each names the mode every head of the

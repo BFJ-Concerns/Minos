@@ -59,6 +59,18 @@ test("the report gives every stage's and every dispatched worker's timing", asyn
   ]) assert.ok(report.split("\n").includes(line), `report lacks ${JSON.stringify(line)}:\n${report}`);
 });
 
+test("the report names the main review's mode from its verdict, or the settled mode where none came back", async (t) => {
+  const empty = { commands: [], phases: [], workers: [] };
+  const read = async (settled) => {
+    const run = reportedRun(t, empty);
+    await writeReport(run, settled, { outcome: "clean" });
+    return readFileSync(join(run.runDir, "report.md"), "utf8").split("\n");
+  };
+  assert.ok((await read({ reviewMode: { mode: "specialist" }, review: { mode: "quick" } })).includes("- Main review in the **quick** mode."));
+  assert.ok((await read({ reviewMode: { mode: "quick" } })).includes("- Main review in the **quick** mode."));
+  assert.ok(!(await read({})).some((line) => line.startsWith("- Main review in")));
+});
+
 test("the report lists what a successful forge command said", async (t) => {
   const note = "minos forge review: forge review: inline comments folded into the body: no diff";
   const run = reportedRun(t, { commands: [], phases: [], workers: [] }, { forgeNotes: [note] });

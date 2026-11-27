@@ -26,13 +26,11 @@ const { repositoryDescriptionFromInput, repositoryDescriptionSection } = await i
 const { pullRequestFromInput, pullRequestSection } = await import("./pull-request-description.mjs");
 const { promptFits, fillPrompt } = await import("./review-prompts.mjs");
 const { reviewStages, proposalsOf, subjectOf, proposedFindingOf, uncheckedFindingOf } = await import("./review-stages.mjs");
-const { QUICK } = await import("./review-mode.mjs");
+const { QUICK, GENERAL_REVIEWER: GENERAL } = await import("./review-mode.mjs");
 
-// The leg role every general reviewer is recorded under, and the `source`
-// the whole-change reviewer's findings and observations carry. A share's
-// reviewer carries its share's focus sentence, as a specialist carries its
-// unit's.
-const GENERAL = "general";
+// The `source` the whole-change reviewer's findings and observations
+// carry. A share's reviewer carries its share's focus sentence, as a
+// specialist carries its unit's.
 const WHOLE_CHANGE_SOURCE = "general review of the whole change";
 
 function promptsFromInput(input) {

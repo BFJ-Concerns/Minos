@@ -187,6 +187,23 @@ test("a divided change sends one reviewer for each share, told its share and the
   assert.equal(result.incomplete, undefined);
 });
 
+test("the verdict's summary shows the general reviewers as one section, crediting each confirmed finding once", async (t) => {
+  const { result } = await invokeWorkflow(script, ARGS, (label, prompt, opts) => {
+    if (label === "merge") {
+      // The divider's finding and the first share's are one fault.
+      const ids = findingsFromVerifierPrompt(prompt).map((entry) => entry.id);
+      return { groups: [
+        { findingIds: [ids[0], ids[1]], primary: ids[1], sharedCause: "one fix" },
+        { findingIds: [ids[2]], primary: ids[2], sharedCause: "" },
+      ] };
+    }
+    return responder({ whole: wholeChangeResult({ shares: TWO_SHARES }) })(label, prompt, opts);
+  });
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete");
+  assert.deepEqual(verdict.summarySections, [{ kind: "general", name: "General review", findings: 2 }]);
+});
+
 test("a division no reviewer can be sent on leaves the review incomplete before any share is dispatched", async (t) => {
   const malformed = [
     [{ ...TWO_SHARES[0] }, { ...TWO_SHARES[1], id: "a" }],
