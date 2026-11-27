@@ -62,8 +62,11 @@ func TestForgeApprovePostsOneApprovalAfterTheServicesOwnBlock(t *testing.T) {
 		t.Fatalf("review writes = %d, want one; outputs %q", writes, outputs)
 	}
 	body, _ := payload["body"].(string)
-	if !bytes.HasPrefix([]byte(body), []byte(cleanApprovalBody+"\n\nReviewed by: `claude-opus-5-5`.")) {
-		t.Fatalf("approval body = %q", body)
+	// The record is how the sweep reads an approving review of the current
+	// head as a clean marker, so the approval carries this head and target.
+	want := cleanApprovalBody + "\n\nReviewed by: `claude-opus-5-5`.\n\n<!-- Minos: head=" + state.headSHA() + " target=" + state.targetSHA() + " -->"
+	if body != want {
+		t.Fatalf("approval body = %q, want %q", body, want)
 	}
 	var second map[string]string
 	if err := json.Unmarshal([]byte(outputs[1]), &second); err != nil || second["outcome"] != "not-needed" {
