@@ -38,6 +38,13 @@ export function filingMarker(entry, reviewedRepository) {
   return `<!-- minos:${Buffer.from(JSON.stringify(identity)).toString("base64url")} -->`;
 }
 
+// One entry as every destination kind writes it: the issue-log text the
+// project's triage reads, followed by the marker that keeps it from filing
+// twice.
+export function markedFilingEntry(entry, attribution, reviewedRepository) {
+  return `${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}`;
+}
+
 // Appends the entries missing from a file's text; returns the new text and
 // how many were added.
 export function appendFilingEntries(contents, entries, attribution, reviewedRepository) {
@@ -47,7 +54,7 @@ export function appendFilingEntries(contents, entries, attribution, reviewedRepo
   for (const entry of entries) {
     const marker = filingMarker(entry, reviewedRepository);
     if (text.includes(marker)) continue;
-    text += `\n${issueLogEntry(entry, attribution)} ${marker}\n`;
+    text += `\n${markedFilingEntry(entry, attribution, reviewedRepository)}\n`;
     written += 1;
   }
   return { text, written };
@@ -229,7 +236,7 @@ async function deliverToIssue({ destination, entries, attribution, reviewedRepos
     const bodyFile = join(payloadDir, "body");
     for (const entry of entries) {
       writeFileSync(titleFile, entry.title, { mode: 0o600 });
-      writeFileSync(bodyFile, `${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}\n`, { mode: 0o600 });
+      writeFileSync(bodyFile, `${markedFilingEntry(entry, attribution, reviewedRepository)}\n`, { mode: 0o600 });
       const result = JSON.parse(execFileSync(process.env.MINOS_BIN,
         ["forge", "file-issue", location, titleFile, bodyFile],
         { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
@@ -279,7 +286,7 @@ async function deliverToPullRequestComment({ entries, attribution, reviewedRepos
     payloadDir = mkdtempSync(join(runDir, "filing", "pull-request-comment-"));
     const bodyFile = join(payloadDir, "body.md");
     writeFileSync(bodyFile, remaining.map((entry) =>
-      `${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}\n`).join("\n"), { mode: 0o600 });
+      `${markedFilingEntry(entry, attribution, reviewedRepository)}\n`).join("\n"), { mode: 0o600 });
     const result = command("review", head, target, "comment", bodyFile);
     if (!result || result.outcome !== "applied") throw new Error(result?.reason || "comment review write was not confirmed");
     return { kind, outcome: "filed", written: remaining.length };
