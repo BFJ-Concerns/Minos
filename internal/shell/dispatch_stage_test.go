@@ -33,7 +33,7 @@ func newDispatchStageFixture(t *testing.T, wrapperBody string) dispatchStageFixt
 	if err := os.MkdirAll(tools, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"dispatch-stage", "time-on-exit", "flag-on-exit", "publish-on-exit"} {
+	for _, name := range []string{"dispatch-stage", "time-on-exit", "time-on-exit.mjs", "flag-on-exit", "publish-on-exit"} {
 		content, err := os.ReadFile(filepath.Join("..", "..", "scripts", "run-body", name))
 		if err != nil {
 			t.Fatal(err)
