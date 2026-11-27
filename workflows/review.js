@@ -223,14 +223,18 @@ async function mergeProposed(proposed, mergeLabel, phaseName) {
 }
 
 // One finding to verify: a merged group's primary write-up, with what the
-// group's other write-ups add, or a finding a verifier raised.
+// group's other write-ups add, or a finding a verifier raised. A group
+// holding a whole-scope brief's finding is verified as whole-scope, under
+// the first such write-up's directory, whichever write-up is primary.
 function subjectOf({ primary, members }) {
   const writeUps = [primary, ...members];
   const dependsOn = [...new Set(writeUps
     .map((item) => typeof item.finding.dependsOn === "string" ? item.finding.dependsOn.trim() : "")
     .filter((fact) => fact !== ""))].join("; ");
+  const wholeScope = writeUps.find((item) => item.wholeScope !== undefined)?.wholeScope;
   return {
     ...primary,
+    ...(wholeScope !== undefined ? { wholeScope } : {}),
     finding: { ...primary.finding, dependsOn },
     members,
   };
