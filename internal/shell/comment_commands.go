@@ -73,14 +73,12 @@ type issuedCommand struct {
 	at      time.Time
 }
 
-// readIssuedCommands reads the pull request's command comments, oldest
-// first, keeping those whose writer the forge shows with write access. Each
-// writer's access is read once per pass.
-func readIssuedCommands(ctx context.Context, adapter *forge.Adapter, repository forge.Repository, pullRequest int64, botLogin string) ([]issuedCommand, error) {
-	comments, err := adapter.PullRequestComments(ctx, repository, pullRequest)
-	if err != nil {
-		return nil, err
-	}
+// readIssuedCommands finds the command comments among the pull request's
+// conversation comments, oldest first, keeping those whose writer the forge
+// shows with write access. The comments come from the snapshot, which lists
+// them once for the summary comment too; each writer's access is read once
+// per pass.
+func readIssuedCommands(ctx context.Context, adapter *forge.Adapter, repository forge.Repository, comments []forge.PullRequestComment, botLogin string) ([]issuedCommand, error) {
 	mayCommand := make(map[string]bool)
 	var commands []issuedCommand
 	for _, comment := range comments {
@@ -129,94 +127,137 @@ type commandEffect struct {
 	// waiting are the review commands not yet answered since the last skip;
 	// a run started now is started for them.
 	waiting []forge.PullRequestComment
+	// answered are the review commands this pass found answered, for the
+	// record to keep.
+	answered []int64
 	// unacknowledged are the command comments the record does not show
 	// acknowledged, superseded ones included.
 	unacknowledged []forge.PullRequestComment
-	// results names every terminal Minos result now on the forge, as the
-	// record keeps them.
-	results []string
 }
 
-// headStatuses is one head's commit-status history.
-type headStatuses struct {
-	head     string
-	statuses []forge.Status
+// terminalResult is one terminal Minos result on the forge: Token names
+// that one publication, and Head is the head it judged.
+type terminalResult struct {
+	Token string
+	Head  string
+}
+
+// pullRequestResults names the terminal Minos results a snapshot shows: the
+// summary comment when its record is finished, every approving or
+// request-changes review, and each clean or attention status on the current
+// head. The summary comment is one comment edited in place, so its token
+// carries the time of the edit as well as the head and state it records.
+func pullRequestResults(snapshot forge.Snapshot, botLogin, statusContext string) []terminalResult {
+	var results []terminalResult
+	if record, found := snapshot.SummaryRecord(); found && record.State.Finished() {
+		results = append(results, terminalResult{
+			Token: "summary:" + record.Head + ":" + string(record.State) + ":" + snapshot.Summary.UpdatedAt,
+			Head:  record.Head,
+		})
+	}
+	for _, review := range snapshot.Reviews {
+		if review.User != botLogin {
+			continue
+		}
+		if _, terminal := terminalState(review); terminal {
+			results = append(results, terminalResult{Token: "review:" + strconv.FormatInt(review.ID, 10), Head: review.CommitID})
+		}
+	}
+	return append(results, statusResults(snapshot.HeadSHA, snapshot.Statuses, botLogin, statusContext)...)
+}
+
+// statusResults names the clean and attention Minos statuses among one
+// head's statuses.
+func statusResults(head string, statuses []forge.Status, botLogin, statusContext string) []terminalResult {
+	var results []terminalResult
+	for _, status := range statuses {
+		if status.Context != statusContext || status.Creator != botLogin {
+			continue
+		}
+		if _, terminal := product.CompletionMarker(string(status.State), status.Description); terminal {
+			results = append(results, terminalResult{Token: "status:" + strconv.FormatInt(status.ID, 10), Head: head})
+		}
+	}
+	return results
 }
 
 // commandsInForce works out the commands' effect from current forge state
-// and the service's command record. A review command is answered once a
-// terminal Minos result appears that was not on the forge when the service
-// first started a run for it: a request-changes or approving review on any
-// head, or a clean or attention status on the current head or on the
-// earlier head lastFinished names. While a command waits, every run the
-// service starts is started for it, so a result absent at that first start
-// is the answer of a run that honoured it; a run already started when the
-// command was written, which fixed its scope then, never answers it.
-func commandsInForce(commands []issuedCommand, snapshot forge.Snapshot, lastFinished func() (headStatuses, error), record commandRecord, botLogin, statusContext string) (commandEffect, error) {
+// and the service's command record. A review command is answered by a
+// terminal Minos result of a head a run was started on for it, published
+// after that run started: one the forge did not show when the service read
+// it back just after the start (commandRuns). A run already started when
+// the command was written fixed its scope then and never answers it, and a
+// result on a head no run was started on for the command, such as an older
+// head the author resets the branch to, answers nothing. The reviews and
+// the summary comment speak of every head; a status is read on its own
+// head, so a started head other than the current one has its statuses read
+// through readStatuses, and only for a command nothing else has answered.
+// A failed read leaves the command waiting, which costs one more review
+// and never a review command answered with none. Nothing is read for the
+// commands a newer skip supersedes.
+func commandsInForce(commands []issuedCommand, snapshot forge.Snapshot, record commandRecord, readStatuses func(head string) ([]forge.Status, error), botLogin, statusContext string) commandEffect {
 	var effect commandEffect
-	if len(commands) == 0 {
-		return effect, nil
-	}
-	heads := []headStatuses{{head: snapshot.HeadSHA, statuses: snapshot.Statuses}}
-	earlier, err := lastFinished()
-	if err != nil {
-		return commandEffect{}, fmt.Errorf("read the last finished head's statuses: %w", err)
-	}
-	if earlier.head != "" && earlier.head != snapshot.HeadSHA {
-		heads = append(heads, earlier)
-	}
-	results, headReviewed := terminalResults(heads, snapshot.Reviews, botLogin, statusContext)
-	effect.results = results
-	skipAt := -1
+	lastSkip := -1
 	for index, command := range commands {
 		if !slices.Contains(record.Acknowledged, command.comment.ID) {
 			effect.unacknowledged = append(effect.unacknowledged, command.comment)
 		}
 		if command.command == commandSkip {
-			skipAt = index
-			effect.waiting, effect.fullOnly = nil, false
-			continue
-		}
-		known, started := record.Started[command.comment.ID]
-		answered := started && slices.ContainsFunc(results, func(result string) bool { return !slices.Contains(known, result) })
-		if !answered {
-			effect.waiting = append(effect.waiting, command.comment)
-			effect.fullOnly = effect.fullOnly || command.command == commandFullReview || headReviewed
+			lastSkip = index
 		}
 	}
-	effect.skipped = skipAt == len(commands)-1
+	effect.skipped = lastSkip >= 0 && lastSkip == len(commands)-1
+	if effect.skipped {
+		return effect
+	}
+	results := pullRequestResults(snapshot, botLogin, statusContext)
+	headReviewed := slices.ContainsFunc(results, func(result terminalResult) bool { return result.Head == snapshot.HeadSHA })
+	earlier := map[string][]terminalResult{}
+	resultsOn := func(head string) []terminalResult {
+		if head == snapshot.HeadSHA {
+			return nil
+		}
+		if read, done := earlier[head]; done {
+			return read
+		}
+		statuses, err := readStatuses(head)
+		if err != nil {
+			log.Printf("read the statuses of %s for comment commands: %v", head, err)
+		}
+		earlier[head] = statusResults(head, statuses, botLogin, statusContext)
+		return earlier[head]
+	}
+	for _, command := range commands[lastSkip+1:] {
+		if slices.Contains(record.Answered, command.comment.ID) {
+			continue
+		}
+		if runs, started := record.Runs[command.comment.ID]; started && runs.answeredBy(results, resultsOn) {
+			effect.answered = append(effect.answered, command.comment.ID)
+			continue
+		}
+		effect.waiting = append(effect.waiting, command.comment)
+		effect.fullOnly = effect.fullOnly || command.command == commandFullReview || headReviewed
+	}
 	effect.reviewRequested = len(effect.waiting) > 0
-	return effect, nil
+	return effect
 }
 
-// terminalResults names each terminal Minos result: a clean or attention
-// status on one of heads, or an approving or request-changes review on any
-// head. It also reports whether the first of heads, the current head,
-// carries one.
-func terminalResults(heads []headStatuses, reviews []forge.Review, botLogin, statusContext string) ([]string, bool) {
-	var results []string
-	headReviewed := false
-	for index, head := range heads {
-		for _, status := range head.statuses {
-			if status.Context != statusContext || status.Creator != botLogin {
-				continue
-			}
-			if _, terminal := product.CompletionMarker(string(status.State), status.Description); terminal {
-				results = append(results, "status:"+strconv.FormatInt(status.ID, 10))
-				headReviewed = headReviewed || index == 0
-			}
+// answeredBy reports whether a result published since the command's first
+// run started answers it: one on a head a run was started on for it that
+// the record does not know from a start.
+func (runs commandRuns) answeredBy(results []terminalResult, resultsOn func(head string) []terminalResult) bool {
+	answers := func(result terminalResult) bool {
+		return slices.Contains(runs.Heads, result.Head) && !slices.Contains(runs.Known, result.Token)
+	}
+	if slices.ContainsFunc(results, answers) {
+		return true
+	}
+	for _, head := range runs.Heads {
+		if slices.ContainsFunc(resultsOn(head), answers) {
+			return true
 		}
 	}
-	for _, review := range reviews {
-		if review.User != botLogin {
-			continue
-		}
-		if _, terminal := terminalState(review); terminal {
-			results = append(results, "review:"+strconv.FormatInt(review.ID, 10))
-			headReviewed = headReviewed || review.CommitID == heads[0].head
-		}
-	}
-	return results, headReviewed
+	return false
 }
 
 // commandRecordPath is where the service keeps its command record for one
@@ -224,24 +265,42 @@ func terminalResults(heads []headStatuses, reviews []forge.Review, botLogin, sta
 // more review of each command already answered and a repeated reaction
 // check, and nothing else.
 func commandRecordPath(cfg ServiceConfig, forgeName string, guard forge.Guard) string {
-	name := reviewedChangePrefix(forgeName, guard.Repository) + strconv.FormatInt(guard.PullRequest, 10) + ".json"
-	return filepath.Join(cfg.Runs.Dir, ".commands", name)
+	return filepath.Join(commandRecordDir(cfg), reviewedChangePrefix(forgeName, guard.Repository)+strconv.FormatInt(guard.PullRequest, 10)+".json")
+}
+
+func commandRecordDir(cfg ServiceConfig) string {
+	return filepath.Join(cfg.Runs.Dir, ".commands")
 }
 
 // commandRecord is what the service keeps of a pull request's commands.
 type commandRecord struct {
-	// Started maps each review command a run was started for to the
-	// terminal results on the forge when the first such run started.
-	Started map[int64][]string `json:"started"`
+	// Runs holds, for each review command a run was started for, what
+	// those runs were started on.
+	Runs map[int64]commandRuns `json:"runs"`
+	// Answered are the review commands a result has answered. An answer
+	// is kept once seen, so it stands when the summary comment that gave
+	// it is next rewritten for another head.
+	Answered []int64 `json:"answered"`
 	// Acknowledged are the command comments whose reaction was written.
 	Acknowledged []int64 `json:"acknowledged"`
+}
+
+// commandRuns is what the record keeps of the runs started for one review
+// command.
+type commandRuns struct {
+	// Heads are the heads those runs were started on.
+	Heads []string `json:"heads"`
+	// Known are the terminal results the forge showed when the service read
+	// it back just after each of those runs started. A result there was
+	// published before the run and answers nothing.
+	Known []string `json:"known"`
 }
 
 // readCommandRecord reads the record. An unreadable record reads as empty,
 // as a lost one does.
 func readCommandRecord(cfg ServiceConfig, forgeName string, guard forge.Guard) commandRecord {
 	path := commandRecordPath(cfg, forgeName, guard)
-	record := commandRecord{Started: make(map[int64][]string)}
+	record := commandRecord{Runs: make(map[int64]commandRuns)}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -251,18 +310,28 @@ func readCommandRecord(cfg ServiceConfig, forgeName string, guard forge.Guard) c
 	}
 	if err := json.Unmarshal(raw, &record); err != nil {
 		log.Printf("decode command record %s: %v", path, err)
-		return commandRecord{Started: make(map[int64][]string)}
+		return commandRecord{Runs: make(map[int64]commandRuns)}
 	}
-	if record.Started == nil {
-		record.Started = make(map[int64][]string)
+	if record.Runs == nil {
+		record.Runs = make(map[int64]commandRuns)
 	}
 	return record
 }
 
-// writeCommandRecord replaces the record. A failed write is logged: the
-// record is a cache.
-func writeCommandRecord(cfg ServiceConfig, forgeName string, guard forge.Guard, record commandRecord) {
+// updateCommandRecord applies change to the record as it stands on disk.
+// The record is read, changed and replaced under the admission lock, so a
+// webhook's pass and the sweep's over one pull request never put back a
+// copy without the other's change. A failed update is logged: the record
+// is a cache.
+func updateCommandRecord(cfg ServiceConfig, forgeName string, guard forge.Guard, change func(*commandRecord)) {
 	err := func() error {
+		unlock, err := lockAdmission(cfg.Runs.Dir)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		record := readCommandRecord(cfg, forgeName, guard)
+		change(&record)
 		encoded, err := json.Marshal(record)
 		if err != nil {
 			return err
@@ -289,27 +358,42 @@ func removeCommandRecord(cfg ServiceConfig, forgeName string, guard forge.Guard)
 	return nil
 }
 
-// lastFinishedHeadStatuses reads the status history of the head the
-// service's reviewed-change record says a run last finished on. Without the
-// record there is no earlier head to read, and a command answered there is
-// taken as waiting until the current head's next result answers it.
-func lastFinishedHeadStatuses(ctx context.Context, cfg ServiceConfig, forgeName string, adapter *forge.Adapter, guard forge.Guard) (headStatuses, error) {
-	raw, err := os.ReadFile(reviewedChangePath(cfg, forgeName, guard))
-	if os.IsNotExist(err) {
-		return headStatuses{}, nil
+// recordCommandedRun records a run started on head for the waiting review
+// commands, with the terminal results the forge shows now, read back after
+// the start: whatever a predecessor published before it ended is known and
+// answers nothing. When the read-back fails or the head has already moved,
+// nothing is recorded and the commands stay waiting, which costs one more
+// review and never a review command answered with none.
+func recordCommandedRun(ctx context.Context, cfg ServiceConfig, forgeName string, adapter *forge.Adapter, guard forge.Guard, waiting []forge.PullRequestComment) {
+	if len(waiting) == 0 {
+		return
 	}
+	snapshot, err := adapter.Snapshot(ctx, guard.Repository, guard.PullRequest)
 	if err != nil {
-		return headStatuses{}, err
+		log.Printf("%s/%s#%d: read back the results at a commanded run's start: %v", guard.Repository.Owner, guard.Repository.Name, guard.PullRequest, err)
+		return
 	}
-	var record reviewedChange
-	if json.Unmarshal(raw, &record) != nil || record.Head == "" || record.Head == guard.HeadSHA {
-		return headStatuses{}, nil
+	if snapshot.HeadSHA != guard.HeadSHA {
+		return
 	}
-	statuses, err := adapter.CommitStatuses(ctx, guard.Repository, record.Head)
-	if err != nil {
-		return headStatuses{}, err
+	var known []string
+	for _, result := range pullRequestResults(snapshot, cfg.BotLogin(forgeName), cfg.Service.StatusContext) {
+		known = append(known, result.Token)
 	}
-	return headStatuses{head: record.Head, statuses: statuses}, nil
+	updateCommandRecord(cfg, forgeName, guard, func(record *commandRecord) {
+		for _, comment := range waiting {
+			runs := record.Runs[comment.ID]
+			if !slices.Contains(runs.Heads, guard.HeadSHA) {
+				runs.Heads = append(runs.Heads, guard.HeadSHA)
+			}
+			for _, token := range known {
+				if !slices.Contains(runs.Known, token) {
+					runs.Known = append(runs.Known, token)
+				}
+			}
+			record.Runs[comment.ID] = runs
+		}
+	})
 }
 
 // acknowledgeCommands reacts on each comment and returns the ids whose

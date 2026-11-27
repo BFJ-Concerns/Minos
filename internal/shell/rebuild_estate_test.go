@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 // fixtureStatusDetailsURL mirrors the Details link guarded-set-status writes
@@ -550,6 +552,86 @@ func TestForgeEarlierWithoutARecordAsksThePullRequestsOwnCommits(t *testing.T) {
 	got = f.earlier(third)
 	if got.Head != second || got.Outcome != "clean" || !reflect.DeepEqual(got.ChangedPaths, []string{"added.txt"}) {
 		t.Fatalf("a head with a clean status reads %#v", got)
+	}
+}
+
+func (f *earlierHeadFixture) summary(head, state string) {
+	f.t.Helper()
+	text := filepath.Join(f.t.TempDir(), "summary.md")
+	if err := os.WriteFile(text, []byte("Summary.\n"), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	var stdout strings.Builder
+	if err := ForgeCommand(f.t.Context(), []string{"summary", head, f.target(), state, text}, &stdout); err != nil {
+		f.t.Fatalf("summary %s: %v\n%s", state, err, stdout.String())
+	}
+}
+
+// The scripted run marks a finished head with the summary comment, which
+// keeps the reviewed change as a status does; without that record the
+// comment's own record names the last finished head, which it carries
+// while a later head is under way and after the earlier one is rewritten
+// away.
+func TestForgeEarlierReadsTheSummaryComment(t *testing.T) {
+	f := newEarlierHeadFixture(t)
+	first := f.commit("feature.txt", "one\n", "feature")
+	f.summary(first, "clean")
+	second := f.commit("feature.txt", "one\ntwo\n", "extend the feature")
+	got := f.earlier(second)
+	if got.Head != first || got.Outcome != "clean" || !got.Ancestor || !reflect.DeepEqual(got.ChangedPaths, []string{"feature.txt"}) {
+		t.Fatalf("a head after a clean summary reads %#v", got)
+	}
+	if err := os.RemoveAll(filepath.Join(f.runsDir, ".reviewed")); err != nil {
+		t.Fatal(err)
+	}
+	f.summary(second, "inspecting")
+	got = f.earlier(second)
+	if got.Head != first || got.Outcome != "clean" || !got.Ancestor || !reflect.DeepEqual(got.ChangedPaths, []string{"feature.txt"}) {
+		t.Fatalf("the summary's last finished head reads %#v", got)
+	}
+
+	f.summary(second, "changes-requested")
+	if err := os.RemoveAll(filepath.Join(f.runsDir, ".reviewed")); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, f.workspace, "commit", "--quiet", "--amend", "-m", "extend the feature, reworded")
+	rewritten := f.follow()
+	got = f.earlier(rewritten)
+	if got.Head != second || got.Outcome != "attention" || got.Ancestor || got.ChangedPaths == nil || len(got.ChangedPaths) != 0 {
+		t.Fatalf("a rewritten head after a changes-requested summary reads %#v", got)
+	}
+}
+
+// A finished head whose reviewed change cannot be recorded leaves no older
+// record behind to answer for it: the summary comment names it instead.
+func TestForgeEarlierIsNotAnsweredByARecordThatFailedToMoveOn(t *testing.T) {
+	f := newEarlierHeadFixture(t)
+	first := f.commit("feature.txt", "one\n", "feature")
+	f.summary(first, "clean")
+	second := f.commit("feature.txt", "one\ntwo\n", "extend the feature")
+	var cfg ServiceConfig
+	cfg.Runs.Dir = f.runsDir
+	number, err := strconv.ParseInt(os.Getenv("MINOS_PR"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := reviewedChangePath(cfg, os.Getenv("MINOS_FORGE"), forge.Guard{
+		Repository: forge.Repository{Owner: os.Getenv("MINOS_OWNER"), Name: os.Getenv("MINOS_REPO_NAME")}, PullRequest: number,
+	})
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("no reviewed change at %s after the clean summary: %v", path, err)
+	}
+	if err := os.Mkdir(path+".next", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.summary(second, "changes-requested")
+	if err := os.Remove(path + ".next"); err != nil {
+		t.Fatal(err)
+	}
+	third := f.commit("feature.txt", "one\n", "take the extension back")
+	got := f.earlier(third)
+	if got.Head != second || got.Outcome != "attention" || !reflect.DeepEqual(got.ChangedPaths, []string{"feature.txt"}) {
+		t.Fatalf("after a record that failed to move on, earlier reads %#v", got)
 	}
 }
 

@@ -477,24 +477,28 @@ one included:
 - The newest command decides between skip and review. While a skip is the
   newest, the pull request is deferred as `skipped by comment command`,
   whatever its head.
-- A review command waits until a terminal result appears that was not on
-  the forge when Minos first started a run for it: an approving or
-  request-changes review on any head, or a clean or attention status on
-  the current head or on the head the `.reviewed/` record names. While it
-  waits, it spends the current head's completion marker, so the next pass
-  starts a run, and every run started is started for it. A run already
-  started when the command arrived, whose scope was fixed then, never
-  answers it.
+- A review command waits until a run started for it is answered: a
+  terminal Minos result, on a head a run was started on for the command,
+  that the forge did not show when Minos read it back just after that run
+  started. A terminal result is the summary comment written clean or
+  changes requested, an approving or request-changes review, or a clean or
+  attention status. While it waits, it spends the current head's
+  completion marker, so the next pass starts a run, and every run started
+  is started for it. A run already started when the command arrived,
+  whose scope was fixed then, never answers it, and nor does a result
+  Minos left on an older head before the command, such as one the author
+  resets the branch to. Once answered, a command stays answered.
 - The run it starts may not choose `no-review`. It is given a full review
   alone where the command asked for one or the head already carries a
   result, over which an increment would be empty. Otherwise the
   repository's `push-inspection.outcomes` apply without `no-review`.
 
-Minos keeps, in `.commands/` under `runs.dir`, one file per pull request,
-the results on the forge when a run was first started for each command and
-the commands it has acknowledged; the file goes with the pull request. It
-is a cache: losing it costs one more review of each command already
-answered and a repeated acknowledgement check. The Forgejo token's
+Minos keeps, in `.commands/` under `runs.dir`, one file per pull request:
+for each review command, the heads runs were started on for it and the
+results the forge showed at those starts, the commands answered, and the
+commands it has acknowledged. The sweep deletes it with the `.reviewed/`
+record below. It is a cache: losing it costs one more review of each
+command already answered and a repeated acknowledgement check. The Forgejo token's
 `write:issue` scope covers the reactions; a GitHub App needs no permission
 beyond those listed above.
 
@@ -619,17 +623,21 @@ whole pull request. A label marker must already exist on the repository
 or, on Forgejo, its organisation. If the label is missing, Minos refuses
 the write and names the label and repository.
 
-When a run sets a `clean` or `attention` status on a head, Minos records
-which files the pull request changed and how, in `.reviewed/` under
-`runs.dir`, one file per pull request. A later run compares the new head with
-that record to decide how much to review again. The record is a cache.
-Without it, Minos looks among the newest 20 commits of the pull request's
-current history, other than the head, for one that carries Minos's `clean`
-status or a Minos request-changes review, and compares against the first it
-finds. When none of those commits qualifies, because the earlier head was
+When a run writes the summary comment clean or changes requested, or sets
+a `clean` or `attention` status on a head, Minos records which files the
+pull request changed and how, in `.reviewed/` under `runs.dir`, one file
+per pull request. A later run compares the new head with that record to
+decide how much to review again. The record is a cache. Without it, Minos
+takes the last finished head the summary comment's record names, and
+compares against it where the commit is still in the clone. On a pull
+request with no summary comment, Minos looks among the newest 20 commits of
+the pull request's current history, other than the head, for one that
+carries Minos's `clean` status or a Minos request-changes review, and
+compares against the first it finds. When none of those commits qualifies, because the earlier head was
 rewritten away or lies further back, the next head is reviewed in full. The
-sweep deletes the record of a pull request that has closed, merged or gone from the forge, and
-the records of a repository that no longer has a file under `repos/`.
+sweep deletes the `.reviewed/` and `.commands/` records of a pull request
+that has closed, merged or gone from the forge, and the records of a
+repository that no longer has a file under `repos/`.
 
 ## Reading run liveness
 
