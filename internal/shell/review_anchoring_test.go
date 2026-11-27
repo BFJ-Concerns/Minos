@@ -101,7 +101,7 @@ func TestAnchorReviewCommentsSplitsInlineCommentsAndRendersTruthfulFallback(t *t
 		t.Fatalf("unexpected inline comments: %#v", inline)
 	}
 	want := "\n\n---\n\nFindings that could not be anchored inline:\n" +
-		"\nThese have no thread to resolve. To reject one, say so in a comment on the pull request that names it by its title or by its path and line.\n" +
+		"\nThese have no thread to resolve. The pull request's author can reject one with a comment on the pull request that names it by its title or by its path and line.\n" +
 		"\n#### `src/code.txt` line 1\n\nUntouched concern.\n" +
 		"\n#### `missing.txt` line 4\n\nMissing-path concern.\n"
 	if addendum != want {
