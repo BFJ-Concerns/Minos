@@ -624,7 +624,9 @@ waiting run ahead of it on the strength of quiet files.
 
 The receiver serves a web page for the operator at the root of its listener
 (`http://BOX:8919/` with the shipped `bind`), behind one sign-in. It opens on
-an overview of the enrolled repositories, and its settings pages show and
+an overview of the enrolled repositories. Each repository's Description
+link opens the account Minos keeps of its structure, with the default-branch
+commit it describes and when Minos recorded it. The settings pages show and
 change the configuration. Nothing Minos does depends on the
 page: a deployment that never opens it reviews exactly the same.
 
@@ -676,9 +678,10 @@ equals sign.
   layout stay where they are. Replacing or removing a multiline value can
   discard comments inside it. The receiver needs write access to the
   configuration directory and `repos/` and reports a refusal if it lacks access.
-- The service's loader validates the edited file before saving it and
-  shows the reason for any refusal. You can repair each file independently.
-  The receiver and sweep still validate the configuration they use.
+- The service's loader validates the edited file before saving it. The
+  setting stays open with the reason if the loader refuses the change.
+  You can repair each file independently. The settings index shows where
+  the loader stopped if the current configuration fails to load.
 - A change takes effect from the next run, since the sweep, each webhook
   and each run read the files afresh. The page says where a setting is read
   only when the receiver starts, or sizes the runs slice and needs

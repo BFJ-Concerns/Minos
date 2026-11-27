@@ -10,7 +10,10 @@
 </thead>
 <tbody>
 {{- range .Repositories}}
-<tr><td><a href="/repositories/{{.Forge}}/{{.Owner}}/{{.Repo}}/findings">{{.Owner}}/{{.Repo}}</a></td><td>{{.Forge}}</td><td>{{.Review.Threshold}}</td><td>{{.BotLogin}}</td></tr>
+<tr>
+<td><a href="/repositories/{{.Forge}}/{{.Owner}}/{{.Repo}}/findings">{{.Owner}}/{{.Repo}}</a><br>
+<a class="repository-description-link" href="/repositories/{{.Forge}}/{{.Owner}}/{{.Repo}}/description" aria-label="Description of {{.Owner}}/{{.Repo}} on {{.Forge}}">Description</a></td><td>{{.Forge}}</td><td>{{.Review.Threshold}}</td><td>{{.BotLogin}}</td>
+</tr>
 {{- end}}
 </tbody>
 </table>

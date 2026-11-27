@@ -63,9 +63,8 @@ type ServiceConfig struct {
 		FailuresForge          string `toml:"failures-forge"`
 		FailuresCredentialFile string `toml:"failures-credential-file"`
 		ArchiveCommand         string `toml:"archive-command"`
-		// TimingsCommand assembles a run's timing record from the residue
-		// the run has already written. Archiving invokes it at the end of a
-		// run; the status projection invokes it mid-run for the same record.
+		// TimingsCommand assembles timing records for live status. The
+		// shipped archiver collects its own timings at the end of a run.
 		TimingsCommand string `toml:"timings-command"`
 		// RecentTimingsCommand lists the timing sidecars archive-run has
 		// delivered since a cutoff, so a finished run can still be reported

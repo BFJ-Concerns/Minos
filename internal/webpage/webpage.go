@@ -49,7 +49,7 @@ type Page struct {
 	// It returns the path to show next, which the browser is redirected to
 	// so that reloading it repeats nothing. A Refused error shows the page
 	// again, by Show with the submitted form still on the request, and its
-	// message above the form.
+	// message alongside it.
 	Change func(r *http.Request, read Readings, write Settings) (next string, err error)
 }
 
@@ -63,6 +63,7 @@ var pages = []Page{
 	findingsPage,
 	serviceSettingsPage,
 	repositorySettingsPage,
+	repositoryDescriptionPage,
 }
 
 // ErrNotFound, wrapped by a Show or Change, answers 404: the path names a

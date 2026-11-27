@@ -206,8 +206,19 @@ func TestSettingTheLoaderRefusesIsShownBackAndNothingWritten(t *testing.T) {
 			t.Errorf("%v answered %d, want the refusal %q:\n%s", refused.form, response.Code, refused.says, body)
 			continue
 		}
-		if name := refused.form.Get("setting"); name == "runs.max-concurrent" {
-			row := settingRowHTML(t, body, name)
+		name := refused.form.Get("setting")
+		if name == "runs.unknown" {
+			if !strings.Contains(refusalText(body), refused.says) {
+				t.Errorf("unknown setting has no page-level refusal: %s", body)
+			}
+			continue
+		}
+		row := settingRowHTML(t, body, name)
+		if !strings.Contains(row, refused.says) || strings.Count(body, `role="alert"`) != 1 ||
+			!strings.Contains(row, `aria-describedby="refusal-`+name+`"`) {
+			t.Errorf("the refusal is not shown once and associated with %s: %s", name, row)
+		}
+		if name == "runs.max-concurrent" {
 			if !strings.HasPrefix(row, `id="setting-runs.max-concurrent" open>`) || !strings.Contains(row, `aria-invalid="true"`) {
 				t.Errorf("the refused setting is not shown open with what was typed:\n%s", row)
 			}
@@ -429,4 +440,32 @@ func refusalText(body string) string {
 	_, message, _ := strings.Cut(body, `role="alert">`)
 	message, _, _ = strings.Cut(message, "</p>")
 	return message
+}
+
+func TestSettingsIndexNamesLoaderRefusalAfterSavingAnotherFile(t *testing.T) {
+	root, read, write := configurationRoot(t)
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	path := filepath.Join(root, "repos", "estate.toml")
+	original := fileText(t, path)
+	if err := os.WriteFile(path, []byte(strings.Replace(original, `threshold = "Low"`, `threshold = "Hgh"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	saved := submit(site, "/settings", url.Values{"setting": {"runs.max-concurrent"}, "value": {"2"}}, session)
+	if saved.Code != http.StatusSeeOther {
+		t.Fatalf("independent service setting answered %d: %s", saved.Code, saved.Body)
+	}
+	index := visit(site, followed(saved), session)
+	const repoPage = "/repositories/forgejo/bfj/estate/settings"
+	assertMonitoringPage(t, index.Code, index.Body.String(), "Saved runs.max-concurrent", path+": review.threshold must be", `href="`+repoPage+`"`)
+
+	repaired := submit(site, repoPage, url.Values{"setting": {"review.threshold"}, "value": {"High"}}, session)
+	if repaired.Code != http.StatusSeeOther {
+		t.Fatalf("repository repair answered %d: %s", repaired.Code, repaired.Body)
+	}
+	index = visit(site, "/settings", session)
+	if index.Code != http.StatusOK || strings.Contains(index.Body.String(), "Minos cannot load its configuration") {
+		t.Fatalf("index still reports a loader error after repair: %s", index.Body)
+	}
 }
