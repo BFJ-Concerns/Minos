@@ -87,6 +87,10 @@ into one finding, it counts once per section that contributed a write-up.
 Skipped sections give the reason they were skipped. If inspection finishes
 the head without sending it to review, there is no section table.
 
+Where the repository enables it, the comment also carries a walkthrough of
+the pull request: what changed, grouped with the files each group touched,
+with sequence diagrams of the flows it touches where those are enabled too.
+
 The comment lists earlier blocking findings that still stand, with their
 original locations, heads and any titles from the earlier review. Those
 findings can keep the result at changes requested even when inspection
@@ -263,6 +267,8 @@ Per-repository settings take their defaults from `[repositories]` in
 | `markers` | `eyes` in flight, `+1` clean | The reactions or labels Minos puts on a pull request |
 | `work-in-progress-branch-prefixes` | none | Branch prefixes Minos leaves unreviewed |
 | `guidance-sources` | first non-empty of `AGENTS.md`, `CLAUDE.md`, `README.md` | The documents a review is grounded on |
+| `walkthrough.enabled` | `false` | Whether each reviewed head's summary comment carries a walkthrough of the pull request, grouped by what changed with the files each group touched. [Walkthroughs](docs/deployment.md#walkthroughs) |
+| `walkthrough.diagrams` | `false` | Whether the walkthrough carries sequence diagrams of the flows the change touches |
 | `description.enabled` | `false` | Whether Minos keeps a description of the repository's structure, written again each time its default branch moves, and shows it to reviewers beside the guidance. [Repository descriptions](docs/deployment.md#repository-descriptions) |
 
 `runs.max-concurrent` (default `1`) sets how many reviews run at once. The
