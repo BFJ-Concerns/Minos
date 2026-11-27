@@ -336,7 +336,7 @@ commit_statuses() {
   status_records="$(collect "/repos/$1/$2/commits/$3/statuses")" || return 1
   printf '%s' "$status_records" | jq --arg provider github '[.[] |
     if ((.id | type) != "number" or .id <= 0) then error("GitHub status is missing a positive id") else
-      {id, provider:$provider, context, state, creator:(.creator.login // ""), description:(.description // ""), target_url:(.target_url // "")}
+      {id, provider:$provider, context, state, creator:(.creator.login // ""), description:(.description // ""), target_url:(.target_url // ""), created_at:(.created_at // "")}
     end] | sort_by(.id) | reverse'
 }
 

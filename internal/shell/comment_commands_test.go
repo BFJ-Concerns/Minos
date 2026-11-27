@@ -779,3 +779,24 @@ func TestReviewCommandIsNotAnsweredByAnotherPullRequestsStatus(t *testing.T) {
 		t.Fatalf("reconciliation after this pull request's status = %#v after %d launches", result, len(journey.launches))
 	}
 }
+
+// A head whose run left an unfinished summary is finished by a terminal
+// status written after it, as admission writes when it stops a stalled
+// continuation and a resident lead writes in place of a summary, and not
+// by one written before it.
+func TestTerminalStatusAfterAnUnfinishedSummaryFinishesTheHead(t *testing.T) {
+	journey := newCommandJourney(t)
+	journey.status(t, product.Clean())
+	result, err := writeSummary(t.Context(), journey.adapter, journey.state.guard(), product.SummaryReviewing, "Summary.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	githubApplied(t, result)
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || len(journey.launches) != 1 {
+		t.Fatalf("reconciliation under a status older than the summary = %#v after %d launches, want a run", result, len(journey.launches))
+	}
+	journey.status(t, product.Attention())
+	if result := journey.reconcile(t); result.DeferralReason != "completed-marker" || result.TerminalOutcome != product.Attention().Name() || len(journey.launches) != 1 {
+		t.Fatalf("reconciliation after the later attention status = %#v after %d launches", result, len(journey.launches))
+	}
+}

@@ -137,10 +137,11 @@ Claude Code by default or on Codex (`MINOS_LEAD_ENGINE`).
   a state and composes the text below it.
 - Webhooks and the sweep both reconcile current forge state. The
   completion marker is head-bound — the summary record saying clean or
-  changes requested of the current head, or, on a head the record says
-  nothing of, as a run that writes no summary comment leaves it, a
-  terminal Minos review of the head or a clean/attention status written
-  on it for this pull request (`headCompletion` in
+  changes requested of the current head, or a terminal Minos review of
+  the head or a clean/attention status written on it for this pull
+  request, where the record names another head or that evidence came
+  after the record's last edit, as a run that writes no summary comment
+  and a stalled continuation's stop leave it (`headCompletion` in
   `internal/shell/service.go`) — and any head movement is the
   author's, spending the marker. The run writes its own statuses.
   Admission also writes `attention` and stops a continuation that made no

@@ -1081,7 +1081,7 @@ func (s *githubFixtureState) handleOperations(w http.ResponseWriter, r *http.Req
 				http.Error(w, "invalid state", 422)
 				return true
 			}
-			record := map[string]any{"id": 1000 + len(s.writes), "creator": map[string]any{"login": githubFixtureBotLogin}}
+			record := map[string]any{"id": 1000 + len(s.writes), "creator": map[string]any{"login": githubFixtureBotLogin}, "created_at": s.tick()}
 			for key, value := range payload {
 				record[key] = value
 			}

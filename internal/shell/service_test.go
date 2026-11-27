@@ -50,7 +50,7 @@ func TestTerminalCurrentReviewMarksCompletion(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := forge.Snapshot{HeadSHA: "head", Reviews: test.reviews}
-			if _, got := currentTerminalReview(snapshot, "Minos"); got != test.want {
+			if _, got := currentTerminalReview(snapshot, "Minos", ""); got != test.want {
 				t.Fatalf("current terminal review = %t, want %t", got, test.want)
 			}
 		})

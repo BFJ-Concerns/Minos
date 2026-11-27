@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BFJ-Concerns/Minos/internal/forge"
 	"github.com/BFJ-Concerns/Minos/internal/product"
@@ -44,17 +45,17 @@ func currentContinuationPriority(ctx context.Context, cfg ServiceConfig, facts F
 }
 
 // currentTerminalReview finds the bot's latest approving or request-changes
-// review of the current head. Minos authors no commits, so any head
+// review of the current head submitted after since (laterThan). Minos authors no commits, so any head
 // movement is the author's and simply leaves old reviews behind: a review
 // marks a completed run only while its commit is still the head. A comment
 // review the run posts after its verdict, such as one carrying advice,
 // judges nothing and leaves the verdict standing.
-func currentTerminalReview(snapshot forge.Snapshot, botLogin string) (product.State, bool) {
+func currentTerminalReview(snapshot forge.Snapshot, botLogin, since string) (product.State, bool) {
 	var latest forge.Review
 	var latestState product.State
 	found := false
 	for _, review := range snapshot.Reviews {
-		if review.User != botLogin || review.CommitID != snapshot.HeadSHA || (found && review.ID < latest.ID) {
+		if review.User != botLogin || review.CommitID != snapshot.HeadSHA || (found && review.ID < latest.ID) || !laterThan(review.SubmittedAt, since) {
 			continue
 		}
 		if state, terminal := terminalState(review); terminal {
@@ -282,32 +283,60 @@ func staleTerminalMarker(snapshot forge.Snapshot, botLogin, statusContext string
 }
 
 // headCompletion is the current head's completion marker. The summary
-// comment speaks first: a record that names this head settles it, finished
-// or not, so a head the comment records as inspecting, reviewing or
-// incomplete is unfinished whatever Minos published of it before. Only
-// where the comment says nothing of this head is the head completed by a
-// terminal Minos review of it, or else by the latest Minos status written
-// for this pull request on it when that status is terminal. Those two are
-// all a head carries when the run that finished it wrote no summary
-// comment, as the resident lead writes none and a pull request finished
-// before the comment existed has none, and such a head reads as finished
-// for as long as it stands.
+// comment speaks first: a record that names this head finished completes
+// it, and one that names it inspecting, reviewing or incomplete keeps it
+// unfinished against whatever Minos published of it before that record was
+// written. Evidence the record says nothing of completes the head: a
+// terminal Minos review of it, or else the latest Minos status written
+// for this pull request on it when that status is terminal, where there
+// is no record of this head or where that evidence came after the record's
+// last edit. Those two are all a head carries when the run that finished
+// it wrote no summary comment: the resident lead writes none, a pull
+// request finished before the comment existed has none, and admission
+// stops a stalled continuation with an attention status alone, after the
+// run's own unfinished record. Such a head reads as finished for as long
+// as it stands.
 // Admission and marker reconciliation both read this, so a head is never
 // deferred as one outcome while carrying the other's marker.
 func headCompletion(snapshot forge.Snapshot, botLogin, statusContext string) (product.State, bool) {
+	since := ""
 	if record, found := snapshot.SummaryRecord(); found && record.Head == snapshot.HeadSHA {
-		return record.Completion(snapshot.HeadSHA)
+		if state, completed := record.Completion(snapshot.HeadSHA); completed {
+			return state, true
+		}
+		since = snapshot.Summary.UpdatedAt
+		if since == "" {
+			return product.State{}, false
+		}
 	}
-	if state, found := currentTerminalReview(snapshot, botLogin); found {
+	if state, found := currentTerminalReview(snapshot, botLogin, since); found {
 		return state, true
 	}
 	statuses := pullRequestStatuses(snapshot.Statuses, snapshot.Repository, snapshot.PullRequest)
-	if status, found := latestOwnedStatus(statuses, botLogin, statusContext); found {
+	if status, found := latestOwnedStatus(statuses, botLogin, statusContext); found && laterThan(status.CreatedAt, since) {
 		if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal {
 			return state, true
 		}
 	}
 	return product.State{}, false
+}
+
+// laterThan reports whether the forge time at came after since. An empty
+// since bounds nothing; a time that is missing or does not parse is never
+// later, so evidence of unknown age leaves an unfinished record standing.
+func laterThan(at, since string) bool {
+	if since == "" {
+		return true
+	}
+	atTime, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return false
+	}
+	sinceTime, err := time.Parse(time.RFC3339, since)
+	if err != nil {
+		return false
+	}
+	return atTime.After(sinceTime)
 }
 
 // settleCompletedMarkers gives a completed head the markers its verdict

@@ -192,6 +192,20 @@ func TestHeadCompletionReadsTheSummaryCommentThenTheReviewAndStatus(t *testing.T
 	cleanStatus := []forge.Status{status(4, "https://forge.invalid/owner/repo/pulls/7#issuecomment-11")}
 	otherPullRequestsStatus := []forge.Status{status(4, "https://forge.invalid/owner/repo/pulls/8")}
 	requestChangesThenAdvice := append(requestChanges, forge.Review{ID: 5, User: "Minos", CommitID: "head", State: "COMMENT"})
+	// An unfinished record edited at ten o'clock, and evidence from either
+	// side of that edit.
+	editedAt := func(comment *forge.SummaryComment) *forge.SummaryComment {
+		comment.UpdatedAt = "2026-11-27T10:00:00Z"
+		return comment
+	}
+	reviewAt := func(at string) []forge.Review {
+		return []forge.Review{{ID: 3, User: "Minos", CommitID: "head", State: "REQUEST_CHANGES", SubmittedAt: at}}
+	}
+	statusAt := func(at string) []forge.Status {
+		written := status(4, "https://forge.invalid/owner/repo/pulls/7")
+		written.CreatedAt = at
+		return []forge.Status{written}
+	}
 	tests := []struct {
 		name      string
 		snapshot  forge.Snapshot
@@ -204,6 +218,11 @@ func TestHeadCompletionReadsTheSummaryCommentThenTheReviewAndStatus(t *testing.T
 		{name: "an incomplete summary beside an earlier review of the head", snapshot: forge.Snapshot{Summary: summary("head", product.SummaryIncomplete), Reviews: requestChanges}},
 		{name: "an incomplete summary beside an earlier status on the head", snapshot: forge.Snapshot{Summary: summary("head", product.SummaryIncomplete), Statuses: cleanStatus}},
 		{name: "a summary still reviewing the head beside an earlier review of it", snapshot: forge.Snapshot{Summary: summary("head", product.SummaryReviewing), Reviews: requestChanges}},
+		{name: "a status written after an unfinished summary of the head", snapshot: forge.Snapshot{Summary: editedAt(summary("head", product.SummaryReviewing)), Statuses: statusAt("2026-11-27T10:05:00Z")}, want: product.Clean(), completed: true},
+		{name: "a review submitted after an incomplete summary of the head", snapshot: forge.Snapshot{Summary: editedAt(summary("head", product.SummaryIncomplete)), Reviews: reviewAt("2026-11-27T10:05:00Z")}, want: product.Attention(), completed: true},
+		{name: "a status written before an incomplete summary of the head", snapshot: forge.Snapshot{Summary: editedAt(summary("head", product.SummaryIncomplete)), Statuses: statusAt("2026-11-27T09:55:00Z")}},
+		{name: "a review submitted before an incomplete summary of the head", snapshot: forge.Snapshot{Summary: editedAt(summary("head", product.SummaryIncomplete)), Reviews: reviewAt("2026-11-27T09:55:00Z")}},
+		{name: "a status of unknown age beside an incomplete summary of the head", snapshot: forge.Snapshot{Summary: editedAt(summary("head", product.SummaryIncomplete)), Statuses: statusAt("")}},
 		{name: "a request for changes followed by an advice review", snapshot: forge.Snapshot{Reviews: requestChangesThenAdvice}, want: product.Attention(), completed: true},
 		{name: "a status another pull request on the commit was given", snapshot: forge.Snapshot{Statuses: otherPullRequestsStatus}},
 		{name: "a status on the commit in another repository's pull request of that number", snapshot: forge.Snapshot{Statuses: []forge.Status{status(4, "https://forge.invalid/owner/fork/pulls/7")}}},

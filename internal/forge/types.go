@@ -39,6 +39,9 @@ type Status struct {
 	Creator     string      `json:"creator"`
 	Description string      `json:"description"`
 	TargetURL   string      `json:"target_url"`
+	// CreatedAt is the forge's own RFC 3339 time the status was written,
+	// so it can be told from a summary comment edited before or after it.
+	CreatedAt string `json:"created_at"`
 }
 
 // Review is one submitted review. SubmittedAt is the forge's own RFC 3339
