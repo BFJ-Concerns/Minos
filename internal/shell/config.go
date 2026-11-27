@@ -45,6 +45,12 @@ type ServiceConfig struct {
 		// unmounted, so a deployment gains the surface only once the
 		// operator has installed a token for it.
 		StatusTokenFile string `toml:"status-token-file"`
+		// PageCredentialFile holds the one operator credential that signs a
+		// browser in to the web page. Unset leaves the page unmounted. The
+		// file is read at each sign-in and each signed-in request, so
+		// replacing its content changes the credential, and ends every
+		// session signed in with the old one, without a restart.
+		PageCredentialFile string `toml:"page-credential-file"`
 	} `toml:"listener"`
 	Forges map[string]ForgeConfig `toml:"forges"`
 	// Repositories holds the service-level value of every per-repository
@@ -148,7 +154,7 @@ type RoleRouting struct {
 	Effort string `toml:"effort" json:"effort,omitempty"`
 }
 
-// Routing holds the five workflow roles by their configured names, and
+// Routing holds the workflow roles by their configured names, and
 // under Concerns the specialist concerns that propose on routing of their
 // own, by concern name.
 type Routing struct {
@@ -157,11 +163,12 @@ type Routing struct {
 	Verifier       RoleRouting            `toml:"verifier"`
 	EngagementGate RoleRouting            `toml:"engagement-gate"`
 	BriefPlanner   RoleRouting            `toml:"brief-planner"`
+	Judgement      RoleRouting            `toml:"judgement"`
 	Concerns       map[string]RoleRouting `toml:"concerns"`
 }
 
 // routingRoles names the workflow roles in the order they are listed.
-var routingRoles = []string{"exploration", "proposer", "verifier", "engagement-gate", "brief-planner"}
+var routingRoles = []string{"exploration", "proposer", "verifier", "engagement-gate", "brief-planner", "judgement"}
 
 // role is the named role's routing field, for reading and replacing it.
 func (r *Routing) role(name string) *RoleRouting {
@@ -176,6 +183,8 @@ func (r *Routing) role(name string) *RoleRouting {
 		return &r.EngagementGate
 	case "brief-planner":
 		return &r.BriefPlanner
+	case "judgement":
+		return &r.Judgement
 	}
 	panic("unknown routing role " + name)
 }
@@ -305,6 +314,11 @@ type RepositoryKnobs struct {
 		// published and filed nowhere.
 		FileSafeguardRequests bool `toml:"file-safeguard-requests"`
 	} `toml:"review"`
+	PushInspection struct {
+		// Outcomes are the push-inspection outcomes a run may choose
+		// among; full is always one of them.
+		Outcomes []string `toml:"outcomes"`
+	} `toml:"push-inspection"`
 	// GuidanceSources is the ordered list of documents that carry the
 	// reviewed project's declared intent. Empty means the reviewed
 	// repository's own checked-in guidance.
@@ -382,8 +396,14 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	if root == "" {
 		root = DefaultConfigRoot
 	}
+	return loadServiceConfigFile(root, filepath.Join(root, "service.toml"))
+}
+
+// loadServiceConfigFile loads the configuration rooted at root from path:
+// root's own service.toml, or a candidate about to replace it.
+func loadServiceConfigFile(root, path string) (ServiceConfig, error) {
 	var cfg ServiceConfig
-	metadata, err := decodeStrictTOML(filepath.Join(root, "service.toml"), &cfg)
+	metadata, err := decodeStrictTOML(path, &cfg)
 	if err != nil {
 		return ServiceConfig{}, err
 	}
@@ -483,32 +503,41 @@ func LoadRepoConfigs(cfg ServiceConfig) ([]RepoConfig, error) {
 		if !strings.HasSuffix(entry.Name(), ".toml") {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
-		var repo RepoConfig
-		metadata, err := decodeStrictTOML(path, &repo)
+		repo, err := loadRepoConfigFile(cfg, filepath.Join(dir, entry.Name()))
 		if err != nil {
 			return nil, err
 		}
-		repo.Path = path
-		if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
-			return nil, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
-		}
-		// The file's own values are validated before resolution fills a
-		// default, so an incomplete table is an error, never a silent default.
-		if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
-			return nil, err
-		}
-		repo.RepositoryKnobs = resolveRepositoryKnobs(cfg.Repositories, repo.RepositoryKnobs, metadata.IsDefined)
-		if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
-			return nil, err
-		}
-		if err := validateRouting(path, repo.Routing); err != nil {
-			return nil, err
-		}
-		repo.Routing = resolveRouting(cfg.Routing, repo.Routing, metadata.IsDefined)
 		repos = append(repos, repo)
 	}
 	return repos, nil
+}
+
+// loadRepoConfigFile loads one repository file, an enrolled one or a
+// candidate about to replace it, and resolves its knobs against cfg.
+func loadRepoConfigFile(cfg ServiceConfig, path string) (RepoConfig, error) {
+	var repo RepoConfig
+	metadata, err := decodeStrictTOML(path, &repo)
+	if err != nil {
+		return RepoConfig{}, err
+	}
+	repo.Path = path
+	if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
+		return RepoConfig{}, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
+	}
+	// The file's own values are validated before resolution fills a
+	// default, so an incomplete table is an error, never a silent default.
+	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
+		return RepoConfig{}, err
+	}
+	repo.RepositoryKnobs = resolveRepositoryKnobs(cfg.Repositories, repo.RepositoryKnobs, metadata.IsDefined)
+	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
+		return RepoConfig{}, err
+	}
+	if err := validateRouting(path, repo.Routing); err != nil {
+		return RepoConfig{}, err
+	}
+	repo.Routing = resolveRouting(cfg.Routing, repo.Routing, metadata.IsDefined)
+	return repo, nil
 }
 
 // resolveRepositoryKnobs layers a repository file's knobs over the service
@@ -530,6 +559,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	if defined("review", "file-safeguard-requests") {
 		knobs.Review.FileSafeguardRequests = own.Review.FileSafeguardRequests
 	}
+	if defined("push-inspection", "outcomes") {
+		knobs.PushInspection.Outcomes = own.PushInspection.Outcomes
+	}
 	if defined("guidance-sources") {
 		knobs.GuidanceSources = own.GuidanceSources
 	}
@@ -541,6 +573,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if knobs.Review.Threshold == "" {
 		knobs.Review.Threshold = "High"
+	}
+	if knobs.PushInspection.Outcomes == nil {
+		knobs.PushInspection.Outcomes = slices.Clone(pushInspectionOutcomes)
 	}
 	if knobs.FilingDestination.Kind == "" {
 		knobs.FilingDestination = FilingDestination{Kind: FilingKindPullRequestComment}
@@ -563,6 +598,11 @@ func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
 	}
 	if knobs.Review.Threshold != "" && !validReviewThreshold(knobs.Review.Threshold) {
 		return fmt.Errorf("%s: review.threshold must be Critical, High, Medium or Low", where)
+	}
+	if knobs.PushInspection.Outcomes != nil {
+		if err := validPushInspectionOutcomes(knobs.PushInspection.Outcomes); err != nil {
+			return fmt.Errorf("%s: push-inspection.outcomes %w", where, err)
+		}
 	}
 	for _, prefix := range knobs.WorkInProgressBranchPrefixes {
 		if prefix == "" {
@@ -627,6 +667,32 @@ func validRepositoryPath(path string) error {
 		if segment == ".." {
 			return errors.New("cannot leave the repository")
 		}
+	}
+	return nil
+}
+
+// pushInspectionOutcomes are the outcomes push inspection may choose
+// between, in the order the run is told them.
+var pushInspectionOutcomes = []string{"no-review", "increment", "full"}
+
+// validPushInspectionOutcomes admits a list drawn once each from the
+// three outcomes that includes full. Full stays open because it is the one
+// outcome every head can take: an increment needs an earlier head this one
+// descends from, and no review is closed where the repository's briefs
+// engage what changed.
+func validPushInspectionOutcomes(outcomes []string) error {
+	seen := map[string]bool{}
+	for _, outcome := range outcomes {
+		if !slices.Contains(pushInspectionOutcomes, outcome) {
+			return fmt.Errorf("must hold only %s", strings.Join(pushInspectionOutcomes, ", "))
+		}
+		if seen[outcome] {
+			return fmt.Errorf("names %s twice", outcome)
+		}
+		seen[outcome] = true
+	}
+	if !seen["full"] {
+		return errors.New("must include full, the outcome every head can take")
 	}
 	return nil
 }

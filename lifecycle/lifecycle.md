@@ -213,7 +213,18 @@ write, matching the target rule above.)
    Otherwise read them at this head, against the earlier commit where the
    clone has it or `git fetch origin EARLIER` brings it.
 
-   Choose one:
+   **What the repository leaves open.** Its owner sets which of the three
+   outcomes below a run may choose, and `$MINOS_PUSH_INSPECTION_OUTCOMES`
+   holds that setting: a JSON list of their names, `no-review`,
+   `increment` and `full`. `full` is always in it. An outcome the list
+   does not name is closed to this run, however well the head fits it:
+   with `no-review` closed every head is reviewed, an unchanged one
+   included, and with `increment` closed every review is a full one. A
+   head that fits a closed outcome takes whichever listed outcome's
+   description it meets, and Full, as everything else, where it meets no
+   other.
+
+   Choose one that the list names:
 
    - **No review.** Nothing the author changed carries a decision of
      theirs that a reviewer could find wrong: an empty `changed_paths`,

@@ -12,6 +12,10 @@ bot-login = "REPLACE_WITH_FORGEJO_BOT_LOGIN"
 
 [listener]
 bind = ":8919"
+# The one operator credential that signs a browser in to the web page, a
+# secret in a file as the webhook secret is. With this key set the receiver
+# serves the page at the root of the listener; without it, no page.
+page-credential-file = "/etc/minos/page.credential"
 
 # One [forges.<key>] table per forge Minos reviews on; the key is the
 # webhook route suffix (/hooks/<key>) and the "forge" value of each
@@ -71,6 +75,11 @@ signature-header = "X-Forgejo-Signature"
 # never gates; set true, it goes to the filing destination marked as a
 # safeguard request, and unset or false it is filed nowhere.
 # file-safeguard-requests = false
+# Push inspection reads each new head before any review and chooses no
+# review, a review of what changed since the head Minos last finished on,
+# or a full review. Outcomes lists the ones it may choose; full is required.
+# [repositories.push-inspection]
+# outcomes = ["no-review", "increment", "full"]
 # Guidance sources: the documents that carry each project's declared intent,
 # read in this order. A source names a path in the reviewed repository, or a
 # path in a named secondary repository on the same forge (cloned read-only
@@ -96,15 +105,15 @@ signature-header = "X-Forgejo-Signature"
 # attention = {label = "REPLACE_WITH_ATTENTION_LABEL"}
 
 # Workflow role routing: which engine, model and effort each role runs on.
-# Roles: exploration, proposer, verifier, engagement-gate, brief-planner.
-# A role left unset defaults at run time: with both engines provisioned
-# (both configuration seeds named in run-body.env) every proposing and
-# planning role runs on codex — the proposer on gpt-6.2-astra at medium
-# effort, the planning roles on gpt-6.1-sol — and the verifier on claude
-# (claude-opus-5-5) at medium effort, so a finding is checked by the family
-# that did not propose it; with one engine provisioned every role runs on
-# it. The verifier's routing also carries the finding merge. A model needs
-# its engine named.
+# Roles: exploration, proposer, verifier, engagement-gate, brief-planner,
+# judgement. A role left unset defaults at run time: with both engines
+# provisioned (both configuration seeds named in run-body.env) every
+# proposing and planning role runs on codex — the proposer on gpt-6.2-astra
+# at medium effort, the planning roles on gpt-6.1-sol — and the verifier and
+# the judgement stages on claude (claude-opus-5-5) at medium effort, so a
+# finding is checked by the family that did not propose it; with one engine
+# provisioned every role runs on it. The verifier's routing also carries the
+# finding merge. A model needs its engine named.
 #
 # A specialist concern (failure, fit, logic, security, tests) proposes on the
 # proposer's routing unless [routing.concerns.<concern>] sets its own: the

@@ -155,7 +155,8 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    command below, so the box never names it.
 
    Per-repository knobs — admission rules, review threshold, whether
-   safeguard requests are filed, work-in-progress branch
+   safeguard requests are filed, the outcomes push inspection may choose,
+   work-in-progress branch
    prefixes, the guidance sources a review is grounded on, the filing
    destination for advisory material and configuration diagnostics,
    and the markers Minos writes on a pull request — are set once under
@@ -252,15 +253,18 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    shipped example comments an illustrative value of 4).
 
    `[routing]` maps each workflow role — `exploration`, `proposer`,
-   `verifier`, `engagement-gate`, `brief-planner` — to an engine, model
-   and effort. A role left unset defaults at run time: with both engines
-   provisioned, proposing and planning roles (`exploration`, `proposer`,
-   `engagement-gate`, `brief-planner`) run on Codex and the `verifier` on
-   Claude. With one engine provisioned, every role runs on it. A role on
+   `verifier`, `engagement-gate`, `brief-planner`, `judgement` — to an
+   engine, model and effort. A role left unset defaults at run time: with
+   both engines provisioned, proposing and planning roles (`exploration`,
+   `proposer`, `engagement-gate`, `brief-planner`) run on Codex, and the
+   `verifier` and `judgement` on Claude. With one engine provisioned, every
+   role runs on it. A role on
    Claude defaults to `claude-opus-5-5`; on Codex the `proposer` defaults to
    `gpt-6.2-astra` and every other role to `gpt-6.1-sol`. Default effort is `high` for
    `exploration` and `brief-planner`, and `medium` for `proposer`,
-   `verifier` and `engagement-gate`. An effort is one of the Ensemble
+   `verifier`, `engagement-gate` and `judgement`. `judgement` is the role
+   of the run driver's one-shot judgement stages
+   (`workflows/judgements/`). An effort is one of the Ensemble
    runtime's levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
    or `max`. The verifier's routing also carries
    the leg that merges findings one fix would resolve before they are
@@ -604,6 +608,66 @@ job-file state to inspect.
 The run supervisor's own silence backstop (`MINOS_LEAD_SILENCE_TIMEOUT`)
 already bounds a genuinely wedged lead on either engine — do not kill a
 waiting run ahead of it on the strength of quiet files.
+
+## The web page
+
+The receiver serves a web page for the operator at the root of its listener
+(`http://BOX:8919/` with the shipped `bind`), behind one sign-in. It opens on
+an overview of the enrolled repositories. Nothing Minos does depends on the
+page: a deployment that never opens it reviews exactly the same.
+
+The page is served once the deployment holds an operator credential. Create
+one, or write a passphrase of your own into the file:
+
+```sh
+umask 077 && head -c 24 /dev/urandom | base64 > /etc/minos/page.credential
+```
+
+The shipped `service.toml` already names that file; restart the receiver
+after adding the key to a configuration that lacks it:
+
+```toml
+[listener]
+bind = ":8919"
+page-credential-file = "/etc/minos/page.credential"
+```
+
+Open the listener's address in a browser and sign in with the file's content.
+The credential is the whole gate, so keep it as you would the forge token.
+
+- A browser stays signed in for 30 days, and each visit in the second half
+  of that time renews it. **Sign out** ends the session in that browser.
+- Replacing the file's content changes the credential at once, with no
+  restart, and signs every browser out. That is also how to end a session
+  on a browser you no longer hold.
+- The receiver checks at most one sign-in attempt a second, however many
+  arrive.
+- The listener speaks plain HTTP, so the credential crosses the network in
+  the clear at sign-in. Keep the listener to a network you trust, or put a
+  TLS-terminating proxy in front of it; behind a proxy that sends
+  `X-Forwarded-Proto: https`, the session cookie is marked for TLS only.
+- The page shares the listener with the webhook route. Where a forge reaches
+  the listener from the internet, have the proxy forward `/hooks/` alone
+  unless you mean the sign-in page to be public too.
+
+**Queue** shows the last completed sweep's own timestamp, pull requests
+waiting for a run slot, and the reasons the sweep deferred or could not
+read the others. **Live runs** shows what the service can currently read
+about active pull requests, stages and dispatched workers.
+
+**Recent runs** uses the same archive listing as `/runs/recent`. The
+shipped archive command includes the outcome, elapsed time and available
+skip or failure evidence in its timing sidecars. Sidecars written without
+those details still appear with the recorded timing span where available.
+The operator page and the authenticated recent-runs endpoint both have
+access to that evidence.
+
+Open a repository from **Overview** to see its inline finding responses
+per pull request, including closed and merged requests. The page reads the
+forge on demand and shows when a pull request's thread state is
+unavailable.
+
+Without the key the receiver serves no page, and its root answers 404.
 
 ## Serving run status to an operator surface
 

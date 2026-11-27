@@ -105,6 +105,23 @@ func TestSweepRecordsEachAdmissionDeferralFromACompletedPass(t *testing.T) {
 		wantReason string
 	}{
 		{
+			name: "unreadable first snapshot",
+			configure: func(_ *forgejoFixtureState, cfg ServiceConfig, _ Facts) {
+				forge := cfg.Forges["forgejo"]
+				adaptation := t.TempDir()
+				for _, script := range []string{"common.sh", "list-open-prs", "commit-statuses"} {
+					if err := os.Symlink(filepath.Join(forge.Adaptation, script), filepath.Join(adaptation, script)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				writeScript(t, filepath.Join(adaptation, "snapshot"), "#!/bin/sh\nexit 1\n")
+				forge.Adaptation = adaptation
+				cfg.Forges["forgejo"] = forge
+				writeServiceConfig(t, cfg)
+			},
+			wantReason: "pull request snapshot unavailable",
+		},
+		{
 			name: "work in progress branch",
 			configure: func(state *forgejoFixtureState, cfg ServiceConfig, _ Facts) {
 				setSweepFixtureWorkInProgressPrefix(t, cfg, "structural/")
@@ -177,7 +194,7 @@ func TestSweepRecordsEachAdmissionDeferralFromACompletedPass(t *testing.T) {
 			if err := json.Unmarshal(content, &document); err != nil {
 				t.Fatal(err)
 			}
-			if len(document.Deferrals) != 1 || document.Deferrals[0].Reason != test.wantReason {
+			if len(document.Deferrals) != 1 || document.Deferrals[0].PR != facts.PR || document.Deferrals[0].Reason != test.wantReason {
 				t.Fatalf("recorded deferrals = %#v, want one with reason %q", document.Deferrals, test.wantReason)
 			}
 		})

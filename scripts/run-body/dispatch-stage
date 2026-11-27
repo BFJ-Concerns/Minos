@@ -8,20 +8,26 @@ set -eu
 # directories, and the diagnostics log. The lead names the stage and the
 # workflow script; everything else is identical on every run.
 #
-#   dispatch-stage NAME WORKFLOW_SCRIPT   launch the adjudicated workflow in
-#                                         the foreground of this process
+#   dispatch-stage NAME WORKFLOW_SCRIPT [RUNNER]
+#                                         launch the workflow in the
+#                                         foreground of this process
 #   dispatch-stage await NAME             exit once NAME's completion flag exists
 #
-# NAME is the stage's base name (review, review-brief, review-scope) or a
+# RUNNER is the command that launches the workflow and prints the stage's
+# result: a script name under the workflows directory, such as
+# run-judgement for a judgement stage. Without one the adjudication wrapper
+# runs the workflow, which is what a review stage takes.
+#
+# NAME is the stage's base name (review, review-brief, push-inspection) or a
 # repeat of it with the @N attempt suffix (review@2). A launch reads the
-# lead-built input at $MINOS_RUN_DIR/<base>-args.json and, for a repeat,
+# input built at $MINOS_RUN_DIR/<base>-args.json and, for a repeat,
 # announces the attempt by copying it to <NAME>-args.json — the status
 # projection derives stages from exactly these files. The result lands whole
 # at <NAME>-result.json only on a clean exit, the flag <NAME>-result.done
 # appears after any exit, and diagnostics go to <NAME>.log.
 
 usage() {
-  echo "usage: dispatch-stage NAME WORKFLOW_SCRIPT | dispatch-stage await NAME" >&2
+  echo "usage: dispatch-stage NAME WORKFLOW_SCRIPT [RUNNER] | dispatch-stage await NAME" >&2
   exit 2
 }
 
@@ -44,10 +50,11 @@ valid_stage_name() {
   return 0
 }
 
-[ "$#" -eq 2 ] || usage
+[ "$#" -eq 2 ] || [ "$#" -eq 3 ] || usage
 : "${MINOS_RUN_DIR:?MINOS_RUN_DIR is required}"
 
 if [ "$1" = "await" ]; then
+  [ "$#" -eq 2 ] || usage
   name="$2"
   valid_stage_name "$name" || usage
   until [ -e "$MINOS_RUN_DIR/$name-result.done" ]; do sleep 1; done
@@ -70,6 +77,17 @@ esac
   echo "dispatch-stage: workflow script $workflow does not exist" >&2
   exit 1
 }
+runner="$MINOS_REVIEW_WORKFLOW"
+if [ "$#" -eq 3 ]; then
+  case "$3" in
+    /*) runner="$3" ;;
+    *) runner="$workflows_dir/$3" ;;
+  esac
+  [ -x "$runner" ] || {
+    echo "dispatch-stage: stage runner $runner is not an executable file" >&2
+    exit 1
+  }
+fi
 
 base="${name%%@*}"
 base_args="$MINOS_RUN_DIR/$base-args.json"
@@ -95,4 +113,4 @@ exec 2>>"$MINOS_RUN_DIR/$name.log"
 exec "$run_body_dir/time-on-exit" "$MINOS_RUN_DIR/timings.ndjson" "$name" \
   "$run_body_dir/flag-on-exit" "$MINOS_RUN_DIR/$name-result.done" \
   "$run_body_dir/publish-on-exit" "$MINOS_RUN_DIR/$name-result.json" \
-  "$MINOS_REVIEW_WORKFLOW" "$workflow" --json-args "@$args"
+  "$runner" "$workflow" --json-args "@$args"

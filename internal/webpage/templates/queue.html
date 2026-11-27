@@ -1,0 +1,30 @@
+{{define "entries"}}
+<dl class="monitoring-list">
+{{range .}}
+<dt>{{.Name}}{{if .Forge}} <small class="muted">{{.Forge}}</small>{{end}}</dt>
+<dd>{{.Reason}}{{range .Reasons}}<br>{{.}}{{end}}</dd>
+{{end}}
+</dl>
+{{end}}
+
+{{define "content"}}
+<h1>Queue</h1>
+{{if .}}
+<p>Last completed sweep {{ago .CompletedAt}}{{if .Partial}} <span class="tag waiting">Partial</span>{{end}}</p>
+
+<h2>Waiting for a slot</h2>
+{{if .Waiting}}{{template "entries" .Waiting}}
+{{else}}<p class="empty">No pull requests were waiting for a slot.</p>{{end}}
+
+<h2>Other deferrals</h2>
+{{if .Deferred}}{{template "entries" .Deferred}}
+{{else}}<p class="empty">No other deferrals were recorded.</p>{{end}}
+
+{{with .Skipped}}
+<h2>Repositories the sweep could not read</h2>
+{{template "entries" .}}
+{{end}}
+{{else}}
+<p class="empty">No completed sweep record is available.</p>
+{{end}}
+{{end}}

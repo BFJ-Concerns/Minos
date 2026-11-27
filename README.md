@@ -218,6 +218,7 @@ Per-repository settings take their defaults from `[repositories]` in
 | `admission` | Ready pull requests from the same repository | Filters by labels, author, base branch, draft state, title, touched paths and fork source. [Admission settings](docs/deployment.md#pull-request-admission) |
 | `review.threshold` | `High` | Severity threshold the lead weighs when classifying: `Critical`, `High`, `Medium` or `Low` |
 | `review.file-safeguard-requests` | `false` | Whether a confirmed request for a safeguard against a failure nobody has observed goes to the filing destination, marked as a safeguard request; it never gates either way |
+| `push-inspection.outcomes` | `["no-review", "increment", "full"]` | Which reviews Minos may choose for a new head before reviewing it: none, only what changed since the head it last finished on, or the whole pull request; `full` is always among them |
 | `filing-destination.kind` | `pull-request-comment` | Where findings that do not block go: committed to a `file` in a repository, filed as an `issue`, posted as a `pull-request-comment`, or `none` |
 | `markers` | `eyes` in flight, `+1` clean | The reactions or labels Minos puts on a pull request |
 | `work-in-progress-branch-prefixes` | none | Branch prefixes Minos leaves unreviewed |
@@ -256,6 +257,9 @@ journalctl --user -u minos-receiver.service -u minos-sweep.service
 systemctl --user start minos-sweep.service   # run a sweep pass now
 ```
 
+- The receiver serves a web page for the operator at the root of its
+  listener, behind one sign-in:
+  [setup](docs/deployment.md#the-web-page).
 - `/status` reports live runs, the sweep's deferrals and the receiver's
   heartbeat, and `/runs/recent` lists recently finished runs. Both are
   optional, read-only and behind a bearer token:
@@ -285,7 +289,7 @@ just verify
 | Path | Contents |
 |------|----------|
 | [`cmd/minos`](cmd/minos) | The service binary |
-| [`internal/`](internal) | Webhook receiver, sweep, run lifecycle and forge bridge |
+| [`internal/`](internal) | Webhook receiver, sweep, run lifecycle, forge bridge and the web page |
 | [`workflows/`](workflows) | The Ensemble review workflows and the prompts their agents receive |
 | [`runtime/`](runtime) | The vendored Ensemble runtime |
 | [`scripts/`](scripts) | Forge adaptations, per-run scripts and installers |

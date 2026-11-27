@@ -52,8 +52,26 @@ archive_transport_open "run-$$" 30
 # stall and thrash deltas against the baseline run-body took at start.
 "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/memory-telemetry" \
   "$run_dir/memory-final.json" || true
-"$(CDPATH= cd -- "$(dirname "$0")" && pwd)/collect-timings" \
-  "$run_dir" "$run_dir/timing-record.json" || true
+timing_record="$run_dir/timing-record.json"
+summary=""
+if [ -z "${MINOS_RUN_STARTED_AT:-}" ] && [ -r "$timing_record" ]; then
+  # An archive retry keeps the evidence taken during the live invocation.
+  summary="$(jq -ce '.run_summary | objects' "$timing_record" 2>/dev/null)" || summary=""
+fi
+if [ -z "$summary" ]; then
+  salvaged=false
+  if [ "$label" = "$run_name" ]; then salvaged=true; fi
+  summary="$("$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-run-summary" "$run_dir" "$salvaged")" || summary=""
+fi
+"$(CDPATH= cd -- "$(dirname "$0")" && pwd)/collect-timings" "$run_dir" "$timing_record" || true
+if [ -n "$summary" ] && [ -r "$timing_record" ]; then
+  if printf '%s' "$summary" | jq --slurpfile timings "$timing_record" \
+    '$timings[0] + {run_summary: .}' >"$timing_record.summary"; then
+    mv "$timing_record.summary" "$timing_record"
+  else
+    rm -f "$timing_record.summary"
+  fi
+fi
 
 # The breakdown belongs in the static sidecar, not on the status request that
 # reads it.  A malformed or unavailable transcript leaves the ordinary timing
@@ -73,7 +91,7 @@ fi
   find . -type f \( \
     -path './report.md' -o -path './failure.log' -o -path './failures.log' -o \
     -path './home/.claude/projects/*' -o -path './home/.codex/sessions/*.jsonl' -o \
-    -path './ensemble-records/*' -o \
+    -path './ensemble-records/*' -o -path './judgements/*' -o \
     -path './timings.ndjson' -o -path './timing-record.json' -o -path './cgroup-death-evidence' \
   \) -print0 2>/dev/null |
     tar --null --files-from=- -cf - 2>/dev/null |

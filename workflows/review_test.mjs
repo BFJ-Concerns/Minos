@@ -876,6 +876,7 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
 test("the lifecycle sizes the review to what the author changed since the head Minos last finished on", () => {
   assert.match(lifecycle, /then decide how much review this head needs, before any workflow runs/);
   assert.match(lifecycle, /"\$MINOS_BIN" forge earlier "\$MINOS_HEAD_SHA" "\$MINOS_TARGET_SHA"[\s\S]*`changed_paths`[\s\S]*The comparison is of file content, not of\s+commits/);
+  assert.match(lifecycle, /`\$MINOS_PUSH_INSPECTION_OUTCOMES`[\s\S]*An outcome the list\s+does not name is closed to this run[\s\S]*Choose one that the list names:\s+- \*\*No review\.\*\*/);
   assert.match(lifecycle, /\*\*No review\.\*\*[\s\S]*an empty `changed_paths`/);
   assert.match(lifecycle, /\*\*No review\.\*\*[\s\S]*unavailable\s+when a `\.review\/` brief engages the range[\s\S]*review-scope-inputs\.mjs" BASE "\$MINOS_HEAD_SHA"`[\s\S]*`briefsEngage`/);
   assert.match(lifecycle, /\*\*Increment\.\*\*[\s\S]*earlier head is an ancestor[\s\S]*`EARLIER\.\.\.HEAD` alone/);

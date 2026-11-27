@@ -1,0 +1,370 @@
+/*
+ * The one stylesheet of the web page. A page's template writes plain
+ * elements (headings, paragraphs, tables, definition lists, forms) and they
+ * arrive styled; it carries no style attribute and no stylesheet of its own,
+ * which the page's content policy would refuse anyway.
+ *
+ * The few classes, for what an element alone cannot say:
+ *   .tag            a short state beside a thing; add .good, .bad or .waiting
+ *   .numeric        a table cell of figures, set right in tabular digits
+ *   .muted          secondary text
+ *   .empty          the sentence shown where a list has nothing in it
+ *   .notice         something the operator should read once (a change saved)
+ *   .refusal        why a change was not made, or a page not shown
+ *   button.quiet    an action that is not the page's main one
+ *
+ * Every colour is one of the properties below, each set once for light and
+ * once for dark.
+ */
+
+:root {
+  color-scheme: light dark;
+  --ground: #f7f6f3;
+  --surface: #ffffff;
+  --rule: #dedbd4;
+  --text: #1f1d1a;
+  --muted: #6b665e;
+  --accent: #2f5d50;
+  --accent-text: #ffffff;
+  --good: #2e6b3d;
+  --good-ground: #e3f1e5;
+  --bad: #a03a2c;
+  --bad-ground: #f8e4e0;
+  --waiting: #7a5a12;
+  --waiting-ground: #f6ecd2;
+  --measure: 72rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #161513;
+    --surface: #1f1e1b;
+    --rule: #35332e;
+    --text: #ebe8e1;
+    --muted: #a09a8f;
+    --accent: #8fc7b3;
+    --accent-text: #10201b;
+    --good: #9ad3a6;
+    --good-ground: #1d3323;
+    --bad: #f0a79b;
+    --bad-ground: #3d1f1a;
+    --waiting: #e6c777;
+    --waiting-ground: #3a2f12;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font: 100%/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--ground);
+  color: var(--text);
+}
+
+body {
+  margin: 0;
+}
+
+body > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1.5rem;
+  padding: 0.75rem max(1.25rem, calc((100vw - var(--measure)) / 2));
+  background: var(--surface);
+  border-bottom: 1px solid var(--rule);
+}
+
+.product {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  flex: 1;
+}
+
+nav a {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 0.25rem 0;
+  border-bottom: 2px solid transparent;
+}
+
+nav a:hover,
+nav a[aria-current="page"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+main {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 4rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+  line-height: 1.25;
+  margin: 0 0 1rem;
+}
+
+h2 {
+  font-size: 1.125rem;
+  margin: 2rem 0 0.5rem;
+}
+
+h3 {
+  font-size: 1rem;
+  margin: 1.5rem 0 0.25rem;
+}
+
+p,
+dl,
+pre {
+  margin: 0 0 1rem;
+}
+
+p {
+  max-width: 44rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+code,
+pre {
+  font: 0.9em/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+time[title] {
+  text-decoration: underline dotted var(--rule);
+  cursor: help;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  margin: 0 0 1.5rem;
+}
+
+th,
+td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--rule);
+}
+
+tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+th {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1.25rem;
+}
+
+dt {
+  color: var(--muted);
+}
+
+dd {
+  margin: 0;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin: 1rem 0 0.25rem;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input:not([type="checkbox"], [type="radio"]),
+select,
+textarea {
+  width: 100%;
+  max-width: 28rem;
+  padding: 0.5rem 0.625rem;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+}
+
+textarea {
+  max-width: 44rem;
+  min-height: 6rem;
+}
+
+button {
+  margin-top: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--accent);
+  color: var(--accent-text);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.quiet {
+  margin: 0;
+  padding: 0.25rem 0.625rem;
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--rule);
+  font-weight: 400;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tag {
+  display: inline-block;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  line-height: 1.5rem;
+  white-space: nowrap;
+  background: var(--ground);
+  color: var(--muted);
+  border: 1px solid var(--rule);
+}
+
+.tag.good {
+  background: var(--good-ground);
+  color: var(--good);
+  border-color: transparent;
+}
+
+.tag.bad {
+  background: var(--bad-ground);
+  color: var(--bad);
+  border-color: transparent;
+}
+
+.tag.waiting {
+  background: var(--waiting-ground);
+  color: var(--waiting);
+  border-color: transparent;
+}
+
+.muted,
+.empty {
+  color: var(--muted);
+}
+
+.notice,
+.refusal {
+  max-width: 44rem;
+  padding: 0.625rem 0.875rem;
+  border-radius: 6px;
+  background: var(--good-ground);
+  color: var(--good);
+}
+
+.refusal {
+  background: var(--bad-ground);
+  color: var(--bad);
+}
+
+.sign-in {
+  max-width: 22rem;
+  margin: 12vh auto 0;
+}
+
+.monitoring-list {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 0.5rem 1rem;
+  overflow-wrap: anywhere;
+}
+
+.run {
+  border-top: 1px solid var(--rule);
+  padding-bottom: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.run > h2 {
+  margin-top: 1rem;
+}
+
+.activity {
+  padding-inline-start: 1.25rem;
+}
+
+.activity li {
+  margin-bottom: 0.4rem;
+}
+
+.finding-counts th,
+.finding-counts td {
+  white-space: normal;
+}
+
+.pagination {
+  align-items: center;
+}
+
+@media (max-width: 34rem) {
+  body > header {
+    justify-content: space-between;
+  }
+
+  body > header > nav {
+    flex: 0 0 100%;
+    order: 1;
+  }
+
+  .monitoring-list {
+    display: block;
+  }
+
+  .monitoring-list dd {
+    margin-bottom: 0.75rem;
+  }
+
+  .finding-counts th,
+  .finding-counts td {
+    padding-inline: 0.25rem;
+  }
+}

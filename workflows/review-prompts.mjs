@@ -16,7 +16,9 @@ import { settingSections } from "./prompt-settings.mjs";
 export const PROMPT_DIRECTORY = "workflows/review-briefs";
 
 const SHARED_SECTIONS = ["reviewed-change", "writing-a-finding", "severity-scale"];
-const REVIEWED_CHANGE_SLOTS = ["target", "head", "project-documents", "pull-request"];
+// The run slots the `reviewed-change` section carries into any prompt that
+// includes it.
+export const REVIEWED_CHANGE_SLOTS = ["target", "head", "project-documents", "pull-request"];
 
 // The run slots each stage's prompt may carry, after its file slots are
 // filled. The workflows fill exactly these.
@@ -54,8 +56,17 @@ export function parseConcern(name, text) {
   return { name, summary, body };
 }
 
-function fillFileSlots(text, files) {
+// The text with each file slot named in `files` filled, and every other
+// slot left for fillPrompt.
+export function fillFileSlots(text, files) {
   return text.replace(SLOT, (whole, name) => (Object.hasOwn(files, name) ? files[name] : whole));
+}
+
+// The sections several prompts share, by the file slot each fills. A
+// judgement stage's prompt (workflows/judgements) may include them too.
+export function sharedSections(repositoryRoot) {
+  return Object.fromEntries(SHARED_SECTIONS.map((name) =>
+    [name, readFileSync(join(repositoryRoot, PROMPT_DIRECTORY, `${name}.md`), "utf8").trim()]));
 }
 
 // Whether a workflow may send this text for a stage: a non-empty prompt
@@ -88,7 +99,7 @@ function checkedPrompt(stage, label, text) {
 export function reviewPrompts(repositoryRoot, settings) {
   const directory = join(repositoryRoot, PROMPT_DIRECTORY);
   const read = (name) => readFileSync(join(directory, name), "utf8").trim();
-  const shared = Object.fromEntries(SHARED_SECTIONS.map((name) => [name, read(`${name}.md`)]));
+  const shared = sharedSections(repositoryRoot);
   const chosen = settingSections(read, settings);
   const concerns = readdirSync(join(directory, "concerns"))
     .filter((entry) => entry.endsWith(".md"))

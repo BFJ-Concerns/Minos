@@ -772,6 +772,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	repo.Review.Threshold = "Medium"
 	repo.Review.FileSafeguardRequests = true
+	repo.PushInspection.Outcomes = []string{"increment", "full"}
 	repo.Routing.Verifier = RoleRouting{Engine: "codex", Model: "gpt-6-astra", Effort: "low"}
 	repo.Routing.Concerns = map[string]RoleRouting{"security": {Engine: "claude", Effort: "high"}}
 	repo.GuidanceSources = []GuidanceSource{
@@ -829,6 +830,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		`MINOS_GUIDANCE_SOURCES=[{"repository":"owner/repo-plans","path":"README.md"},{"path":"docs/intent.md"}]`,
 		`MINOS_FILING_DESTINATION={"kind":"file","repository":"owner/repo-plans","path":"ISSUES.md"}`,
 		`MINOS_ROUTING={"verifier":{"engine":"codex","model":"gpt-6-astra","effort":"low"}}`,
+		`MINOS_PUSH_INSPECTION_OUTCOMES=["increment","full"]`,
 		`MINOS_CONCERN_ROUTING={"security":{"engine":"claude","effort":"high"}}`,
 		"ENSEMBLE_CONCURRENCY_CLAUDE=10",
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
