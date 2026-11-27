@@ -2,6 +2,7 @@ package shell
 
 import (
 	"bytes"
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +11,30 @@ import (
 
 	"github.com/BFJ-Concerns/Minos/deploy"
 )
+
+func TestCheckRunsSliceMemoryAcceptsExpectedConfigurations(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var cfg ServiceConfig
+	cfg.Runs.MemoryEnvelopeGiB = 8
+	for _, test := range []struct {
+		name   string
+		output string
+	}{
+		{name: "slice not found", output: "LoadState=not-found\nFragmentPath=\nMemoryMax=infinity\n"},
+		{name: "implicit slice without a unit file", output: "LoadState=loaded\nFragmentPath=\nMemoryMax=infinity\n"},
+		{name: "installed slice matches envelope", output: "LoadState=loaded\nFragmentPath=/fixture/minos-runs.slice\nMemoryMax=8589934592\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) {
+				return []byte(test.output), nil
+			}
+			if err := checkRunsSliceMemory(t.Context(), cfg); err != nil {
+				t.Fatalf("unexpected slice warning: %v", err)
+			}
+		})
+	}
+}
 
 // The installed units are the shipped ones rendered for the deployment:
 // the runs slice carries the configured envelope, every service that runs

@@ -37,10 +37,12 @@ func TestRunCommandRemovesOwnedRunDirectory(t *testing.T) {
 		body      string
 		marker    string
 		handoff   bool
+		pending   bool
 		wantError bool
 		wantKept  bool
 	}{
 		{name: "body succeeds", body: "#!/bin/sh\nexit 0\n"},
+		{name: "resumed body clears predecessor request", body: "#!/bin/sh\ntest ! -e .archive-pending\n", pending: true},
 		{name: "body fails", body: "#!/bin/sh\nexit 1\n", wantError: true},
 		{name: "archive refused", body: "#!/bin/sh\necho archive-label >.archive-pending\n", wantKept: true},
 		{name: "archive marker cannot be written", body: "#!/bin/sh\nexit 74\n", wantError: true, wantKept: true},
@@ -83,6 +85,9 @@ func TestRunCommandRemovesOwnedRunDirectory(t *testing.T) {
 				if err := os.WriteFile(handoff, []byte("{}"), 0o600); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if tt.pending {
+				writeTestFile(t, filepath.Join(runDir, archivePendingFile), "predecessor label\n")
 			}
 			body := filepath.Join(t.TempDir(), "body")
 			writeScript(t, body, tt.body)

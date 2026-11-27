@@ -12,28 +12,38 @@ import (
 	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
-func TestReconcileRemovesClosedReviewedChange(t *testing.T) {
-	var cfg ServiceConfig
-	cfg.Runs.Dir = t.TempDir()
-	facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}
-	guard := forge.Guard{Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo}, PullRequest: 1}
-	path := reviewedChangePath(cfg, facts.Forge, guard)
-	writeTestFile(t, path, "{}\n")
-	guard.PullRequest = 2
-	other := reviewedChangePath(cfg, facts.Forge, guard)
-	writeTestFile(t, other, "{}\n")
+func TestReconcilePrunesOnlyRetiredReviewedChanges(t *testing.T) {
+	for _, test := range []struct {
+		state      string
+		wantPruned bool
+	}{
+		{state: "open"},
+		{state: "closed", wantPruned: true},
+		{state: "merged", wantPruned: true},
+	} {
+		t.Run(test.state, func(t *testing.T) {
+			var cfg ServiceConfig
+			cfg.Runs.Dir = t.TempDir()
+			facts := Facts{Forge: "forgejo", Owner: "owner", Repo: "repo", PR: "1"}
+			guard := forge.Guard{Repository: forge.Repository{Owner: facts.Owner, Name: facts.Repo}, PullRequest: 1}
+			path := reviewedChangePath(cfg, facts.Forge, guard)
+			writeTestFile(t, path, "{}\n")
+			guard.PullRequest = 2
+			other := reviewedChangePath(cfg, facts.Forge, guard)
+			writeTestFile(t, other, "{}\n")
 
-	for _, state := range []string{"closed", "merged"} {
-		result, err := reconcilePullRequestSnapshot(t.Context(), cfg, RepoConfig{}, facts, nil, forge.Snapshot{State: state, PullRequest: 1})
-		if err != nil || result.Decision != ReconcileNothing {
-			t.Fatalf("reconcile %s = %v, %v", state, result, err)
-		}
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("closed record survived: %v", err)
-	}
-	if _, err := os.Stat(other); err != nil {
-		t.Fatalf("another pull request lost its record: %v", err)
+			snapshot := forge.Snapshot{State: test.state, PullRequest: 1, Draft: true}
+			result, err := reconcilePullRequestSnapshot(t.Context(), cfg, RepoConfig{}, facts, nil, snapshot)
+			if err != nil || result.Decision != ReconcileNothing {
+				t.Fatalf("reconcile %s = %v, %v", test.state, result, err)
+			}
+			if _, err := os.Stat(path); (test.wantPruned && !os.IsNotExist(err)) || (!test.wantPruned && err != nil) {
+				t.Fatalf("stat reviewed record: %v, want pruned = %t", err, test.wantPruned)
+			}
+			if _, err := os.Stat(other); err != nil {
+				t.Fatalf("another pull request lost its record: %v", err)
+			}
+		})
 	}
 }
 
