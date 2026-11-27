@@ -1141,6 +1141,15 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cgroupDir := filepath.Join(root, "run-cgroup")
+	writeTestFile(t, filepath.Join(cgroupDir, "memory.stat"), "anon 1000\nworkingset_refault_anon 7\n")
+	writeTestFile(t, filepath.Join(cgroupDir, "memory.pressure"), "some total=25\n")
+	writeTestFile(t, filepath.Join(runDir, "memory-baseline.json"),
+		`{"kind":"minos-memory-snapshot-v1","stall_some_us":10,"refault_anon":2}`)
+	t.Setenv("MINOS_CGROUP_DIR", cgroupDir)
+	t.Setenv("MINOS_RUN_STARTED_AT", fmt.Sprint(time.Now().Unix()))
+	t.Setenv("MINOS_FAILURE_LOG", "")
+
 	cmd := exec.Command(archive, runDir, "example-Relay-pr53")
 	cmd.Env = append(os.Environ(),
 		"MINOS_ARCHIVE_CONFIG="+archiveConfig,
@@ -1179,6 +1188,10 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	}
 	if record.Summary.Outcome != "failed" || record.Summary.Reason != "review process stopped unexpectedly" {
 		t.Fatalf("timing sidecar lost the run's recorded failure: %#v", record.Summary)
+	}
+	if record.Memory == nil || record.Memory.Final == nil ||
+		record.Memory.Delta["stall_some_us"] != 15 || record.Memory.Delta["refault_anon"] != 5 {
+		t.Fatalf("the live archive lost its closing cgroup sample: %+v", record.Memory)
 	}
 	if record.Kind != "minos-timing-record-v1" {
 		t.Fatalf("sidecar kind = %q", record.Kind)
