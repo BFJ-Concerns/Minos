@@ -68,8 +68,11 @@ A review proposes, merges, then verifies.
    group's other write-ups beside it.
 3. A verifier leg gives each finding one verdict, which stands for every
    write-up in its group. A finding a verifier raises itself, in
-   `newFindings`, is a proposed finding too, and is verified by a leg other
-   than the one that raised it.
+   `newFindings`, is a proposed finding too: it is merged with whatever else
+   its round raised and verified in the next round, by a leg other than the
+   one that raised it. A workflow runs `VERIFICATION_ROUNDS` rounds
+   (`review-contracts.mjs`), and what the last of them raises has no
+   verdict, which leaves the run incomplete.
 
 `workflows/finding-disposition.mjs` says what each verdict makes of its
 finding, and what becomes of one left unsettled.
