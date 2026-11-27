@@ -232,6 +232,26 @@ test("a verdict naming an outside fact is unsettled whatever it calls itself", a
   assert.equal(adapterVerdict.unsettledFindings[0].outsideFact, "The remote endpoint answers 404 for a missing stream.");
 });
 
+test("a refutation resting on an outside fact is unsettled and graded as its proposer feared", async (t) => {
+  const refutedFromMemory = {
+    ...envelope,
+    proposedFindings: [{
+      ...envelope.proposedFindings[0],
+      rawVerifier: {
+        verdict: "refuted", confidence: 90, severity: "None", reason: "The endpoint never answers 404.",
+        outsideFact: "The remote endpoint never answers 404 for a missing stream.",
+        wouldSettle: "The service's API documentation for the stream endpoint.",
+      },
+    }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: refutedFromMemory, recordDir: fixtureArchive(t) });
+
+  assert.equal(adapterVerdict.status, "complete", adapterVerdict.incomplete.join("\n"));
+  assert.equal(adapterVerdict.unsettledFindings.length, 1);
+  assert.equal(adapterVerdict.unsettledFindings[0].severity, "High");
+  assert.equal(adapterVerdict.unsettledFindings[0].proposedSeverity, "High");
+});
+
 test("a verdict outside confirmed, refuted and unsettled is no usable verdict and withholds the run", async (t) => {
   const legacy = {
     ...envelope,

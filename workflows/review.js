@@ -54,7 +54,7 @@ const SLOT = /\{\{([a-z-]+)\}\}/g;
 const REVIEWED_CHANGE_SLOTS = ["target", "head", "project-documents", "pull-request"];
 const STAGE_SLOTS = {
   exploration: [...REVIEWED_CHANGE_SLOTS, "concerns"],
-  specialist: [...REVIEWED_CHANGE_SLOTS, "concern-name", "other-concerns", "planned-focus"],
+  specialist: [...REVIEWED_CHANGE_SLOTS, "concern-name", "other-concerns", "planned-focus", "same-concern-units"],
   repository: [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "assignment"],
   merge: ["target", "head", "findings"],
   verifier: [...REVIEWED_CHANGE_SLOTS, "findings"],
@@ -202,7 +202,10 @@ async function mergeProposed(proposed, mergeLabel, phaseName) {
   const groups = [];
   for (const group of Array.isArray(output.groups) ? output.groups : []) {
     const ids = Array.isArray(group && group.findingIds) ? group.findingIds : [];
-    if (ids.length === 0 || !ids.includes(group.primary) || ids.some((id) => !byId.has(id) || placed.has(id))) {
+    if (
+      ids.length === 0 || !ids.includes(group.primary) || new Set(ids).size !== ids.length ||
+      ids.some((id) => !byId.has(id) || placed.has(id))
+    ) {
       incomplete.push(`agent ${mergeLabel} returned a grouping that does not place every finding exactly once under a primary of its group`);
       return null;
     }
@@ -220,14 +223,18 @@ async function mergeProposed(proposed, mergeLabel, phaseName) {
 }
 
 // One finding to verify: a merged group's primary write-up, with what the
-// group's other write-ups add, or a finding a verifier raised.
+// group's other write-ups add, or a finding a verifier raised. A group
+// holding a whole-scope brief's finding is verified as whole-scope, under
+// the first such write-up's directory, whichever write-up is primary.
 function subjectOf({ primary, members }) {
   const writeUps = [primary, ...members];
   const dependsOn = [...new Set(writeUps
     .map((item) => typeof item.finding.dependsOn === "string" ? item.finding.dependsOn.trim() : "")
     .filter((fact) => fact !== ""))].join("; ");
+  const wholeScope = writeUps.find((item) => item.wholeScope !== undefined)?.wholeScope;
   return {
     ...primary,
+    ...(wholeScope !== undefined ? { wholeScope } : {}),
     finding: { ...primary.finding, dependsOn },
     members,
   };
@@ -248,8 +255,9 @@ function shownToVerifier(subject) {
 // rounds: what one round raises is merged like any proposed findings and
 // verified by legs of the next, never by the leg that raised it. What the
 // last round raises has no verdict, which leaves the run incomplete; it is
-// returned unchecked for the record. Null means a merge failed, which has
-// already left the run incomplete.
+// returned unchecked for the record. Where a later round's merge fails,
+// which has already left the run incomplete, the findings it was to group
+// are returned unchecked in the same way.
 async function verifySubjects(subjects, labelPrefix, mergeLabel, phaseName) {
   const verified = [];
   let pending = subjects;
@@ -525,12 +533,22 @@ phase("Specialise");
 for (const unit of specialistUnits)
   addLeg(unit.label, "specialist", routing.proposer.model);
 
+// A planned unit's focus sentence and its scope paths, as the specialist
+// prompt shows its own unit and each other unit of its concern.
+function plannedFocus(unit) {
+  return `${unit.concern}\n\n${unit.scope.map((path) => `- \`${path}\``).join("\n")}`;
+}
+
 function specialistPrompt(unit) {
   return fillPrompt(prompts.specialist[unit.specialistType], {
     ...reviewedChangeValues,
     "concern-name": unit.specialistType,
     "other-concerns": concerns.filter((concern) => concern.name !== unit.specialistType).map(concernLine).join("\n"),
-    "planned-focus": `${unit.concern}\n\n${unit.scope.map((path) => `- \`${path}\``).join("\n")}`,
+    "planned-focus": plannedFocus(unit),
+    "same-concern-units": specialistUnits
+      .filter((other) => other !== unit && other.specialistType === unit.specialistType)
+      .map(plannedFocus)
+      .join("\n\n"),
   });
 }
 

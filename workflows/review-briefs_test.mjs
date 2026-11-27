@@ -657,6 +657,34 @@ test("a finding about the change carries no whole scope to its verifier", async 
   ]);
 });
 
+test("a whole-scope finding keeps its scope through the merge when a finding about the change is primary", async () => {
+  const whole = brief(".review/pkg/errors.md", "---\nextent: full\n---\n# Errors\nJudge error paths.");
+  const diff = brief(".review/cmd/check-two.md", "---\nrelevance: Command changes.\n---\nJudge the command concern.");
+  const { result, calls } = await run(args({
+    briefs: [whole, diff],
+    changedPaths: ["pkg/x.go", "cmd/main.go"],
+    trackedFiles: [{ path: "pkg/x.go" }, { path: "cmd/main.go" }],
+  }), responder({
+    specialist: (_label, prompt) => specialistResult([
+      finding({ title: prompt.includes(whole.path) ? "whole-scope finding" : "change finding" }),
+    ]),
+    merge: (_label, prompt) => {
+      const entries = findingsFromVerifierPrompt(prompt);
+      const primary = entries.find((entry) => entry.title === "change finding").id;
+      return { groups: [{ findingIds: entries.map((entry) => entry.id), primary, sharedCause: "One fault." }] };
+    },
+  }));
+
+  const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
+  assert.equal(verifierCalls.length, 1);
+  assert.deepEqual(findingsFromVerifierPrompt(verifierCalls[0].prompt).map(({ title, wholeScope }) => ({ title, wholeScope })), [
+    { title: "change finding", wholeScope: "pkg/" },
+  ]);
+  assert.deepEqual(result.proposedFindings.map(({ title, wholeScope }) => ({ title, wholeScope })), [
+    { title: "change finding", wholeScope: "pkg/" },
+  ]);
+});
+
 test("slug-colliding brief labels retain verdicts for their own findings", async () => {
   const first = brief(".review/pkg/check.one.md", "# First\nJudge the first concern.");
   const second = brief(".review/pkg/check-one.md", "# Second\nJudge the second concern.");

@@ -865,6 +865,29 @@ test("identified null answer keeps reviewer settlement truthful", async () => {
   assert.ok(!result.incomplete.some((reason) => reason.includes("failed:")));
 });
 
+test("a specialist is shown the other planned units of its own concern, and an only unit none", async () => {
+  const plan = [
+    unit("logic-api", "logic", ["internal/api.go"]),
+    unit("logic-store", "logic", ["internal/store.go"]),
+    unit("failure", "failure", ["internal/api.go"]),
+  ];
+  const { calls } = await runScript(ARGS, responder({
+    exploration: explorationFixture({
+      files: [{ path: "internal/api.go", added: 400, deleted: 0 }, { path: "internal/store.go", added: 400, deleted: 0 }],
+      plan,
+    }),
+  }));
+  const promptOf = (label) => calls.find((call) => call.opts.label === label).prompt;
+  const focus = (entry) => `${entry.concern}\n\n- \`${entry.scope[0]}\``;
+  const first = promptOf("specialist-1-logic-codex");
+  const second = promptOf("specialist-2-logic-codex");
+  const only = promptOf("specialist-3-failure-codex");
+  assert.equal(first.split(focus(plan[1])).length - 1, 1, "the first logic unit sees the second's share");
+  assert.equal(first.split(focus(plan[0])).length - 1, 1, "and its own only as its planned focus");
+  assert.equal(second.split(focus(plan[0])).length - 1, 1, "the second logic unit sees the first's share");
+  assert.ok(!only.includes(plan[0].concern) && !only.includes(plan[1].concern), "an only unit is shown no other unit");
+});
+
 test("the lifecycle finds its workflow's status snapshot by the names the workflows declare", async () => {
   assert.match(lifecycle, /`\$MINOS_RUN_DIR\/ensemble\.<run-id>\.local\.json`/);
   assert.doesNotMatch(lifecycle, /`\$MINOS_RUN_DIR\/ensemble\.local\.json`/);
@@ -935,6 +958,7 @@ test("a grouping that loses or repeats a finding stops the review before verific
     (ids) => [{ findingIds: [ids[0]], primary: ids[0], sharedCause: "" }],
     (ids) => [{ findingIds: ids, primary: ids[0], sharedCause: "" }, { findingIds: [ids[1]], primary: ids[1], sharedCause: "" }],
     (ids) => [{ findingIds: ids, primary: "elsewhere", sharedCause: "" }],
+    (ids) => [{ findingIds: [...ids, ids[1]], primary: ids[0], sharedCause: "" }],
   ]) {
     const { result, calls } = await runScript(ARGS, responder({
       exploration: explorationFixture({ plan }),

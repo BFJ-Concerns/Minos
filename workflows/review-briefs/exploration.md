@@ -18,11 +18,13 @@ change for:
 {{concerns}}
 
 Every concern defaults to zero units; give one a unit only where the change
-gives that concern real work. A dispatched specialist reads the whole change
-for its own kind of problem, so one unit for each engaged concern is the
-ordinary plan. A second unit of the same concern is earned only by a change
-too large for one reading of that kind, each unit then naming its own share
-in its `concern` and `scope`.
+gives that concern real work. A concern's only specialist reads the whole
+change for its own kind of problem, so one unit for each engaged concern is
+the ordinary plan. A second unit of the same concern is earned only by a
+change too large for one reading of that kind. That concern's units then
+divide the change between them: each unit's `scope` is its share, the changed
+paths its specialist answers for, and every changed path falls in one of
+those shares, so that no part of the change goes unread for the concern.
 A small change with one live concern is one unit. What licenses a wide plan on
 a small diff is blast radius — how far the change's effects reach beyond its
 own lines — never line or file counts, which neither buy breadth nor cap it.
@@ -35,9 +37,12 @@ Each unit's `id` is a short unique slug, and its `specialistType` names the
 concern. Its `concern` says in a sentence what this change gives that
 specialist to judge; the specialist is handed that sentence, so make it
 specific to this change. Its `scope` lists the changed paths where that work
-lies. The scope is where the specialist starts and reads most closely, never
-a boundary on what it reads or reports, so a path in no unit's scope is still
-read by every specialist the plan dispatches.
+lies. For a concern's only unit, the scope is where the specialist starts and
+reads most closely before it goes on to the rest of the change, so a path in
+no unit's scope is still read by every such specialist. For a unit that
+shares its concern, the scope is the share described above: its specialist is
+shown the other units' shares and is finished when it has read its own. A
+scope never bounds what a specialist may read or report.
 
 The output schema's `applicability.reason` field carries the judgement behind
 the plan's size: state, in a sentence or two, why the change earns exactly the
