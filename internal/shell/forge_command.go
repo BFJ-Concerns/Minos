@@ -206,6 +206,9 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if snapshot.HeadSHA != guard.HeadSHA {
+			return emitForgeResult(stdout, "approve", forge.WriteResult{Outcome: forge.WriteRejected, Reason: "head moved"})
+		}
 		if !ownChangesRequested(snapshot) {
 			return json.NewEncoder(stdout).Encode(map[string]string{"outcome": "not-needed", "reason": "Minos's latest verdict on this pull request does not request changes"})
 		}

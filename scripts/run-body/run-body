@@ -11,6 +11,7 @@ supervisor_failure=false
 failure_stage="configuration"
 failure_cause="run-body exited before loading its configuration"
 session_id=""
+driver_pid=""
 run_tmpdir=""
 
 # The lead engine seam: launching, observing and stopping the lead are the
@@ -110,6 +111,11 @@ lead_state() { "lead_state_$MINOS_LEAD_ENGINE"; }
 # Runs from the exit trap too, so it must be safe before the engine is
 # resolved: nothing to stop until a lead was launched.
 stop_session() {
+  if [ -n "$driver_pid" ]; then
+    kill "$driver_pid" 2>/dev/null || true
+    wait "$driver_pid" 2>/dev/null || true
+    driver_pid=""
+  fi
   [ -n "${MINOS_LEAD_ENGINE:-}" ] || return 0
   command -v "lead_stop_$MINOS_LEAD_ENGINE" >/dev/null 2>&1 || return 0
   "lead_stop_$MINOS_LEAD_ENGINE"
@@ -185,12 +191,17 @@ on_exit() {
   trap - 0
   set +e
   stop_session
-  if [ "$status" -ne 0 ]; then
+  if [ "$status" -ne 0 ] && [ ! -f "${MINOS_RUN_DIR:-/}/.salvage-recorded" ]; then
     if [ "$prelaunch" = true ] || [ "$supervisor_failure" = true ]; then
       append_failure
     elif ! grep -Eqx 'clean|non-clean|continuation' "$completion_marker" 2>/dev/null; then
-      failure_stage="lead-supervision"
-      failure_cause="$MINOS_LEAD_ENGINE lead ended without a verdict (last state: ${agent_state:-unknown}, driver exit: $status)"
+      if [ -n "${MINOS_RUN_DRIVER:-}" ]; then
+        failure_stage="run-driver"
+        failure_cause="scripted driver exited before completing the run (exit $status)"
+      else
+        failure_stage="lead-supervision"
+        failure_cause="$MINOS_LEAD_ENGINE lead ended without a verdict (last state: ${agent_state:-unknown}, driver exit: $status)"
+      fi
       append_failure
     fi
   fi
@@ -230,6 +241,17 @@ failure_cause="could not load ${MINOS_CONFIG%/}/run-body.env"
 . "${MINOS_CONFIG%/}/run-body.env"
 set +a
 
+# Scripted mode needs both companion judgement stages. Keep serving reviews
+# with the lead if an installation has only the driver's mechanical course.
+if [ -n "${MINOS_RUN_DRIVER:-}" ]; then
+  judgement_dir="$(dirname "$MINOS_RUN_DRIVER")/judgements"
+  if [ ! -r "$judgement_dir/verdict-classification.mjs" ] ||
+    [ ! -r "$judgement_dir/earlier-findings.mjs" ]; then
+    echo "run-body: scripted judgement stages are missing. Using the resident lead." >&2
+    unset MINOS_RUN_DRIVER
+  fi
+fi
+
 if [ -n "${MINOS_ANTHROPIC_CREDENTIAL_FILE:-}" ]; then
   require_variable ANTHROPIC_BASE_URL "ANTHROPIC_BASE_URL is required in gateway mode"
   if [ ! -f "$MINOS_ANTHROPIC_CREDENTIAL_FILE" ] ||
@@ -256,39 +278,49 @@ fi
 # absent — a single-engine deployment — and the workflows route every role
 # by what is provisioned (MINOS_PROVISIONED_ENGINES).
 MINOS_LEAD_ENGINE="${MINOS_LEAD_ENGINE:-claude}"
-case "$MINOS_LEAD_ENGINE" in
-  claude)
-    require_variable MINOS_CLAUDE
-    lead_seed_variable="MINOS_CLAUDE_CONFIG_SEED"
-    lead_default_model="claude-opus-5-5"
-    ;;
-  codex)
-    require_variable MINOS_CODEX
-    lead_seed_variable="MINOS_CODEX_CONFIG_SEED"
-    lead_default_model="gpt-6.1-sol"
-    ;;
-  *)
-    failure_cause="MINOS_LEAD_ENGINE must be claude or codex; the $MINOS_LEAD_ENGINE lead is not available in this build"
-    echo "run-body: $failure_cause" >&2
-    exit 1
-    ;;
-esac
-export MINOS_LEAD_ENGINE
+if [ -z "${MINOS_RUN_DRIVER:-}" ]; then
+  case "$MINOS_LEAD_ENGINE" in
+    claude)
+      require_variable MINOS_CLAUDE
+      lead_seed_variable="MINOS_CLAUDE_CONFIG_SEED"
+      lead_default_model="claude-opus-5-5"
+      ;;
+    codex)
+      require_variable MINOS_CODEX
+      lead_seed_variable="MINOS_CODEX_CONFIG_SEED"
+      lead_default_model="gpt-6.1-sol"
+      ;;
+    *)
+      failure_cause="MINOS_LEAD_ENGINE must be claude or codex; the $MINOS_LEAD_ENGINE lead is not available in this build"
+      echo "run-body: $failure_cause" >&2
+      exit 1
+      ;;
+  esac
+  export MINOS_LEAD_ENGINE
+else
+  unset MINOS_LEAD_MODEL
+fi
 provisioned_engines=""
 [ -z "${MINOS_CLAUDE_CONFIG_SEED:-}" ] || provisioned_engines="claude"
 [ -z "${MINOS_CODEX_CONFIG_SEED:-}" ] || provisioned_engines="${provisioned_engines:+$provisioned_engines }codex"
-case " $provisioned_engines " in
-  *" $MINOS_LEAD_ENGINE "*) ;;
-  *)
-    failure_cause="$lead_seed_variable is required: the lead runs on $MINOS_LEAD_ENGINE"
-    echo "run-body: $failure_cause" >&2
-    exit 1
-    ;;
-esac
+if [ -z "${MINOS_RUN_DRIVER:-}" ]; then
+  case " $provisioned_engines " in
+    *" $MINOS_LEAD_ENGINE "*) ;;
+    *)
+      failure_cause="$lead_seed_variable is required: the lead runs on $MINOS_LEAD_ENGINE"
+      echo "run-body: $failure_cause" >&2
+      exit 1
+      ;;
+  esac
+  require_variable MINOS_LIFECYCLE_INSTRUCTION
+  instruction_path="$MINOS_LIFECYCLE_INSTRUCTION"
+elif [ -z "$provisioned_engines" ]; then
+  failure_cause="the scripted driver requires at least one provisioned engine"
+  echo "run-body: $failure_cause" >&2
+  exit 1
+fi
 MINOS_PROVISIONED_ENGINES="$provisioned_engines"
 export MINOS_PROVISIONED_ENGINES
-require_variable MINOS_LIFECYCLE_INSTRUCTION
-instruction_path="$MINOS_LIFECYCLE_INSTRUCTION"
 require_variable MINOS_SETUP_WORKSPACE
 require_variable MINOS_ORIENTATION
 
@@ -401,36 +433,8 @@ trap 'exit 129' 1
 trap 'exit 130' 2
 trap 'exit 143' 15
 
-failure_stage="lifecycle-instruction"
-failure_cause="could not read lifecycle instruction $instruction_path"
-instruction="$(cat "$instruction_path")"
-session_name="minos-${MINOS_OWNER:-run}-${MINOS_REPO_NAME:-lead}-pr${MINOS_PR:-unknown}"
 completion_marker="$MINOS_RUN_DIR/lead-complete"
 pressure_signal="$MINOS_RUN_DIR/memory-pressure"
-# During review the run tree may write only at phase transitions, measured
-# roughly 19–21 minutes apart on 2026-07-27. Do not tune this below about an
-# hour or a healthy review can hit the silence backstop.
-silence_timeout="${MINOS_LEAD_SILENCE_TIMEOUT:-3600}"
-failure_stage="configuration"
-failure_cause="MINOS_LEAD_SILENCE_TIMEOUT must be whole seconds"
-case "$silence_timeout" in
-  *[!0-9]*|'')
-    echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT must be whole seconds" >&2
-    exit 1
-    ;;
-esac
-# A digit string too large for shell integer arithmetic makes the backstop
-# comparison error out on every poll, silently removing the backstop rather
-# than lengthening it. Cap it at a week, which is far beyond the systemd unit's
-# own 12-hour bound.
-if [ "$silence_timeout" -gt 604800 ] 2>/dev/null; then
-  echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT must not exceed 604800 seconds" >&2
-  exit 1
-elif ! [ "$silence_timeout" -ge 0 ] 2>/dev/null; then
-  echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT is out of range" >&2
-  exit 1
-fi
-
 require_variable MINOS_PRESSURE_THRESHOLD_PERCENT
 pressure_enabled=true
 pressure_latched=false
@@ -498,6 +502,58 @@ sample_memory_pressure() {
 # Baseline memory snapshot for the timing record's stall and thrash deltas.
 # Presentation-class residue: its absence never blocks the run.
 "$(dirname "$0")/memory-telemetry" "$MINOS_RUN_DIR/memory-baseline.json" || true
+
+if [ -n "${MINOS_RUN_DRIVER:-}" ]; then
+  failure_stage="run-driver"
+  failure_cause="could not launch $MINOS_RUN_DRIVER"
+  node "$MINOS_RUN_DRIVER" </dev/null &
+  driver_pid=$!
+  prelaunch=false
+  while kill -0 "$driver_pid" 2>/dev/null; do
+    sample_memory_pressure
+    sleep "${MINOS_LEAD_POLL_SECONDS:-3}"
+  done
+  driver_status=0
+  wait "$driver_pid" || driver_status=$?
+  driver_pid=""
+  if ! grep -Eqx 'clean|non-clean|continuation' "$completion_marker" 2>/dev/null; then
+    capture_cgroup_death_evidence || echo "run-body: could not capture scripted driver death evidence" >&2
+    # A launch or process failure must not immediately requeue an unjudged head.
+    if [ "$driver_status" -eq 0 ] && [ ! -f "$MINOS_RUN_DIR/.salvage-recorded" ]; then
+      driver_status=75
+    fi
+  fi
+  exit "$driver_status"
+fi
+
+# During review the run tree may write only at phase transitions, measured
+# roughly 19–21 minutes apart on 2026-07-27. Do not tune this below about an
+# hour or a healthy review can hit the silence backstop.
+silence_timeout="${MINOS_LEAD_SILENCE_TIMEOUT:-3600}"
+failure_stage="configuration"
+failure_cause="MINOS_LEAD_SILENCE_TIMEOUT must be whole seconds"
+case "$silence_timeout" in
+  *[!0-9]*|'')
+    echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT must be whole seconds" >&2
+    exit 1
+    ;;
+esac
+# A digit string too large for shell integer arithmetic makes the backstop
+# comparison error out on every poll, silently removing the backstop rather
+# than lengthening it. Cap it at a week, which is far beyond the systemd unit's
+# own 12-hour bound.
+if [ "$silence_timeout" -gt 604800 ] 2>/dev/null; then
+  echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT must not exceed 604800 seconds" >&2
+  exit 1
+elif ! [ "$silence_timeout" -ge 0 ] 2>/dev/null; then
+  echo "run-body: MINOS_LEAD_SILENCE_TIMEOUT is out of range" >&2
+  exit 1
+fi
+
+failure_stage="lifecycle-instruction"
+failure_cause="could not read lifecycle instruction $instruction_path"
+instruction="$(cat "$instruction_path")"
+session_name="minos-${MINOS_OWNER:-run}-${MINOS_REPO_NAME:-lead}-pr${MINOS_PR:-unknown}"
 
 failure_stage="lead-launch"
 failure_cause="$MINOS_LEAD_ENGINE lead launch failed"

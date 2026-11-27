@@ -133,7 +133,10 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
      path directly; Ensemble workers resolve `claude` and `codex` by
      command name through the inherited PATH (the `environment.d` file
      from step 2), so both the absolute variable and PATH must be correct;
-   - set `MINOS_LEAD_ENGINE` to `claude` or `codex` (`claude` by default)
+   - on upgrade, set `MINOS_RUN_DRIVER` to the installed
+     `workflows/run-driver.mjs` to use the scripted driver with an existing
+     configuration file;
+   - to use the resident lead, set `MINOS_LEAD_ENGINE` to `claude` or `codex` (`claude` by default)
      and `MINOS_LEAD_MODEL` to the model the lead runs on — `claude-opus-5-5`
      by default for Claude, `gpt-6.1-sol` for Codex; a Codex lead needs
      `MINOS_CODEX` set to the installed Codex executable;
@@ -253,16 +256,16 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    shipped example comments an illustrative value of 4).
 
    `[routing]` maps each workflow role — `exploration`, `proposer`,
-   `verifier`, `engagement-gate`, `brief-planner`, `judgement` — to an
+   `verifier`, `brief-planner`, `judgement` — to an
    engine, model and effort. A role left unset defaults at run time: with
    both engines provisioned, proposing and planning roles (`exploration`,
-   `proposer`, `engagement-gate`, `brief-planner`) run on Codex, and the
+   `proposer`, `brief-planner`) run on Codex, and the
    `verifier` and `judgement` on Claude. With one engine provisioned, every
    role runs on it. A role on
    Claude defaults to `claude-opus-5-5`; on Codex the `proposer` defaults to
    `gpt-6.2-astra` and every other role to `gpt-6.1-sol`. Default effort is `high` for
    `exploration` and `brief-planner`, and `medium` for `proposer`,
-   `verifier`, `engagement-gate` and `judgement`. `judgement` is the role
+   `verifier` and `judgement`. `judgement` is the role
    of the run driver's one-shot judgement stages
    (`workflows/judgements/`). An effort is one of the Ensemble
    runtime's levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
@@ -291,6 +294,8 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    concern it sets replaces the service's whole: the fields it leaves out
    take the defaults above, not the service's values. Every role and
    concern the repository leaves out keeps the service's routing.
+   On an upgrade, remove any `[routing.engagement-gate]` tables. Push
+   inspection runs on the `judgement` role in scripted mode.
 
    Size every capacity decision — this cap, the slice envelope, the box
    itself — by **anonymous memory plus swap peak, never the journal's cgroup
@@ -467,23 +472,28 @@ A successful run exits after a `clean` marker, a continuation, or a recorded
 exits with status 75 and waits for the timer. An operator's
 `systemctl --user stop` of a run unit also requests a sweep.
 
-Each run launches the lead on the configured engine and model. `run-body`
-keeps resumable `done` and `blocked` turns alive after useful run activity has
-begun. A lead blocked before its first run-tree change is stopped and recorded
-as a supervision failure. The supervisor otherwise stops the session only
-after the lead reports `failed` or `stopped`, the lead writes a terminal marker
-(`clean`, `non-clean`, or `continuation`), or the run tree outside its private
-home has not changed for the silence timeout. The silence backstop records a supervision failure instead of
-treating that stop as success. The lead invokes review and repository-brief
-workflows through `/opt/minos/workflows/adjudicated-review`; the wrapper runs
-the selected script with `/opt/minos/runtime/ensemble.mjs` and asks the sibling
-run-record adapter to confirm every required leg ran to completion and every
-finding carries a verdict. The foreground run body waits for the exact
-background session and stops it at one of those terminal conditions. The
-transient systemd unit bounds a wedged run at `runs.duration-ceiling`.
+The shipped `run-body.env` selects the scripted driver. The script carries
+the run from claim to conclusion and launches one-shot judgement stages
+when a decision needs reading. An installation with either judgement
+module missing falls back to the resident lead.
 
-A run that fails before the lead launches — workspace setup, configuration
-loading, lifecycle instruction — writes no status to the forge. The run body
+To use the resident lead, set `MINOS_RUN_DRIVER=""` in `run-body.env`. The
+lead runs on the configured engine and model. After useful run activity
+begins, `run-body` keeps resumable `done` and `blocked` turns alive. It
+stops the session when the lead reports `failed` or `stopped`, when the
+lead writes a terminal marker (`clean`, `non-clean` or `continuation`), or
+when the run tree outside its private home reaches the silence timeout.
+The supervisor records a failure if the lead blocks before its first
+run-tree change or reaches the silence timeout.
+
+The review and repository-brief workflows run through `adjudicated-review`.
+The wrapper finds the launcher in the sibling `runtime/` directory. It
+checks the run record for completion of every required leg and a verdict
+on every finding. The transient systemd unit bounds the run at
+`runs.duration-ceiling`.
+
+A failure during run setup, such as an unreadable configuration or lifecycle
+instruction, leaves the forge status untouched. The run body
 attempts to append the failure to `runs.failure-log`; when the log path is
 unset or unwritable, stderr carries the evidence instead. The run exits after
 recording the failure. A run whose lead ends with a failing exit and no

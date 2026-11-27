@@ -158,17 +158,16 @@ type RoleRouting struct {
 // under Concerns the specialist concerns that propose on routing of their
 // own, by concern name.
 type Routing struct {
-	Exploration    RoleRouting            `toml:"exploration"`
-	Proposer       RoleRouting            `toml:"proposer"`
-	Verifier       RoleRouting            `toml:"verifier"`
-	EngagementGate RoleRouting            `toml:"engagement-gate"`
-	BriefPlanner   RoleRouting            `toml:"brief-planner"`
-	Judgement      RoleRouting            `toml:"judgement"`
-	Concerns       map[string]RoleRouting `toml:"concerns"`
+	Exploration  RoleRouting            `toml:"exploration"`
+	Proposer     RoleRouting            `toml:"proposer"`
+	Verifier     RoleRouting            `toml:"verifier"`
+	Judgement    RoleRouting            `toml:"judgement"`
+	BriefPlanner RoleRouting            `toml:"brief-planner"`
+	Concerns     map[string]RoleRouting `toml:"concerns"`
 }
 
 // routingRoles names the workflow roles in the order they are listed.
-var routingRoles = []string{"exploration", "proposer", "verifier", "engagement-gate", "brief-planner", "judgement"}
+var routingRoles = []string{"exploration", "proposer", "verifier", "brief-planner", "judgement"}
 
 // role is the named role's routing field, for reading and replacing it.
 func (r *Routing) role(name string) *RoleRouting {
@@ -179,8 +178,6 @@ func (r *Routing) role(name string) *RoleRouting {
 		return &r.Proposer
 	case "verifier":
 		return &r.Verifier
-	case "engagement-gate":
-		return &r.EngagementGate
 	case "brief-planner":
 		return &r.BriefPlanner
 	case "judgement":

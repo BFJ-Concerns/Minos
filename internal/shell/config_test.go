@@ -622,6 +622,10 @@ effort = "high"
 [routing.verifier]
 engine = "claude"
 effort = "high"
+[routing.judgement]
+engine = "claude"
+model = "claude-opus-5-5"
+effort = "high"
 [routing.concerns.security]
 engine = "claude"
 effort = "high"
@@ -631,6 +635,8 @@ effort = "low"
 	writeRepoConfig(t, root, "inherits.toml", repoConfig(""))
 	writeRepoConfig(t, root, "overrides.toml", repoConfig(`[routing.verifier]
 effort = "low"
+[routing.judgement]
+effort = "medium"
 [routing.concerns.security]
 effort = "xhigh"
 [routing.concerns.logic]
@@ -651,8 +657,9 @@ model = "claude-opus-5-5"
 	}
 	overrides := byPath["overrides.toml"].Routing
 	wantRoles := map[string]RoleRouting{
-		"proposer": {Engine: "codex", Model: "gpt-6.2-astra", Effort: "high"},
-		"verifier": {Effort: "low"},
+		"proposer":  {Engine: "codex", Model: "gpt-6.2-astra", Effort: "high"},
+		"verifier":  {Effort: "low"},
+		"judgement": {Effort: "medium"},
 	}
 	if got := overrides.Roles(); !maps.Equal(got, wantRoles) {
 		t.Fatalf("roles = %+v, want %+v", got, wantRoles)
