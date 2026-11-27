@@ -225,6 +225,22 @@ for (const order of ["raised first", "new first"]) {
   });
 }
 
+test("a defect label spelled like another finding's title is a separate identity", () => {
+  const digest = completeDigest([
+    finding({ id: "a", title: "Cache leak" }),
+    finding({ id: "b", title: "Wrong result" }),
+    finding({ id: "c", title: "Wrong result again", line: 43 }),
+  ]);
+  const checked = validateVerdictDecision(decision(digest, {
+    findings: [
+      { key: "a", gating: false, class: "already-raised" },
+      { key: "b", gating: true, defect: "cache leak" },
+      { key: "c", gating: true, defect: "cache leak" },
+    ],
+  }), digest);
+  assert.deepEqual(checked, { ok: true });
+});
+
 test("a coherent decision validates", () => {
   const digest = completeDigest([finding()]);
   assert.deepEqual(validateVerdictDecision(decision(digest), digest), { ok: true });

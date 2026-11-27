@@ -208,14 +208,16 @@ export function validateVerdictDecision(decision, digest) {
   // findings describing one defect at one site take one answer: those
   // sharing a site and title, and those sharing a site and a label. Where
   // one is already raised and the other is not, the decision would count
-  // the defect as said and post it again at the same line.
+  // the defect as said and post it again at the same line. A title and a
+  // label are separate identities, so each key names its kind and a label
+  // spelled like another finding's title never joins that title's findings.
   const raisedBySite = new Map();
   for (const disposition of decision.findings) {
     const { path, line, title } = digestByKey.get(disposition.key);
     const at = `${path}:${line}`;
-    const identities = [{ id: JSON.stringify([path, line, normalisedTitle({ title })]), what: `findings at ${at} under one title` }];
+    const identities = [{ id: JSON.stringify(["title", path, line, normalisedTitle({ title })]), what: `findings at ${at} under one title` }];
     if (typeof disposition.defect === "string")
-      identities.push({ id: JSON.stringify([path, line, disposition.defect]), what: `findings labelled ${disposition.defect} at ${at}` });
+      identities.push({ id: JSON.stringify(["defect", path, line, disposition.defect]), what: `findings labelled ${disposition.defect} at ${at}` });
     for (const { id, what } of identities) {
       const seen = raisedBySite.get(id);
       if (seen !== undefined && seen !== alreadyRaised(disposition))
