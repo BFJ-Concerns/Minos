@@ -126,6 +126,36 @@ func TestDispatchStageLeavesNoResultAndAFailureFlagWhenTheWorkflowFails(t *testi
 	assertContainsFile(t, filepath.Join(fixture.runDir, "timings.ndjson"), `"exit_status":3`)
 }
 
+func TestDispatchStageLaunchesANamedRunnerInPlaceOfTheAdjudicationWrapper(t *testing.T) {
+	fixture := newDispatchStageFixture(t, "printf '{\"status\":\"complete\"}\\n'\n")
+	workflows := filepath.Dir(fixture.wrapper)
+	writeScript(t, filepath.Join(workflows, "run-judgement"), "#!/usr/bin/env sh\n"+
+		"printf 'runner-args=%s\\n' \"$*\" >\"$OBSERVED\"\n"+
+		"printf '{\"stage\":\"push-inspection\"}\\n'\n")
+	if err := os.WriteFile(filepath.Join(workflows, "judgement.js"), []byte("return {};\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.runDir, "push-inspection-args.json"), []byte(`{"stage":"push-inspection"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if output, err := fixture.run(t, "push-inspection", "judgement.js", "run-judgement"); err != nil {
+		t.Fatalf("dispatch-stage: %v\n%s", err, output)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "push-inspection-result.json"), `{"stage":"push-inspection"}`)
+	assertContainsFile(t, filepath.Join(fixture.runDir, "push-inspection-result.done"), "0")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "timings.ndjson"), `"name":"push-inspection"`)
+	assertContainsFile(t, fixture.observed, "runner-args="+filepath.Join(workflows, "judgement.js")+" --json-args @"+filepath.Join(fixture.runDir, "push-inspection-args.json"))
+
+	output, err := fixture.run(t, "push-inspection@2", "judgement.js", "no-such-runner")
+	if exitError, ok := err.(*exec.ExitError); !ok || exitError.ExitCode() != 1 || !strings.Contains(string(output), "stage runner") {
+		t.Fatalf("missing runner: exit = %v, want 1 naming the stage runner\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "push-inspection@2-result.done")); !os.IsNotExist(err) {
+		t.Fatalf("a refused launch left a completion flag: %v", err)
+	}
+}
+
 func TestDispatchStageRefusesImprovisedNamesAndMissingInput(t *testing.T) {
 	fixture := newDispatchStageFixture(t, "printf '{}\\n'\n")
 
