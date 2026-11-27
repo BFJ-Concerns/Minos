@@ -682,11 +682,11 @@ test("a whole-scope finding keeps its scope through the merge when a finding abo
 
   const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
   assert.equal(verifierCalls.length, 1);
-  assert.deepEqual(findingsFromVerifierPrompt(verifierCalls[0].prompt).map(({ title, wholeScope }) => ({ title, wholeScope })), [
-    { title: "change finding", wholeScope: "pkg/" },
+  assert.deepEqual(findingsFromVerifierPrompt(verifierCalls[0].prompt).map(({ title, wholeScope, wholeScopeBrief }) => ({ title, wholeScope, wholeScopeBrief })), [
+    { title: "change finding", wholeScope: "pkg/", wholeScopeBrief: whole.path },
   ]);
-  assert.deepEqual(result.proposedFindings.map(({ title, wholeScope }) => ({ title, wholeScope })), [
-    { title: "change finding", wholeScope: "pkg/" },
+  assert.deepEqual(result.proposedFindings.map(({ title, wholeScope, wholeScopeBrief }) => ({ title, wholeScope, wholeScopeBrief })), [
+    { title: "change finding", wholeScope: "pkg/", wholeScopeBrief: whole.path },
   ]);
 });
 
@@ -712,9 +712,9 @@ test("a finding a verifier raises while checking a whole-scope finding takes tha
       const entries = findingsFromVerifierPrompt(prompt);
       const firstRound = !label.includes("-round-");
       if (firstRound) {
-        assert.deepEqual(entries.map(({ title, wholeScope }) => ({ title, wholeScope })), [
-          { title: "change finding", wholeScope: undefined },
-          { title: "guard the retry", wholeScope: "pkg/" },
+        assert.deepEqual(entries.map(({ title, wholeScope, wholeScopeBrief }) => ({ title, wholeScope, wholeScopeBrief })), [
+          { title: "change finding", wholeScope: undefined, wholeScopeBrief: undefined },
+          { title: "guard the retry", wholeScope: "pkg/", wholeScopeBrief: whole.path },
         ]);
       }
       const [changeEntry, wholeEntry] = entries;
@@ -736,19 +736,20 @@ test("a finding a verifier raises while checking a whole-scope finding takes tha
   }));
 
   const expected = [
-    { title: "legacy retry fault", wholeScope: "pkg/" },
-    { title: "change-named fault", wholeScope: undefined },
-    { title: "command fault", wholeScope: undefined },
-    { title: "misnamed fault", wholeScope: undefined },
-    { title: "unnamed fault", wholeScope: undefined },
+    { title: "legacy retry fault", wholeScope: "pkg/", wholeScopeBrief: whole.path },
+    { title: "change-named fault", wholeScope: undefined, wholeScopeBrief: undefined },
+    { title: "command fault", wholeScope: undefined, wholeScopeBrief: undefined },
+    { title: "misnamed fault", wholeScope: undefined, wholeScopeBrief: undefined },
+    { title: "unnamed fault", wholeScope: undefined, wholeScopeBrief: undefined },
   ];
+  const scopeOf = ({ title, wholeScope, wholeScopeBrief }) => ({ title, wholeScope, wholeScopeBrief });
   const secondRound = calls.filter((call) => call.opts.label?.startsWith("verify-brief-round-2"));
   assert.equal(secondRound.length, 1);
   const shown = findingsFromVerifierPrompt(secondRound[0].prompt);
-  assert.deepEqual(shown.map(({ title, wholeScope }) => ({ title, wholeScope })), expected);
+  assert.deepEqual(shown.map(scopeOf), expected);
   assert.ok(shown.every((entry) => !("foundWhileChecking" in entry)), "the next verifier is not shown the provenance name");
   const raised = result.proposedFindings.filter((entry) => entry.source === "verification");
-  assert.deepEqual(raised.map(({ title, wholeScope }) => ({ title, wholeScope })), expected);
+  assert.deepEqual(raised.map(scopeOf), expected);
   assert.ok(raised.every((entry) => !("foundWhileChecking" in entry)), "the run record carries no provenance name");
 });
 

@@ -168,9 +168,12 @@ export const generalWholeChangeSchema = {
 
 // What the merge leg is shown of each proposed finding, as merge.md's
 // `{{findings}}`: no severity and no confidence, which grouping does not
-// turn on. `reportedBy` is the proposing leg's concern and `outsideConcern`
-// says whether the finding came back in `outsideConcernFindings`. Nor is it
-// shown `wholeScope`: a group carries the scope of any whole-scope write-up
+// turn on. `reportedBy` names what the proposing leg read for: a
+// specialist's concern, a brief's title, `general` for a quick review's
+// general reviewer, or `verification` for a finding a verifier raised.
+// `outsideConcern` says whether the finding came back in
+// `outsideConcernFindings`, and is false for a reviewer with no concern.
+// Nor is it shown `wholeScope` or `wholeScopeBrief`: a group carries the scope of any whole-scope write-up
 // in it, whichever is primary, so grouping need not weigh it.
 export const MERGE_FINDING_FIELDS = ["id", "reportedBy", "outsideConcern", "title", "path", "line", "explanation", "dependsOn"];
 
@@ -206,8 +209,11 @@ export const mergeSchema = {
 // joins what every write-up in the group named. `alsoReportedAs` holds the
 // group's other write-ups as `{ title, explanation }` and is left out for a
 // group of one. `wholeScope` is the directory a whole-scope repository
-// brief audits; it is left out for a finding about the change.
-export const VERIFIER_FINDING_FIELDS = ["id", "title", "path", "line", "explanation", "dependsOn", "alsoReportedAs", "wholeScope"];
+// brief audits and `wholeScopeBrief` that brief's path in the reviewed
+// repository, which the verifier reads to tell whether a defect it meets
+// in untouched code there falls under the brief; both are left out for a
+// finding about the change.
+export const VERIFIER_FINDING_FIELDS = ["id", "title", "path", "line", "explanation", "dependsOn", "alsoReportedAs", "wholeScope", "wholeScopeBrief"];
 
 // One verifier verdict. `severity` is the verifier's own grade and the one
 // the finding carries from here on; it is `None` exactly when the finding

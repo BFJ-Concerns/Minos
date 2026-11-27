@@ -434,7 +434,7 @@ specialistResults.forEach(({ unit, completed, output: result }, unitIndex) => {
     });
   propose(result.findings, "finding", {
     outsideConcern: false,
-    ...(unit.extent === "full" ? { wholeScope: wholeScopeOf(unit) } : {}),
+    ...(unit.extent === "full" ? { wholeScope: wholeScopeOf(unit), wholeScopeBrief: unit.brief } : {}),
   });
 });
 

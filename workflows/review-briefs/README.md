@@ -166,16 +166,20 @@ A review proposes, merges, then verifies.
    two. Each group goes on as one finding: its primary write-up, with the
    group's other write-ups beside it.
 3. A verifier leg gives each finding one verdict, which stands for every
-   write-up in its group. A finding a verifier raises itself, in
+   write-up in its group. A finding from a whole-scope brief is shown with
+   `wholeScope`, the brief's directory, and `wholeScopeBrief`, the brief's
+   path, which the verifier reads to tell whether a defect it meets in
+   untouched code there falls under the brief. A finding a verifier raises itself, in
    `newFindings`, is a proposed finding too: it is merged with whatever else
    its round raised and verified in the next round, by a leg other than the
    one that raised it. It names the finding its verifier was checking, and
    where that finding is a whole-scope brief's and the raised one lies under
-   the brief's directory, the raised one is verified as whole-scope too. A
+   the brief's directory, the raised one is verified as whole-scope too,
+   under the same brief. A
    workflow runs `VERIFICATION_ROUNDS` rounds (`review-contracts.mjs`), and
    what the last of them raises has no verdict, which leaves the run
    incomplete.
 
-`workflows/review-stages.mjs` runs the merge and the verification for both
-review workflows. `workflows/finding-disposition.mjs` says what each verdict
+`workflows/review-stages.mjs` runs the merge and the verification for
+every review workflow. `workflows/finding-disposition.mjs` says what each verdict
 makes of its finding, and what becomes of one left unsettled.

@@ -175,6 +175,7 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
         ? subject.members.map(({ finding }) => ({ title: finding.title, explanation: finding.explanation }))
         : undefined,
       wholeScope: subject.wholeScope,
+      wholeScopeBrief: subject.wholeScopeBrief,
     }, contracts.verifierFindingFields);
   }
 
@@ -264,17 +265,16 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
       recordObservations(response.outOfScopeObservations, "verification", batch.label);
       (Array.isArray(response.newFindings) ? response.newFindings : []).forEach((raisedFinding, findingIndex) => {
         // The name of the finding being checked is provenance, never part of
-        // the write-up; it lends that finding's whole scope where the raised
-        // finding's path lies within it (raisedFindingShape).
+        // the write-up; it lends that finding's whole scope, and the brief
+        // that asked for it, where the raised finding's path lies within it
+        // (raisedFindingShape).
         const { foundWhileChecking, ...finding } = raisedFinding || {};
         const checked = batch.items.find((item) => item.id === foundWhileChecking);
-        const wholeScope = checked?.wholeScope !== undefined && pathWithinScope(finding.path, checked.wholeScope)
-          ? checked.wholeScope
-          : undefined;
+        const lendsScope = checked?.wholeScope !== undefined && pathWithinScope(finding.path, checked.wholeScope);
         raised.push({
           id: `${batch.label}:raised:${findingIndex + 1}`,
           finding,
-          ...(wholeScope !== undefined ? { wholeScope } : {}),
+          ...(lendsScope ? { wholeScope: checked.wholeScope, wholeScopeBrief: checked.wholeScopeBrief } : {}),
           source: "verification",
           reportedBy: "verification",
           outsideConcern: false,
@@ -323,16 +323,17 @@ export function pathWithinScope(path, scope) {
 // One finding to verify: a merged group's primary write-up, with what the
 // group's other write-ups add, or a finding a verifier raised. A group
 // holding a whole-scope brief's finding is verified as whole-scope, under
-// the first such write-up's directory, whichever write-up is primary.
+// the first such write-up's directory and brief, whichever write-up is
+// primary.
 export function subjectOf({ primary, members }) {
   const writeUps = [primary, ...members];
   const dependsOn = [...new Set(writeUps
     .map((item) => typeof item.finding.dependsOn === "string" ? item.finding.dependsOn.trim() : "")
     .filter((fact) => fact !== ""))].join("; ");
-  const wholeScope = writeUps.find((item) => item.wholeScope !== undefined)?.wholeScope;
+  const whole = writeUps.find((item) => item.wholeScope !== undefined);
   return {
     ...primary,
-    ...(wholeScope !== undefined ? { wholeScope } : {}),
+    ...(whole ? { wholeScope: whole.wholeScope, wholeScopeBrief: whole.wholeScopeBrief } : {}),
     finding: { ...primary.finding, dependsOn },
     members,
   };
@@ -346,7 +347,7 @@ export function proposedFindingOf(subject) {
     ...subject.finding,
     source: subject.source,
     ...(subject.outsideConcern ? { outsideConcern: true } : {}),
-    ...(subject.wholeScope !== undefined ? { wholeScope: subject.wholeScope } : {}),
+    ...(subject.wholeScope !== undefined ? { wholeScope: subject.wholeScope, wholeScopeBrief: subject.wholeScopeBrief } : {}),
     ...(subject.members.length > 0 ? {
       mergedFrom: subject.members.map((member) => ({
         id: member.id,
