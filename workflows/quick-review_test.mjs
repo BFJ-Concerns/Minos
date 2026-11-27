@@ -113,7 +113,6 @@ test("the builder hands the workflow the change's paths and the general, merge a
   assert.deepEqual(Object.keys(ARGS.prompts.generalAssignment).sort(), ["share", "wholeChange"]);
   assert.equal(ARGS.concerns, undefined);
   assert.equal(ARGS.concernRouting, undefined);
-  assert.match(ARGS.prompts.general, /MINOS_TEST_COMMISSION_QUICK|\{\{project-documents\}\}/);
   assert.equal(ARGS.routing.proposer.engine, "codex");
   assert.equal(ARGS.routing.verifier.engine, "claude");
   assert.notEqual(builtArgs({ depth: "thorough" }).prompts.general, ARGS.prompts.general);
@@ -128,6 +127,8 @@ test("an undivided change is one general leg on the proposer's route, its findin
   const [general] = calls;
   assert.equal(general.opts.engine, "codex");
   assert.deepEqual(general.opts.schema, ARGS.contracts.generalWholeChangeSchema);
+  // The project's documents reach the reviewer in the prompt it was sent.
+  assert.match(general.prompt, /MINOS_TEST_COMMISSION_QUICK/);
   assert.match(general.prompt, new RegExp(`git diff ${ARGS.target}\\.\\.\\.${ARGS.head}`));
   assert.doesNotMatch(general.prompt, /\{\{[a-z-]+\}\}/);
   assert.equal(calls[2].opts.engine, "claude");
@@ -175,6 +176,7 @@ test("a divided change sends one reviewer for each share, told its share and the
     assert.deepEqual(call.opts.schema, ARGS.contracts.generalSchema);
     assert.equal(call.opts.engine, "codex");
     assert.doesNotMatch(call.prompt, /\{\{[a-z-]+\}\}/);
+    assert.match(call.prompt, /MINOS_TEST_COMMISSION_QUICK/);
   }
   const [first, second] = shareCalls.map((call) => call.prompt);
   const yours = (prompt) => prompt.slice(prompt.indexOf("Your share:"), prompt.indexOf("The other reviewers' shares:"));
