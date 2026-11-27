@@ -11,9 +11,10 @@ archive_failed() {
 }
 
 [ -d "$run_dir" ] || archive_failed
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)" || archive_failed
 
 # shellcheck source=scripts/run-body/archive-transport.sh
-. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-transport.sh"
+. "$script_dir/archive-transport.sh"
 archive_configuration_load "$config" || archive_failed
 
 safe_label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '-')"
@@ -50,20 +51,33 @@ archive_transport_open "run-$$" 30
 # archive carries it too, but never let its failure fail the archive. The
 # closing memory snapshot lands first so the record can carry the run's
 # stall and thrash deltas against the baseline run-body took at start.
-"$(CDPATH= cd -- "$(dirname "$0")" && pwd)/memory-telemetry" \
+"$script_dir/memory-telemetry" \
   "$run_dir/memory-final.json" || true
 timing_record="$run_dir/timing-record.json"
 summary=""
-if [ -z "${MINOS_RUN_STARTED_AT:-}" ] && [ -r "$timing_record" ]; then
-  # An archive retry keeps the evidence taken during the live invocation.
+salvaged=false
+if [ "$label" = "$run_name" ]; then salvaged=true; fi
+retry=false
+if [ "$salvaged" = false ] && [ -z "${MINOS_RUN_STARTED_AT:-}" ] && [ -r "$timing_record" ]; then
+  # A terminal archive retry keeps the summary from the live invocation.
+  retry=true
   summary="$(jq -ce '.run_summary | objects' "$timing_record" 2>/dev/null)" || summary=""
+  # The sidecar also covers runs that ended before writing orientation.
+  if [ -z "${MINOS_PR:-}" ]; then
+    MINOS_OWNER="$(jq -er '.pull_request.owner | strings' "$timing_record" 2>/dev/null)" || MINOS_OWNER=""
+    MINOS_REPO_NAME="$(jq -er '.pull_request.repository | strings' "$timing_record" 2>/dev/null)" || MINOS_REPO_NAME=""
+    MINOS_PR="$(jq -er '.pull_request.number | strings' "$timing_record" 2>/dev/null)" || MINOS_PR=""
+    export MINOS_OWNER MINOS_REPO_NAME MINOS_PR
+  fi
 fi
 if [ -z "$summary" ]; then
-  salvaged=false
-  if [ "$label" = "$run_name" ]; then salvaged=true; fi
-  summary="$("$(CDPATH= cd -- "$(dirname "$0")" && pwd)/archive-run-summary" "$run_dir" "$salvaged")" || summary=""
+  summary="$("$script_dir/archive-run-summary" "$run_dir" "$salvaged")" || summary=""
 fi
-"$(CDPATH= cd -- "$(dirname "$0")" && pwd)/collect-timings" "$run_dir" "$timing_record" || true
+if ! "$script_dir/collect-timings" "$run_dir" "$timing_record" &&
+   [ "$retry" = false ]; then
+  # A failed collection must not deliver an earlier invocation's sidecar.
+  rm -f -- "$timing_record"
+fi
 if [ -n "$summary" ] && [ -r "$timing_record" ]; then
   if printf '%s' "$summary" | jq --slurpfile timings "$timing_record" \
     '$timings[0] + {run_summary: .}' >"$timing_record.summary"; then
@@ -78,7 +92,7 @@ fi
 # record intact: archive delivery remains best-effort telemetry.
 if [ -r "$run_dir/timing-record.json" ]; then
   analysed_record="$run_dir/timing-record.analysed.json"
-  if "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/analyse-archived-spans" \
+  if "$script_dir/analyse-archived-spans" \
     "$run_dir/timing-record.json" "$run_dir" >"$analysed_record" 2>/dev/null; then
     mv "$analysed_record" "$run_dir/timing-record.json"
   else

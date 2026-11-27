@@ -31,7 +31,7 @@ type Readings struct {
 	// Sweep is the last completed sweep's record alone, nil when there is
 	// none: each pull request it left unclaimed and why, those waiting for
 	// a slot, and the sweep's own stamp of when it completed.
-	Sweep func() *shell.SweepDeferralDocument
+	Sweep func() (*shell.SweepDeferralDocument, error)
 	// RecentRuns is the timing records archived in the last hours, at most
 	// limit, and when the archive host was last listed for them.
 	RecentRuns func(ctx context.Context, hours, limit int) ([]shell.RecentRun, time.Time, error)

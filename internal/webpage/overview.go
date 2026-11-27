@@ -17,9 +17,13 @@ var overviewPage = Page{
 }
 
 type overview struct {
-	BotLogin      string
 	MaxConcurrent int
-	Repositories  []shell.RepoConfig
+	Repositories  []overviewRepository
+}
+
+type overviewRepository struct {
+	shell.RepoConfig
+	BotLogin string
 }
 
 func showOverview(_ *http.Request, read Readings) (any, error) {
@@ -27,9 +31,9 @@ func showOverview(_ *http.Request, read Readings) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return overview{
-		BotLogin:      cfg.Service.BotLogin,
-		MaxConcurrent: cfg.MaxConcurrentRuns(),
-		Repositories:  repos,
-	}, nil
+	view := overview{MaxConcurrent: cfg.MaxConcurrentRuns()}
+	for _, repo := range repos {
+		view.Repositories = append(view.Repositories, overviewRepository{RepoConfig: repo, BotLogin: cfg.BotLogin(repo.Forge)})
+	}
+	return view, nil
 }

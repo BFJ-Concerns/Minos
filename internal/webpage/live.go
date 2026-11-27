@@ -47,7 +47,7 @@ func showLive(r *http.Request, read Readings) (any, error) {
 		var timing struct{ Workers []liveWorker }
 		err := json.Unmarshal(run.Timings, &timing)
 		view.Runs = append(view.Runs, liveRun{
-			StatusRun: run, Workers: timing.Workers, TimingsError: len(run.Timings) > 0 && err != nil,
+			StatusRun: run, Workers: timing.Workers, TimingsError: run.RunDir != "" && (err != nil || string(run.Timings) == "null"),
 		})
 	}
 	return view, nil

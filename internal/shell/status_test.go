@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -52,7 +53,9 @@ func TestStatusRefusesRequestsWithoutTheConfiguredToken(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, "/status", nil)
 			test.authorises(request)
 			response := httptest.NewRecorder()
-			if err := handleStatus(context.Background(), cfg, response, request); err != nil {
+			if err := handleStatus(context.Background(), cfg.Listener.StatusTokenFile, func(ctx context.Context) (StatusDocument, error) {
+				return statusSnapshot(ctx, cfg)
+			}, response, request); err != nil {
 				t.Fatalf("handleStatus() error = %v", err)
 			}
 			if response.Code != http.StatusUnauthorized {
@@ -64,6 +67,13 @@ func TestStatusRefusesRequestsWithoutTheConfiguredToken(t *testing.T) {
 
 func TestStatusReportsLiveRunIdentityDispatchStageAndTimings(t *testing.T) {
 	cfg := statusTestConfig(t)
+	cfg.Forges["another"] = cfg.Forges["forgejo"]
+	writeStatusFile(t, filepath.Join(cfg.Root, "repos", "another.toml"), `forge = "another"
+owner = "example"
+repo = "Relay"
+[adaptation]
+run-body = "/opt/minos/run-body/run-body"
+`)
 	runDir := writeStatusRunDirectory(t, cfg)
 	// A finished review, then a review-brief workflow still running.
 	writeStatusFile(t, filepath.Join(runDir, "review-args.json"), "{}")
@@ -107,8 +117,12 @@ func TestStatusReportsLiveRunIdentityDispatchStageAndTimings(t *testing.T) {
 	if states["review"] != stagePassed || states["review-brief"] != stageRunning {
 		t.Fatalf("stage states = %v, want review passed and review-brief running", states)
 	}
-	if len(document.Repos) != 1 || document.Repos[0].Repo != "Relay" {
-		t.Fatalf("repos = %v, want the configured repository", document.Repos)
+	wantRepos := []statusRepo{
+		{Forge: "another", Owner: "example", Repo: "Relay"},
+		{Forge: "forgejo", Owner: "example", Repo: "Relay"},
+	}
+	if !reflect.DeepEqual(document.Repos, wantRepos) {
+		t.Fatalf("repos = %v, want %v", document.Repos, wantRepos)
 	}
 }
 
@@ -292,8 +306,40 @@ run-body = "/opt/minos/run-body/run-body"
 	cfg.Listener.StatusTokenFile = tokenPath
 	cfg.Runs.Dir = t.TempDir()
 	cfg.Runs.MaxConcurrent = 2
-	cfg.Forges = map[string]ForgeConfig{"forgejo": {}}
+	cfg.Service.BotLogin = "Minos"
+	cfg.Forges = map[string]ForgeConfig{"forgejo": {
+		Adaptation: "/opt/minos/adaptations/forgejo", APIBase: "https://forgejo.example",
+		CredentialFile: "/etc/minos/forge.token", WebhookSecretFile: "/etc/minos/webhook.secret",
+	}}
+	writeMonitoringConfig(t, cfg)
 	return cfg
+}
+
+func writeMonitoringConfig(t *testing.T, cfg ServiceConfig) {
+	t.Helper()
+	var body strings.Builder
+	fmt.Fprintf(&body, `[service]
+bot-login = %q
+[listener]
+bind = ":0"
+status-token-file = %q
+[runs]
+dir = %q
+max-concurrent = %d
+timings-command = %q
+recent-timings-command = %q
+recent-timings-cache-seconds = %d
+`, cfg.Service.BotLogin, cfg.Listener.StatusTokenFile, cfg.Runs.Dir, cfg.Runs.MaxConcurrent,
+		cfg.Runs.TimingsCommand, cfg.Runs.RecentTimingsCommand, cfg.Runs.RecentTimingsCacheSeconds)
+	for name, forge := range cfg.Forges {
+		fmt.Fprintf(&body, `[forges.%q]
+api-base = %q
+adaptation = %q
+credential-file = %q
+webhook-secret-file = %q
+`, name, forge.APIBase, forge.Adaptation, forge.CredentialFile, forge.WebhookSecretFile)
+	}
+	writeStatusFile(t, filepath.Join(cfg.Root, "service.toml"), body.String())
 }
 
 func writeStatusRunDirectory(t *testing.T, cfg ServiceConfig) string {
@@ -343,7 +389,9 @@ func readStatusDocument(t *testing.T, cfg ServiceConfig) statusDocument {
 	request := httptest.NewRequest(http.MethodGet, "/status", nil)
 	request.Header.Set("Authorization", "Bearer status-token")
 	response := httptest.NewRecorder()
-	if err := handleStatus(context.Background(), cfg, response, request); err != nil {
+	if err := handleStatus(context.Background(), cfg.Listener.StatusTokenFile, func(ctx context.Context) (StatusDocument, error) {
+		return statusSnapshot(ctx, cfg)
+	}, response, request); err != nil {
 		t.Fatalf("handleStatus() error = %v", err)
 	}
 	if response.Code != http.StatusOK {
@@ -473,5 +521,5 @@ func archiveListingScript(t *testing.T, sidecars map[string]string) string {
 
 func readRecentRuns(t *testing.T, cfg ServiceConfig, query string) recentRunsDocument {
 	t.Helper()
-	return readCachedRecentRuns(t, cfg, newRecentRunsCache(0), query)
+	return readCachedRecentRuns(t, cfg, newRecentRunsCache(), query)
 }
