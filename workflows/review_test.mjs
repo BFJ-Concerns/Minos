@@ -8,17 +8,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
+import { invokeWorkflow, loadWorkflow } from "./workflow-invocation-fixture.mjs";
 import { adjudicateEnvelope } from "./archive-fixture.mjs";
 import { findingsFromVerifierPrompt, verdictFor } from "./verifier-prompt-fixture.mjs";
 
-const scriptPath = fileURLToPath(new URL("./review.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-inputs.mjs", import.meta.url));
-const source = await readFile(scriptPath, "utf8");
 const lifecycle = await readFile(fileURLToPath(new URL("../lifecycle/lifecycle.md", import.meta.url)), "utf8");
-const body = source.replace(/^export const meta =/m, "const meta =");
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const script = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", body);
+const script = loadWorkflow("review.js");
 
 function runScript(args, respond) {
   return invokeWorkflow(script, args, respond);
@@ -781,7 +777,7 @@ test("the lifecycle prescribes the verdict-classification seam", () => {
   assert.match(lifecycle, /verdict-classification\.mjs" \\\s+--digest VERDICT_FILE "\$MINOS_REVIEW_THRESHOLD" \\\s+> "\$MINOS_RUN_DIR\/verdict-digest\.json"/);
   assert.match(lifecycle, /`verdict-digest-brief\.json` for the brief verdict/);
   assert.match(lifecycle, /digest lists every confirmed finding with its severity, confidence\s+values, and threshold position, and a `thresholdIndication` — what the\s+configured threshold alone would say/);
-  assert.match(lifecycle, /informed by the threshold rather than mechanically bound to it \(the\s+commission's balance rule\)/);
+  assert.match(lifecycle, /informed by the threshold rather than mechanically bound to it: the\s+threshold gives each finding its default, and you depart from a\s+default only on a basis this step names\./);
   assert.match(lifecycle, /only three classes may be judged out\.\s+Two object to the kind of finding:\s+a gap the pull-request description explicitly declares as known or out\s+of scope, where the project guidance does not contradict the\s+declaration \(`declared-out-of-scope`\), and a request for a new\s+safeguard[\s\S]*?where the change's own logic does\s+nothing wrong \(`speculative-hardening`\)/);
   assert.match(lifecycle, /The one upward exception\s+is judging a below-threshold finding's severity an undergrade that\s+genuinely belongs at or above the threshold, named as such/);
   assert.match(lifecycle, /`\$MINOS_RUN_DIR\/verdict-decision\.json` \(`verdict-decision-brief\.json`\s+for the brief verdict\)[\s\S]*?"kind": "minos-verdict-decision-v1"[\s\S]*?"basis":[\s\S]*?"gating": false, "class": "declared-out-of-scope"[\s\S]*?"gating": true, "undergrade":/);

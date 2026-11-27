@@ -82,8 +82,11 @@ function invalidDigestInputReason(input) {
 // twice: the lead reads the digest to judge the verdict, and the validation
 // below recomputes it to check the recorded decision against the same facts.
 // `thresholdIndication` is what the configured threshold alone would say —
-// advisory by design: the commission makes classification the lead's
-// judgement, informed by the threshold rather than mechanically bound to it.
+// advisory by design: classification is the lead's judgement, informed by
+// the threshold rather than mechanically bound to it. A finding at or above
+// it gates unless judged a declared out-of-scope gap, a safeguard request or
+// a restatement of a finding the author already has; one below it gates
+// only as a named undergrade.
 export function verdictDigest(input) {
   const inputFailure = invalidDigestInputReason(input);
   if (inputFailure) return { kind: DIGEST_KIND, status: "invalid", reason: inputFailure };

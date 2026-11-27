@@ -2,7 +2,6 @@ import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,21 +11,17 @@ import { executableVerdict as wrapperVerdict } from "./executable-verdict-fixtur
 import { resolveRouting } from "./role-routing.mjs";
 import { verdictDigest } from "./verdict-classification.mjs";
 import { adjudicateEnvelope } from "./archive-fixture.mjs";
+import { loadWorkflow } from "./workflow-invocation-fixture.mjs";
+import { shippedConcerns, shippedPrompts } from "./shipped-prompts-fixture.mjs";
 
 const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
-const scriptPath = join(workflowsDir, "review-scope.js");
 const inputScriptPath = join(workflowsDir, "review-scope-inputs.mjs");
 function executableVerdict(t, envelope) {
   return wrapperVerdict(t, envelope, { namespace: "scope", workflow: "review-scope.js" });
 }
-const source = await readFile(scriptPath, "utf8");
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const script = new AsyncFunction(
-  "agent", "parallel", "pipeline", "phase", "log", "args",
-  source.replace(/^export const meta =/m, "const meta ="),
-);
+const script = loadWorkflow("review-scope.js");
 
 async function runScript(args, respond) {
   const calls = [];
@@ -60,11 +55,8 @@ function workflowArgs(overrides = {}) {
     occasion: null,
     guidance: [{ repository: null, path: "README.md", origin: "checked-in", content: "SCOPE_TEST_COMMISSION_TEAL" }],
     routing: pairedRouting,
-    instructionBriefs: [{
-      path: "workflows/review-briefs/scope.md",
-      readPath: join(workflowsDir, "review-briefs", "scope.md"),
-      content: "SCOPE_ROLE_BRIEF_TEAL",
-    }],
+    concerns: shippedConcerns,
+    prompts: { scope: shippedPrompts.scope },
     changedFiles: [{ path: "pkg/a.go", added: 4, deleted: 1 }],
     hasReviewDirectory: true,
     briefsEngage: engagement.briefsEngage,
@@ -85,9 +77,9 @@ function enumeratedArgs({ briefs = [], occasion, reviewDirectory = true, rename 
   try {
     const workspace = join(root, "workspace");
     mkdirSync(workspace);
-    const env = rename || numstatFault
-      ? Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(MINOS_|ENSEMBLE_)/.test(name)))
-      : process.env;
+    // The isolation import at the top of this file has already stripped
+    // MINOS_* and ENSEMBLE_* from process.env, so every child inherits none.
+    const env = process.env;
     const git = (...args) => execFileSync("git", ["-C", workspace, ...args], {
       encoding: "utf8",
       env: {
@@ -175,8 +167,8 @@ test("the input builder enumerates the diff and settles brief engagement determi
     via: "path-scope",
   });
   assert.deepEqual(input.guidance, [{ repository: null, path: "README.md", origin: "checked-in", content: "MINOS_SCOPE_COMMISSION_CORAL" }]);
-  assert.equal(input.instructionBriefs[0].path, "workflows/review-briefs/scope.md");
-  assert.match(input.instructionBriefs[0].content, /nothing-engages/);
+  assert.equal(input.prompts.scope, shippedPrompts.scope);
+  assert.deepEqual(input.concerns, shippedConcerns);
 });
 
 test("relevance-conditioned and misconfigured briefs settle conservatively", () => {
@@ -260,14 +252,37 @@ test("nothing-engages returns a complete clean review envelope", async (t) => {
   assert.equal(calls[0].opts.engine, "codex");
   assert.equal(calls[0].opts.model, "gpt-6.1-sol");
   assert.equal(calls[0].opts.effort, "medium");
-  assert.match(calls[0].prompt, /SCOPE_ROLE_BRIEF_TEAL/);
-  assert.match(calls[0].prompt, /SCOPE_TEST_COMMISSION_TEAL/);
-  assert.match(calls[0].prompt, /"pkg\/a\.go"/);
+  assert.deepEqual(calls[0].opts.strip, ["skills", "agents"]);
+  const prompt = calls[0].prompt;
+  assert.match(prompt, /^# Review scope\n/);
+  assert.match(prompt, /The change under review is `git diff aaa111\.\.\.bbb222`\./);
+  assert.match(prompt, /SCOPE_TEST_COMMISSION_TEAL/);
+  for (const concern of shippedConcerns) assert.ok(prompt.includes(`- \`${concern.name}\`: ${concern.summary}`), concern.name);
+  const changedFiles = JSON.parse(prompt.slice(prompt.lastIndexOf("\n[") + 1));
+  assert.deepEqual(changedFiles, [{ path: "pkg/a.go", added: 4, deleted: 1 }]);
+  assert.ok(!/\{\{[a-z-]+\}\}/.test(prompt), "every slot is filled");
 
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", (verdict.incomplete || []).join("\n"));
   assert.deepEqual(verdict.confirmedFindings, []);
   assert.equal(verdict.skipped.length, 4);
+});
+
+test("the scope gate shows the author's description when the input carries one, and refuses an input without its prompt or concerns", async () => {
+  const described = await runScript(workflowArgs({ pullRequest: { title: "Reword the guide", body: "SCOPE_DESCRIPTION_TEAL" } }), () => scopeResult());
+  assert.match(described.calls[0].prompt, /<pull-request-description title="Reword the guide">\nSCOPE_DESCRIPTION_TEAL\n<\/pull-request-description>/);
+  const bare = await runScript(workflowArgs(), () => scopeResult());
+  assert.ok(!bare.calls[0].prompt.includes("<pull-request-description"));
+
+  for (const overrides of [
+    { prompts: {} },
+    { prompts: { scope: `${shippedPrompts.scope}\n{{findings}}` } },
+    { concerns: [] },
+  ]) {
+    const calls = [];
+    await assert.rejects(runScript(workflowArgs(overrides), (label) => { calls.push(label); return scopeResult(); }));
+    assert.deepEqual(calls, []);
+  }
 });
 
 test("review-required carries the leg's reason without changing the envelope shape", async () => {

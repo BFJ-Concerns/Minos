@@ -1,8 +1,9 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { operationRoot } from "./temporary-directory-fixture.mjs";
 import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
@@ -47,4 +48,15 @@ test("workflow fixture responder errors reach the calling test", async () => {
 test("workflow fixture rejects an unexpected pipeline call", async () => {
   const script = (_agent, _parallel, pipeline) => pipeline([]);
   await assert.rejects(invokeWorkflow(script, {}, () => null), /workflow unexpectedly called pipeline/);
+});
+
+// The builders and helper scripts these tests spawn read MINOS_* and
+// ENSEMBLE_* from their environment, so a test file that spawned them
+// without the isolation import would aim them at a live run's records.
+test("every workflow test file strips MINOS_ and ENSEMBLE_ before anything else runs", () => {
+  const directory = dirname(fileURLToPath(import.meta.url));
+  const unisolated = readdirSync(directory)
+    .filter((name) => name.endsWith("_test.mjs"))
+    .filter((name) => !readFileSync(join(directory, name), "utf8").startsWith('import "./isolate-from-live-run.mjs";\n'));
+  assert.deepEqual(unisolated, []);
 });

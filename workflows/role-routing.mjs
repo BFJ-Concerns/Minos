@@ -103,3 +103,22 @@ export function routingFromEnvironment(env = process.env) {
   }
   return resolveRouting({ configured, provisioned: provisionedText.trim().split(/\s+/) });
 }
+
+// A workflow's check of the resolved routing its input builder attached: every role's engine,
+// model and effort, already defaulted for what the deployment provisioned.
+// Nothing here is fixed in source; a missing or malformed table fails the
+// workflow before any dispatch.
+export function routingFromInput(input) {
+  const routing = input && input.routing;
+  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
+  for (const role of ROLES) {
+    const entry = routing[role];
+    if (
+      !entry ||
+      !ENGINES.includes(entry.engine) ||
+      typeof entry.model !== "string" || entry.model === "" ||
+      typeof entry.effort !== "string" || entry.effort === ""
+    ) return null;
+  }
+  return routing;
+}

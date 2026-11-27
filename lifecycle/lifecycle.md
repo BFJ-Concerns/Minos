@@ -424,10 +424,12 @@ write, matching the target rule above.)
    This deterministic file-reading seam validates `$MINOS_ORIENTATION`,
    reads every guidance document the orientation lists and the
    pull-request description setup recorded, and supplies that content
-   with the shipped role briefs — so reviewers weigh the author's
-   explicitly declared scope rather than rediscovering a declared gap as a
-   defect. Do not ask an agent to reproduce it or hand-author its
-   `guidance`, `pullRequest`, or `instructionBriefs` entries.
+   with the role routing, the concern list, the shipped review prompts
+   read from `workflows/review-briefs/` and the stage contracts — so
+   reviewers weigh the author's explicitly declared scope rather than
+   rediscovering a declared gap as a defect. Do not ask an agent to
+   reproduce it or hand-author its `guidance`, `pullRequest`, `routing`,
+   `concerns`, `prompts` or `contracts` entries.
 
    Choose exactly one branch:
 
@@ -553,8 +555,9 @@ write, matching the target rule above.)
    The digest lists every confirmed finding with its severity, confidence
    values, and threshold position, and a `thresholdIndication` — what the
    configured threshold alone would say. Classification is your judgement,
-   informed by the threshold rather than mechanically bound to it (the
-   commission's balance rule): a confirmed finding at or above the
+   informed by the threshold rather than mechanically bound to it: the
+   threshold gives each finding its default, and you depart from a
+   default only on a basis this step names. A confirmed finding at or above the
    threshold gates by default, and only three classes may be judged out.
    Two object to the kind of finding:
    a gap the pull-request description explicitly declares as known or out

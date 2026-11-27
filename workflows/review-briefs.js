@@ -15,379 +15,16 @@ function slug(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "review";
 }
 
-// The input checks, prompt filling, merge and verification below are the
-// same in review.js and review-briefs.js: a workflow script imports
-// nothing, so each carries them.
-
-// The finding, merge and verifier contracts arrive as `contracts`, built
-// once in workflows/review-contracts.mjs by the input builder; this script
-// keeps no copy, and a missing or malformed set fails the workflow before
-// dispatch.
-function contractsFromInput(input) {
-  const contracts = input && input.contracts;
-  if (!contracts || typeof contracts !== "object" || Array.isArray(contracts)) return null;
-  if (!Number.isInteger(contracts.verifierBatchSize) || contracts.verifierBatchSize < 1) return null;
-  if (!Number.isInteger(contracts.verificationRounds) || contracts.verificationRounds < 1) return null;
-  for (const name of ["mergeFindingFields", "verifierFindingFields"])
-    if (!Array.isArray(contracts[name]) || !contracts[name].includes("id")) return null;
-  for (const name of [
-    "explorationSchema",
-    "findingShape",
-    "outOfScopeObservationShape",
-    "applicabilityShape",
-    "specialistSchema",
-    "mergeSchema",
-    "verifierVerdictShape",
-    "verifierSchema",
-  ]) {
-    const shape = contracts[name];
-    if (
-      !shape || typeof shape !== "object" || Array.isArray(shape) ||
-      shape.type !== "object" ||
-      !Array.isArray(shape.required) ||
-      !shape.properties || typeof shape.properties !== "object" || Array.isArray(shape.properties)
-    ) return null;
-  }
-  return contracts;
-}
-
-// A prompt is its shipped file with the file slots already filled by the
-// input builder (workflows/review-prompts.mjs); the run slots are filled
-// here, in one pass, so that no value is itself read for slots. A prompt
-// carrying a slot its stage does not fill fails the workflow before
-// dispatch.
-const SLOT = /\{\{([a-z-]+)\}\}/g;
-const REVIEWED_CHANGE_SLOTS = ["target", "head", "project-documents", "pull-request"];
-const STAGE_SLOTS = {
-  exploration: [...REVIEWED_CHANGE_SLOTS, "concerns"],
-  specialist: [...REVIEWED_CHANGE_SLOTS, "concern-name", "other-concerns", "planned-focus", "same-concern-units"],
-  repository: [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "assignment"],
-  merge: ["target", "head", "findings"],
-  verifier: [...REVIEWED_CHANGE_SLOTS, "findings"],
-};
-
-function promptFits(text, stage) {
-  return typeof text === "string" && text.trim() !== "" &&
-    [...text.matchAll(SLOT)].every((match) => STAGE_SLOTS[stage].includes(match[1]));
-}
-
-function fillPrompt(template, values) {
-  return template.replace(SLOT, (whole, name) => {
-    if (!Object.hasOwn(values, name)) throw new Error(`prompt slot ${whole} has no value`);
-    return values[name];
-  });
-}
-
-const ROUTING_ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner"];
-const ROUTING_ENGINES = ["claude", "codex"];
-
-// The resolved routing the input builder attached: every role's engine,
-// model and effort, already defaulted for what the deployment provisioned.
-// Nothing here is fixed in source; a missing or malformed table fails the
-// workflow before any dispatch.
-function routingFromInput(input) {
-  const routing = input && input.routing;
-  if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
-  for (const role of ROUTING_ROLES) {
-    const entry = routing[role];
-    if (
-      !entry ||
-      !ROUTING_ENGINES.includes(entry.engine) ||
-      typeof entry.model !== "string" || entry.model === "" ||
-      typeof entry.effort !== "string" || entry.effort === ""
-    ) return null;
-  }
-  return routing;
-}
-
-function projectGuidanceFromInput(input) {
-  const guidance = input && input.guidance;
-  if (!Array.isArray(guidance) || guidance.length === 0) return null;
-  for (const entry of guidance) {
-    if (
-      !entry ||
-      typeof entry.path !== "string" ||
-      entry.path === "" ||
-      (entry.repository !== null && (typeof entry.repository !== "string" || entry.repository === "")) ||
-      (entry.origin !== "configured" && entry.origin !== "checked-in") ||
-      typeof entry.content !== "string" ||
-      entry.content.trim() === ""
-    ) return null;
-  }
-  return guidance;
-}
-
-// One block per guidance document, in the configured order: the reviewed
-// project's declared intent, as the repository owner names it.
-function projectGuidanceSection(guidance) {
-  return guidance.map((entry) =>
-    `<project-guidance origin="${entry.origin}"${entry.repository === null ? "" : ` repository="${entry.repository}"`} path="${entry.path}">\n` +
-    `${entry.content}\n</project-guidance>`
-  ).join("\n\n");
-}
-
-function pullRequestFromInput(input) {
-  const pullRequest = input && input.pullRequest;
-  if (
-    !pullRequest ||
-    typeof pullRequest.title !== "string" ||
-    typeof pullRequest.body !== "string" ||
-    (pullRequest.title.trim() === "" && pullRequest.body.trim() === "")
-  ) return null;
-  return { title: pullRequest.title, body: pullRequest.body };
-}
-
-function pullRequestSection(pullRequest) {
-  if (!pullRequest) return "";
-  return `<pull-request-description title=${JSON.stringify(pullRequest.title)}>\n${pullRequest.body}\n</pull-request-description>`;
-}
-
-function pick(record, fields) {
-  return Object.fromEntries(fields.filter((field) => record[field] !== undefined).map((field) => [field, record[field]]));
-}
-
-function legOutput(result, label) {
-  if (!result || result.failure !== null) {
-    incomplete.push(`agent ${result?.label || label} failed: ${result?.failure?.message || "no failure account returned"}`);
-    return null;
-  }
-  if (result.output === null)
-    incomplete.push(`agent ${result.label || label} answered without usable output`);
-  return result.output;
-}
-
-function addLeg(label, role, pinnedModel, findingIds = null) {
-  const leg = { label, role, pinnedModel };
-  if (findingIds) leg.findingIds = findingIds;
-  legs.push(leg);
-}
-
-function recordObservations(observations, source, label) {
-  (Array.isArray(observations) ? observations : []).forEach((observation, index) => {
-    outOfScopeObservations.push({
-      id: `${label}:observation:${index + 1}`,
-      source,
-      ...observation,
-      observingLabel: label,
-      verified: false,
-    });
-  });
-}
-
-// The merge leg groups the proposed findings one fix would resolve, so
-// that each fault is verified and published once. Fewer than two findings
-// need no merge. A grouping that does not place every finding in exactly
-// one group, under a primary of its own, is no usable answer: the leg
-// counts as one that did not complete, and null stops the workflow.
-async function mergeProposed(proposed, mergeLabel, phaseName) {
-  if (proposed.length < 2) return proposed.map((item) => ({ primary: item, members: [] }));
-  addLeg(mergeLabel, "merge", routing.verifier.model);
-  const shown = proposed.map((item) => pick({
-    id: item.id,
-    reportedBy: item.reportedBy,
-    outsideConcern: item.outsideConcern,
-    ...item.finding,
-  }, contracts.mergeFindingFields));
-  const settlement = await agent(
-    fillPrompt(prompts.merge, { target, head, findings: JSON.stringify(shown, null, 2) }),
-    {
-      engine: routing.verifier.engine,
-      schema: contracts.mergeSchema,
-      model: routing.verifier.model,
-      effort: routing.verifier.effort,
-      strip: ["skills", "agents"],
-      identity: true,
-      label: mergeLabel,
-      phase: phaseName,
-    }
-  );
-  const output = legOutput(settlement, mergeLabel);
-  if (!output) return null;
-  const byId = new Map(proposed.map((item) => [item.id, item]));
-  const placed = new Set();
-  const groups = [];
-  for (const group of Array.isArray(output.groups) ? output.groups : []) {
-    const ids = Array.isArray(group && group.findingIds) ? group.findingIds : [];
-    if (
-      ids.length === 0 || !ids.includes(group.primary) || new Set(ids).size !== ids.length ||
-      ids.some((id) => !byId.has(id) || placed.has(id))
-    ) {
-      incomplete.push(`agent ${mergeLabel} returned a grouping that does not place every finding exactly once under a primary of its group`);
-      return null;
-    }
-    ids.forEach((id) => placed.add(id));
-    groups.push({
-      primary: byId.get(group.primary),
-      members: ids.filter((id) => id !== group.primary).map((id) => byId.get(id)),
-    });
-  }
-  if (placed.size !== proposed.length) {
-    incomplete.push(`agent ${mergeLabel} returned a grouping that does not place every finding exactly once under a primary of its group`);
-    return null;
-  }
-  return groups;
-}
-
-// One finding to verify: a merged group's primary write-up, with what the
-// group's other write-ups add, or a finding a verifier raised. A group
-// holding a whole-scope brief's finding is verified as whole-scope, under
-// the first such write-up's directory, whichever write-up is primary.
-function subjectOf({ primary, members }) {
-  const writeUps = [primary, ...members];
-  const dependsOn = [...new Set(writeUps
-    .map((item) => typeof item.finding.dependsOn === "string" ? item.finding.dependsOn.trim() : "")
-    .filter((fact) => fact !== ""))].join("; ");
-  const wholeScope = writeUps.find((item) => item.wholeScope !== undefined)?.wholeScope;
-  return {
-    ...primary,
-    ...(wholeScope !== undefined ? { wholeScope } : {}),
-    finding: { ...primary.finding, dependsOn },
-    members,
-  };
-}
-
-function shownToVerifier(subject) {
-  return pick({
-    id: subject.id,
-    ...subject.finding,
-    alsoReportedAs: subject.members.length > 0
-      ? subject.members.map(({ finding }) => ({ title: finding.title, explanation: finding.explanation }))
-      : undefined,
-    wholeScope: subject.wholeScope,
-  }, contracts.verifierFindingFields);
-}
-
-// Verifies every subject, then each finding the verifiers raised, in
-// rounds: what one round raises is merged like any proposed findings and
-// verified by legs of the next, never by the leg that raised it. What the
-// last round raises has no verdict, which leaves the run incomplete; it is
-// returned unchecked for the record. Where a later round's merge fails,
-// which has already left the run incomplete, the findings it was to group
-// are returned unchecked in the same way.
-async function verifySubjects(subjects, labelPrefix, mergeLabel, phaseName) {
-  const verified = [];
-  let pending = subjects;
-  let raisedBy = routing.proposer.engine;
-  for (let round = 1; round <= contracts.verificationRounds && pending.length > 0; round += 1) {
-    const route = verifierRoute(raisedBy);
-    const raised = await verificationRound(pending, round === 1 ? labelPrefix : `${labelPrefix}-round-${round}`, route, phaseName);
-    verified.push(...pending);
-    raisedBy = route.engine;
-    if (raised.length === 0 || round === contracts.verificationRounds) {
-      pending = raised;
-      break;
-    }
-    const groups = await mergeProposed(raised, `${mergeLabel}-round-${round + 1}`, phaseName);
-    if (!groups) return { verified, unchecked: raised };
-    pending = groups.map(subjectOf);
-  }
-  if (pending.length > 0)
-    incomplete.push(`verification stopped after ${contracts.verificationRounds} rounds with ${pending.length} finding(s) raised and not verified`);
-  return { verified, unchecked: pending };
-}
-
-// The route that verifies findings proposed on an engine: the verifier's,
-// unless the verifier runs on that same engine and the proposer's does
-// not, as for a finding a verifier raised. A deployment with one engine
-// has no other family to offer.
-function verifierRoute(proposedOn) {
-  if (routing.verifier.engine !== proposedOn) return routing.verifier;
-  if (routing.proposer.engine !== proposedOn) return routing.proposer;
-  return routing.verifier;
-}
-
-async function verificationRound(subjects, labelPrefix, route, phaseName) {
-  const batches = [];
-  for (let offset = 0; offset < subjects.length; offset += contracts.verifierBatchSize) {
-    const items = subjects.slice(offset, offset + contracts.verifierBatchSize);
-    const label = `${labelPrefix}-${batches.length + 1}-${route.engine}`;
-    const findingIds = items.map((item) => item.id);
-    items.forEach((item) => { item.verifyLabel = label; item.rawVerifier = null; });
-    batches.push({ items, label, findingIds });
-    addLeg(label, "verifier", route.model, findingIds);
-  }
-  const settlements = await parallel(batches.map((batch) => () =>
-    agent(
-      fillPrompt(prompts.verifier, {
-        ...reviewedChangeValues,
-        findings: JSON.stringify(batch.items.map(shownToVerifier), null, 2),
-      }),
-      {
-        engine: route.engine,
-        schema: contracts.verifierSchema,
-        model: route.model,
-        effort: route.effort,
-        strip: ["skills", "agents"],
-        identity: true,
-        label: batch.label,
-        phase: phaseName,
-      }
-    )
-  ));
-  const raised = [];
-  batches.forEach((batch, index) => {
-    const response = legOutput(settlements[index], batch.label);
-    if (!response) return;
-    // What a verifier established while checking survives even when its
-    // verdict set is discarded as malformed.
-    recordObservations(response.outOfScopeObservations, "verification", batch.label);
-    (Array.isArray(response.newFindings) ? response.newFindings : []).forEach((finding, findingIndex) => {
-      raised.push({
-        id: `${batch.label}:raised:${findingIndex + 1}`,
-        finding,
-        source: "verification",
-        reportedBy: "verification",
-        outsideConcern: false,
-        proposingLabel: batch.label,
-        members: [],
-      });
-    });
-    if (!Array.isArray(response.verdicts)) return;
-    const expected = new Set(batch.findingIds);
-    if (response.verdicts.some((verdict) => !expected.has(verdict && verdict.findingId))) return;
-    for (const item of batch.items) {
-      const matches = response.verdicts.filter((verdict) => verdict.findingId === item.id);
-      if (matches.length !== 1) continue;
-      const { findingId: omittedFindingId, ...rawVerifier } = matches[0];
-      item.rawVerifier = rawVerifier;
-    }
-  });
-  return raised;
-}
-
-// A verified finding as the adjudicator reads it: the primary write-up,
-// the group's joined outside facts, and the write-ups merged into it.
-function proposedFindingOf(subject) {
-  return {
-    id: subject.id,
-    ...subject.finding,
-    source: subject.source,
-    ...(subject.outsideConcern ? { outsideConcern: true } : {}),
-    ...(subject.wholeScope !== undefined ? { wholeScope: subject.wholeScope } : {}),
-    ...(subject.members.length > 0 ? {
-      mergedFrom: subject.members.map((member) => ({
-        id: member.id,
-        source: member.source,
-        proposingLabel: member.proposingLabel,
-        title: member.finding.title,
-        path: member.finding.path,
-        line: member.finding.line,
-      })),
-    } : {}),
-    proposingLabel: subject.proposingLabel,
-    verifyLabel: subject.verifyLabel,
-    rawVerifier: subject.rawVerifier,
-  };
-}
-
-function uncheckedFindingOf(subject) {
-  return {
-    id: subject.id,
-    ...subject.finding,
-    source: subject.source,
-    proposingLabel: subject.proposingLabel,
-  };
-}
+// A workflow script cannot import statically, so what this one shares with
+// review.js is loaded from beside it: the checks of the input each builder
+// attached, beside the builder's own module; the prompt slots; and the
+// proposing, merge and verification stages every review runs.
+const { contractsFromInput } = await import("./review-contracts.mjs");
+const { routingFromInput } = await import("./role-routing.mjs");
+const { projectGuidanceFromInput, projectGuidanceSection } = await import("./orientation-guidance.mjs");
+const { pullRequestFromInput, pullRequestSection } = await import("./pull-request-description.mjs");
+const { promptFits, fillPrompt } = await import("./review-prompts.mjs");
+const { reviewStages, proposalsOf, subjectOf, proposedFindingOf, uncheckedFindingOf } = await import("./review-stages.mjs");
 
 // The deterministic brief pass arrives computed: the input builder parsed
 // each brief's frontmatter, named it and settled its path-scope and
@@ -426,8 +63,13 @@ function briefsFromInput(input) {
 function promptsFromInput(input) {
   const prompts = input && input.prompts;
   if (!prompts || typeof prompts !== "object" || Array.isArray(prompts)) return null;
+  const assignment = prompts.assignment;
+  if (!assignment || typeof assignment !== "object" || Array.isArray(assignment)) return null;
   if (
     !promptFits(prompts.repository, "repository") ||
+    !promptFits(prompts.briefRelevance, "brief-relevance") ||
+    !promptFits(prompts.briefPartition, "brief-partition") ||
+    !["changedPart", "wholePart", "unit", "files"].every((part) => promptFits(assignment[part], "assignment")) ||
     !promptFits(prompts.merge, "merge") ||
     !promptFits(prompts.verifier, "verifier")
   ) return null;
@@ -546,9 +188,11 @@ const reviewedChangeValues = {
   "pull-request": pullRequestSection(pullRequestFromInput(input)),
 };
 
-const incomplete = [];
-const legs = [];
-const outOfScopeObservations = [];
+const {
+  incomplete, legs, outOfScopeObservations,
+  addLeg, legOutput,
+  proposeUnits, mergeProposed, verifySubjects,
+} = reviewStages({ agent, parallel, routing, contracts, prompts, reviewedChangeValues });
 const reports = new Map();
 const misconfigurations = [];
 const candidates = [];
@@ -575,11 +219,12 @@ if (relevanceCandidates.length > 0) {
   phase("Relevance");
   addLeg("brief-relevance", "relevance", routing["brief-planner"].model);
   const relevanceResult = await agent(
-    `${projectGuidanceSection(guidance)}\n\n` +
-      `Judge which repository concerns ${target}...${head} gives work to. Inspect the actual diff when paths alone do not settle it. ` +
-      `Mark a concern inapplicable only when the diff clearly gives it nothing to judge. Return one decision for every entry and preserve each brief path.\n` +
-      `Changed paths: ${JSON.stringify(input.changedPaths)}\n` +
-      `Concerns: ${JSON.stringify(relevanceCandidates.map(({ brief, front }) => ({ brief: brief.path, relevance: front.relevance })))}`,
+    fillPrompt(prompts.briefRelevance, {
+      ...reviewedChangeValues,
+      "changed-paths": JSON.stringify(input.changedPaths, null, 2),
+      "relevance-conditions": JSON.stringify(
+        relevanceCandidates.map(({ brief, front }) => ({ brief: brief.path, relevance: front.relevance })), null, 2),
+    }),
     {
       engine: routing["brief-planner"].engine,
       schema: relevanceSchema,
@@ -647,12 +292,12 @@ if (partitionRequests.length > 0) {
   for (const request of partitionRequests)
     addLeg(request.label, "partition", routing["brief-planner"].model);
   const partitionResults = await parallel(partitionRequests.map((request) => () => agent(
-    `${projectGuidanceSection(guidance)}\n\n` +
-      `<repository-brief path="${request.candidate.brief.path}">\n${request.candidate.brief.content}\n</repository-brief>\n\n` +
-      `Create a lossless partition of the assigned file inventory into coherent review units for this brief. Group paths by module, directory, or concern, whichever reflects the repository's actual structure. ` +
-      `Each dispatched unit has a real cost, so the partition is the minimal one whose units each need a genuinely distinct reading for this brief's concern — merge groups one reading covers, and never split a unit to mirror directory structure for its own sake. ` +
-      `Assign every listed path to exactly one unit; include no unlisted paths. Use no skills for this planning judgement.\n` +
-      `Assigned file inventory: ${JSON.stringify(request.inventory.map((entry) => entry.path))}`,
+    fillPrompt(prompts.briefPartition, {
+      ...reviewedChangeValues,
+      "brief-path": request.candidate.brief.path,
+      brief: request.candidate.brief.content,
+      "file-inventory": JSON.stringify(request.inventory.map((entry) => entry.path), null, 2),
+    }),
     {
       engine: routing["brief-planner"].engine,
       schema: partitionSchema,
@@ -705,50 +350,48 @@ function wholeScopeOf(unit) {
 // What a brief's reviewer is given to judge: the change within the brief's
 // directory, or for a whole-scope brief all of that directory as it stands,
 // narrowed to a partition unit's files where the scope was partitioned.
+// Each applicable part is filled in a pass of its own, so a value is never
+// itself read for slots, and the parts are joined in their shipped order.
 function assignment(unit) {
-  const scope = unit.scope ? `\`${unit.scope}/\`` : "the whole repository";
-  const lines = [unit.extent === "full"
-    ? `All of ${scope} as it stands at the head commit, \`${head}\`, whether or not the change touched it.`
-    : `What \`git diff ${target}...${head}\` changed within ${scope}.`];
-  if (unit.concern) lines.push(`Within that, this review unit: ${unit.concern}`);
-  if (unit.files.length > 0) lines.push(`The files of this unit:\n\n${unit.files.map((path) => `- \`${path}\``).join("\n")}`);
-  return lines.join("\n\n");
+  const values = {
+    target,
+    head,
+    "brief-directory": wholeScopeOf(unit),
+    "unit-concern": unit.concern || "",
+    "unit-files": unit.files.map((path) => `- \`${path}\``).join("\n"),
+  };
+  const parts = [unit.extent === "full" ? prompts.assignment.wholePart : prompts.assignment.changedPart];
+  if (unit.concern) parts.push(prompts.assignment.unit);
+  if (unit.files.length > 0) parts.push(prompts.assignment.files);
+  return parts.map((part) => fillPrompt(part, values)).join("\n\n");
 }
 
 phase("Review");
-for (const unit of dispatched) addLeg(unit.label, "specialist", routing.proposer.model);
-const specialistResults = await parallel(dispatched.map((unit) => () => agent(
-  fillPrompt(prompts.repository, {
-    ...reviewedChangeValues,
-    "brief-path": unit.brief,
-    brief: unit.briefContent,
-    assignment: assignment(unit),
-  }),
-  {
-    engine: routing.proposer.engine,
-    schema: contracts.specialistSchema,
-    model: routing.proposer.model,
-    effort: routing.proposer.effort,
-    strip: ["skills", "agents"],
-    identity: true,
-    label: unit.label,
-    phase: "Review",
-  },
-)));
+const specialistResults = await proposeUnits(
+  dispatched.map((unit) => ({
+    ...unit,
+    prompt: fillPrompt(prompts.repository, {
+      ...reviewedChangeValues,
+      "brief-path": unit.brief,
+      brief: unit.briefContent,
+      assignment: assignment(unit),
+    }),
+    source: unit.title,
+  })),
+  "Review",
+);
 
 const reviewerStates = [];
 const proposed = [];
 const inapplicableByBrief = new Map();
-dispatched.forEach((unit, unitIndex) => {
-  const settlement = specialistResults[unitIndex];
-  const result = legOutput(settlement, unit.label);
+specialistResults.forEach(({ unit, completed, output: result }, unitIndex) => {
   reviewerStates.push({
     label: unit.label,
     role: "specialist",
     brief: unit.brief,
     family: routing.proposer.engine,
     pinnedModel: routing.proposer.model,
-    status: settlement && settlement.failure === null ? "done" : "no-result",
+    status: completed ? "done" : "no-result",
   });
   if (!result) {
     reports.set(unit.brief, {
@@ -759,18 +402,11 @@ dispatched.forEach((unit, unitIndex) => {
     });
     return;
   }
-  recordObservations(result.outOfScopeObservations, unit.title, unit.label);
-  const propose = (findings, kind, fields) =>
-    (Array.isArray(findings) ? findings : []).forEach((finding, findingIndex) => {
-      proposed.push({
-        id: `repository-brief-unit-${unitIndex + 1}:${kind}:${findingIndex + 1}`,
-        finding,
-        source: unit.title,
-        reportedBy: unit.title,
-        proposingLabel: unit.label,
-        ...fields,
-      });
-    });
+  const propose = (findings, kind, fields) => proposed.push(...proposalsOf(
+    findings,
+    (findingIndex) => `repository-brief-unit-${unitIndex + 1}:${kind}:${findingIndex + 1}`,
+    { source: unit.title, reportedBy: unit.title, proposingLabel: unit.label, ...fields },
+  ));
   // A problem outside the brief's concern that the change introduced is a
   // finding about the change, whatever the brief's extent or applicability.
   propose(result.outsideConcernFindings, "outside", { outsideConcern: true });

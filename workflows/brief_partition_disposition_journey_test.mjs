@@ -1,30 +1,16 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { executableVerdict as wrapperVerdict } from "./executable-verdict-fixture.mjs";
 import { briefRecords } from "./brief-dispositions.mjs";
 import { shippedBriefPrompts, shippedContracts } from "./shipped-prompts-fixture.mjs";
 import { resolveRouting } from "./role-routing.mjs";
+import { loadWorkflow } from "./workflow-invocation-fixture.mjs";
 
-const workflowsDir = dirname(fileURLToPath(import.meta.url));
 function executableVerdict(t, envelope) {
   return wrapperVerdict(t, envelope, { namespace: "partition", workflow: "review-briefs.js", requireCompletion: true });
 }
-const workflowSource = readFileSync(join(workflowsDir, "review-briefs.js"), "utf8");
-const workflowBody = workflowSource.replace(/^export const meta =/m, "const meta =");
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const runBriefWorkflow = new AsyncFunction(
-  "agent",
-  "parallel",
-  "pipeline",
-  "phase",
-  "log",
-  "args",
-  workflowBody,
-);
+const runBriefWorkflow = loadWorkflow("review-briefs.js");
 
 const briefPath = ".review/partitioned.md";
 const mixedReasons = [

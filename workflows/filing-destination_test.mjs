@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import { issueLogEntry } from "./finding-presentation.mjs";
 
-import { appendFilingEntries, deliverFilingEntries, filingMarker, validFilingDestination } from "./filing-destination.mjs";
+import { appendFilingEntries, deliverFilingEntries, filingMarker, markedFilingEntry, validFilingDestination } from "./filing-destination.mjs";
 
 // The filing drives real git against a bare "origin" the test owns and a
 // fixture forge that answers the repository lookup, so what these tests
@@ -293,6 +293,15 @@ test("the marker keys on repository, kind, site and title so one defect files on
   assert.match(text, /^# Issues\n\n- \*\*Advisory/);
 });
 
+test("a marked entry is the issue-log entry followed by its marker", () => {
+  const attribution = "Filed by Minos from o/r#1, 2026-09-12";
+  for (const entry of [advisory, misconfiguration])
+    assert.equal(markedFilingEntry(entry, attribution, reviewedRepository),
+      `${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}`);
+  const { text } = appendFilingEntries("", [advisory], attribution, reviewedRepository);
+  assert.equal(text, `# Issues\n\n${markedFilingEntry(advisory, attribution, reviewedRepository)}\n`);
+});
+
 test("the none kind discards and an empty batch files nothing", async (t) => {
   const fixture = await destinationFixture(t);
   assert.deepEqual(await fixture.deliver({ destination: { kind: "none" } }), { kind: "none", outcome: "discarded", written: 0 });
@@ -498,7 +507,7 @@ webhook-secret-file = "${token}"
       { kind: "issue", outcome: "filed", written: 3, location: "owner/plans" });
     assert.deepEqual(f.posted.map((issue) => issue.title), [advisory.title, observation.title, misconfiguration.title]);
     for (const [index, entry] of [advisory, observation, misconfiguration].entries()) {
-      assert.equal(f.posted[index].body, `${issueLogEntry(entry, `Filed by ${identity.name} from owner/repository#17, 2026-09-12`)} ${filingMarker(entry, reviewedRepository)}\n`);
+      assert.equal(f.posted[index].body, `${markedFilingEntry(entry, `Filed by ${identity.name} from owner/repository#17, 2026-09-12`, reviewedRepository)}\n`);
     }
     assert.deepEqual(await f.deliver([advisory, observation, misconfiguration], "later-head"),
       { kind: "issue", outcome: "filed", written: 0, location: "owner/plans" });
@@ -624,7 +633,7 @@ if (args.join(" ") === "forge snapshot") {
     assert.ok(calls[0].args[5].startsWith(`${f.directory}/`));
     const attribution = `Filed by ${identity.name} from owner/repository#17, 2026-09-12`;
     for (const entry of [advisory, misconfiguration]) {
-      assert.ok(calls[0].body.includes(`${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}`));
+      assert.ok(calls[0].body.includes(markedFilingEntry(entry, attribution, reviewedRepository)));
       assert.equal(calls[0].body.split(filingMarker(entry, reviewedRepository)).length - 1, 1);
     }
     assert.doesNotMatch(calls[0].body, /Unrelated nil deref|Stream lookup|all.clear/i, "unverified material stays off the pull request");

@@ -1,10 +1,11 @@
-// Reads the shipped review prompts for the input builders. Each prompt is
-// its Markdown file under workflows/review-briefs with every file slot
-// filled: the shared sections, and for a specialist its concern's body. The
-// run slots stay for the workflow to fill in one pass, once the values it
-// alone knows exist, so that a value is never itself read for slots.
-// workflows/review-briefs/README.md is the slot contract this module and
-// the workflows keep.
+// The shipped review prompts and their slots, for both sides of a run. An
+// input builder reads each prompt through reviewPrompts: its Markdown file
+// under workflows/review-briefs with every file slot filled, the shared
+// sections and for a specialist its concern's body. A workflow checks what
+// it was handed with promptFits and fills the run slots with fillPrompt,
+// in one pass, once the values it alone knows exist, so that a value is
+// never itself read for slots. workflows/review-briefs/README.md is the
+// slot contract, and STAGE_RUN_SLOTS here is its one list.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -20,6 +21,10 @@ export const STAGE_RUN_SLOTS = {
   exploration: [...REVIEWED_CHANGE_SLOTS, "concerns"],
   specialist: [...REVIEWED_CHANGE_SLOTS, "concern-name", "other-concerns", "planned-focus", "same-concern-units"],
   repository: [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "assignment"],
+  "brief-relevance": [...REVIEWED_CHANGE_SLOTS, "changed-paths", "relevance-conditions"],
+  "brief-partition": [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "file-inventory"],
+  assignment: ["target", "head", "brief-directory", "unit-concern", "unit-files"],
+  scope: [...REVIEWED_CHANGE_SLOTS, "concerns", "changed-files"],
   merge: ["target", "head", "findings"],
   verifier: [...REVIEWED_CHANGE_SLOTS, "findings"],
 };
@@ -50,6 +55,22 @@ function fillFileSlots(text, files) {
   return text.replace(SLOT, (whole, name) => (Object.hasOwn(files, name) ? files[name] : whole));
 }
 
+// Whether a workflow may send this text for a stage: a non-empty prompt
+// carrying no slot but the stage's run slots.
+export function promptFits(text, stage) {
+  return typeof text === "string" && text.trim() !== "" &&
+    slotNames(text).every((name) => STAGE_RUN_SLOTS[stage].includes(name));
+}
+
+// The prompt with every run slot filled from `values`. A slot with no
+// value throws, so a prompt is never sent with a slot still in it.
+export function fillPrompt(template, values) {
+  return template.replace(SLOT, (whole, name) => {
+    if (!Object.hasOwn(values, name)) throw new Error(`prompt slot ${whole} has no value`);
+    return values[name];
+  });
+}
+
 function checkedPrompt(stage, label, text) {
   const unknown = slotNames(text).filter((name) => !STAGE_RUN_SLOTS[stage].includes(name));
   if (unknown.length > 0)
@@ -78,8 +99,40 @@ export function reviewPrompts(repositoryRoot) {
       specialist: Object.fromEntries(concerns.map((concern) =>
         [concern.name, prompt("specialist", "specialist.md", { concern: concern.body })])),
       repository: prompt("repository", "repository.md"),
+      briefRelevance: prompt("brief-relevance", "brief-relevance.md"),
+      briefPartition: prompt("brief-partition", "brief-partition.md"),
+      assignment: {
+        changedPart: prompt("assignment", "assignment/changed-part.md"),
+        wholePart: prompt("assignment", "assignment/whole-part.md"),
+        unit: prompt("assignment", "assignment/unit.md"),
+        files: prompt("assignment", "assignment/files.md"),
+      },
+      scope: prompt("scope", "scope.md"),
       merge: prompt("merge", "merge.md"),
       verifier: prompt("verifier", "verifier.md"),
     },
   };
+}
+
+// A workflow's check of the concerns its input builder attached from
+// reviewPrompts: each with a distinct name and a summary, or null.
+export function concernsFromInput(input) {
+  const concerns = input && input.concerns;
+  if (!Array.isArray(concerns) || concerns.length === 0) return null;
+  const names = new Set();
+  for (const concern of concerns) {
+    if (
+      !concern || typeof concern.name !== "string" || concern.name === "" ||
+      typeof concern.summary !== "string" || concern.summary === "" ||
+      names.has(concern.name)
+    ) return null;
+    names.add(concern.name);
+  }
+  return concerns;
+}
+
+// A concern as the planning and scope prompts list it: its name and the
+// summary that completes "reads the change for …".
+export function concernLine(concern) {
+  return `- \`${concern.name}\`: ${concern.summary}`;
 }

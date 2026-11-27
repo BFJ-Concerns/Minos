@@ -1,9 +1,8 @@
 // What each stage of the review workflows returns: the exploration plan,
 // the specialist, merge and verifier schemas both workflows share, what the merge and verifier
-// legs are shown of a finding, and the verifier batch size. A workflow
-// script imports nothing, so the input builders attach these as
-// `args.contracts` and each workflow validates them before dispatching
-// anything; neither keeps a copy.
+// legs are shown of a finding, and the verifier batch size. The input
+// builders attach these as `args.contracts` and each workflow validates
+// them before dispatching anything; neither keeps a copy.
 
 export const VERIFIER_BATCH_SIZE = 6;
 
@@ -221,4 +220,35 @@ export function reviewContracts(concernNames) {
     verifierVerdictShape,
     verifierSchema,
   }));
+}
+
+// A workflow's check of the `contracts` its input builder attached from
+// reviewContracts: the set, or null when it is missing or malformed, which
+// fails the workflow before dispatch.
+export function contractsFromInput(input) {
+  const contracts = input && input.contracts;
+  if (!contracts || typeof contracts !== "object" || Array.isArray(contracts)) return null;
+  if (!Number.isInteger(contracts.verifierBatchSize) || contracts.verifierBatchSize < 1) return null;
+  if (!Number.isInteger(contracts.verificationRounds) || contracts.verificationRounds < 1) return null;
+  for (const name of ["mergeFindingFields", "verifierFindingFields"])
+    if (!Array.isArray(contracts[name]) || !contracts[name].includes("id")) return null;
+  for (const name of [
+    "explorationSchema",
+    "findingShape",
+    "outOfScopeObservationShape",
+    "applicabilityShape",
+    "specialistSchema",
+    "mergeSchema",
+    "verifierVerdictShape",
+    "verifierSchema",
+  ]) {
+    const shape = contracts[name];
+    if (
+      !shape || typeof shape !== "object" || Array.isArray(shape) ||
+      shape.type !== "object" ||
+      !Array.isArray(shape.required) ||
+      !shape.properties || typeof shape.properties !== "object" || Array.isArray(shape.properties)
+    ) return null;
+  }
+  return contracts;
 }

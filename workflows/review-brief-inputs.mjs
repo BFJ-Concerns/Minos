@@ -39,7 +39,11 @@ if (argumentError) {
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: Infinity,
   }).split("\0").filter(Boolean);
-  const changedPaths = gitLines("diff", "--name-only", "-z", target, head);
+  // Without rename detection a moved file lists both its old and its new
+  // path, so a file moved out of a brief's directory still engages the
+  // brief; the scope gate (review-scope-inputs.mjs) reads the diff the same
+  // way, so the two agree on which briefs a change engages.
+  const changedPaths = gitLines("diff", "--no-renames", "--name-only", "-z", target, head);
   const trackedPaths = gitLines("ls-files", "-z");
   const trackedFiles = [];
   for (const path of trackedPaths) {
@@ -62,7 +66,14 @@ if (argumentError) {
     guidance,
     routing,
     ...(pullRequest === undefined ? {} : { pullRequest }),
-    prompts: { repository: prompts.repository, merge: prompts.merge, verifier: prompts.verifier },
+    prompts: {
+      repository: prompts.repository,
+      briefRelevance: prompts.briefRelevance,
+      briefPartition: prompts.briefPartition,
+      assignment: prompts.assignment,
+      merge: prompts.merge,
+      verifier: prompts.verifier,
+    },
     contracts: reviewContracts(concerns.map(({ name }) => name)),
   };
 

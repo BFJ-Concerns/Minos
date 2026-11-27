@@ -1,28 +1,21 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { shippedContracts } from "./shipped-prompts-fixture.mjs";
+import { fileInventoryFromPrompt, relevanceConditionsFromPrompt } from "./brief-planner-prompt-fixture.mjs";
 import { findingsFromVerifierPrompt, verdictFor } from "./verifier-prompt-fixture.mjs";
-import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
+import { invokeWorkflow, loadWorkflow } from "./workflow-invocation-fixture.mjs";
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-
-function workflow(filename) {
-  const body = readFileSync(join(workflowsDir, filename), "utf8")
-    .replace(/^export const meta =/m, "const meta =");
-  return new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", body);
-}
-
 const workflows = {
-  review: workflow("review.js"),
-  briefs: workflow("review-briefs.js"),
+  review: loadWorkflow("review.js"),
+  briefs: loadWorkflow("review-briefs.js"),
 };
 
 function git(root, ...rest) {
@@ -94,11 +87,11 @@ function respond(label, prompt) {
     };
   }
   if (label === "brief-relevance") {
-    const concerns = JSON.parse(prompt.match(/Concerns: (\[[^\n]+\])/)[1]);
+    const concerns = relevanceConditionsFromPrompt(prompt);
     return { decisions: concerns.map((entry) => ({ brief: entry.brief, applicable: true, reason: "relevant" })) };
   }
   if (label.startsWith("brief-partition-")) {
-    const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
+    const files = fileInventoryFromPrompt(prompt);
     return { units: [{ id: "complete-scope", concern: "complete assigned scope", files }] };
   }
   if (label === "merge" || label === "brief-merge" || label.includes("merge-round-")) {
@@ -189,13 +182,3 @@ test("both workflows dispatch with the contracts they are handed, keeping no cop
   }
 });
 
-test("both workflows carry the same input checks, prompt filling, merge and verification", () => {
-  const shared = (filename) => {
-    const source = readFileSync(join(workflowsDir, filename), "utf8");
-    const start = source.indexOf("// The input checks, prompt filling, merge and verification below");
-    const end = source.indexOf("function uncheckedFindingOf");
-    assert.ok(start !== -1 && end > start, `${filename} carries the shared stage code`);
-    return source.slice(start, end);
-  };
-  assert.equal(shared("review.js"), shared("review-briefs.js"));
-});

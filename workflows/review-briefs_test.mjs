@@ -2,14 +2,14 @@ import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { fileInventoryFromPrompt, relevanceConditionsFromPrompt } from "./brief-planner-prompt-fixture.mjs";
 import { findingsFromVerifierPrompt, verdictFor } from "./verifier-prompt-fixture.mjs";
-import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
+import { invokeWorkflow, loadWorkflow } from "./workflow-invocation-fixture.mjs";
 import { adjudicateEnvelope } from "./archive-fixture.mjs";
 import { resolveRouting } from "./role-routing.mjs";
 
@@ -18,12 +18,9 @@ const pairedRouting = resolveRouting({ provisioned: ["claude", "codex"] });
 import { briefRecords } from "./brief-dispositions.mjs";
 import { shippedBriefPrompts, shippedContracts } from "./shipped-prompts-fixture.mjs";
 
-const scriptPath = fileURLToPath(new URL("./review-briefs.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-brief-inputs.mjs", import.meta.url));
-const source = await readFile(scriptPath, "utf8");
-const body = source.replace(/^export const meta =/m, "const meta =");
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const script = new AsyncFunction("agent", "parallel", "pipeline", "phase", "log", "args", body);
+const scopeInputScriptPath = fileURLToPath(new URL("./review-scope-inputs.mjs", import.meta.url));
+const script = loadWorkflow("review-briefs.js");
 
 function brief(path, content, overrides = {}) {
   const inner = path.replace(/^\.review\//, "");
@@ -96,12 +93,12 @@ function responder({ relevance, partition, specialist, merge, verify } = {}) {
   return (label, prompt, opts) => {
     if (label === "brief-relevance") {
       if (relevance) return relevance(label, prompt, opts);
-      const concerns = JSON.parse(prompt.match(/Concerns: (\[[^\n]+\])/)[1]);
+      const concerns = relevanceConditionsFromPrompt(prompt);
       return { decisions: concerns.map((entry) => ({ brief: entry.brief, applicable: true, reason: "relevant" })) };
     }
     if (label.startsWith("brief-partition-")) {
       if (partition) return partition(label, prompt, opts);
-      const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
+      const files = fileInventoryFromPrompt(prompt);
       return { units: [{ id: "complete-scope", concern: "complete assigned scope", files }] };
     }
     if (label === "brief-merge" || label.startsWith("brief-merge-round-")) return merge ? merge(label, prompt, opts) : separateGroups(prompt);
@@ -235,7 +232,7 @@ test("a matched occasion runs a missing-scope brief and records the misconfigura
 
   assert.equal(calls.length, 1);
   assert.match(calls[0].opts.label, /^repository-/);
-  assert.match(calls[0].prompt, /All of `missing\/` as it stands at the head commit/);
+  assert.match(calls[0].prompt, /All of `missing\/`, a path from the repository root, as it stands at the head commit/);
   assert.doesNotMatch(calls[0].prompt, /the whole repository/);
   assert.deepEqual(result.dispatches, [{
     brief: candidate.path,
@@ -606,7 +603,7 @@ test("repository-brief verifier pools findings from separate units with their ow
     trackedFiles: [{ path: "pkg/x.go" }, { path: "cmd/main.go" }],
   }), responder({
     partition: (_label, prompt) => {
-      const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
+      const files = fileInventoryFromPrompt(prompt);
       return {
         units: [{
           id: files[0] === "pkg/x.go" ? "error-paths" : "command-design",
@@ -810,6 +807,45 @@ test("the enumerator reads a tracked-file listing larger than the default child-
   assert.deepEqual(enumerated.briefs, []);
 });
 
+test("a file moved out of a brief's directory engages the brief in the scope gate and the brief builder alike", (t) => {
+  const fixture = mkdtempSync(join(tmpdir(), "minos-brief-rename-"));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  const root = join(fixture, "workspace");
+  mkdirSync(join(root, "pkg"), { recursive: true });
+  mkdirSync(join(root, ".review", "pkg"), { recursive: true });
+  const git = (...gitArgs) => execFileSync("git", ["-C", root, ...gitArgs], { encoding: "utf8" });
+  git("init", "-q");
+  git("config", "user.name", "Fixture");
+  git("config", "user.email", "fixture@example.test");
+  writeFileSync(join(root, "AGENTS.md"), "guidance\n");
+  writeFileSync(join(root, "pkg", "moved.go"), "package pkg\n" + "// retained line\n".repeat(20));
+  writeFileSync(join(root, ".review", "pkg", "layout.md"), "# Layout\n\nJudge the package layout.\n");
+  git("add", ".");
+  git("commit", "-qm", "base");
+  const target = git("rev-parse", "HEAD").trim();
+  mkdirSync(join(root, "elsewhere"));
+  git("mv", "pkg/moved.go", "elsewhere/moved.go");
+  git("commit", "-qm", "head");
+  const head = git("rev-parse", "HEAD").trim();
+  const orientationPath = join(fixture, "orientation.json");
+  writeFileSync(orientationPath, JSON.stringify({
+    repository: root,
+    guidance: [{ source: { path: "AGENTS.md" }, location: join(root, "AGENTS.md"), origin: "checked-in" }],
+    misconfigurations: [],
+  }));
+  const env = { ...process.env, MINOS_ORIENTATION: orientationPath, MINOS_WORKSPACE: root, MINOS_PROVISIONED_ENGINES: "claude codex", MINOS_ROUTING: "" };
+  const built = (script) => JSON.parse(execFileSync(process.execPath, [script, target, head], { encoding: "utf8", env }));
+
+  const scope = built(scopeInputScriptPath);
+  const briefInput = built(inputScriptPath);
+  assert.deepEqual(scope.briefDispositions, [
+    { brief: ".review/pkg/layout.md", title: "Layout", engaged: true, via: "path-scope" },
+  ]);
+  assert.deepEqual(briefInput.changedPaths, ["elsewhere/moved.go", "pkg/moved.go"]);
+  assert.equal(briefInput.briefs.length, 1);
+  assert.equal(briefInput.briefs[0].disposition.triggered, true);
+});
+
 const workerInput = args({
   briefs: [brief(".review/errors.md", "---\nrelevance: Error-path changes.\nextent: full\nsweep: per-file\n---\nJudge errors.")],
 });
@@ -930,7 +966,7 @@ test("a diff-extent brief reviewer is assigned what the change did within the br
   const reviewer = calls.find((call) => call.opts.label?.startsWith("repository-"));
   assert.match(reviewer.prompt, /^# Repository-brief review\n/);
   assert.match(reviewer.prompt, /<repository-brief path="\.review\/pkg\/errors\.md">\n---\nrelevance: Error-path changes\.\n---\nJudge errors\.\n<\/repository-brief>/);
-  assert.match(reviewer.prompt, /What `git diff target111\.\.\.head222` changed within `pkg\/`\./);
+  assert.match(reviewer.prompt, /What `git diff target111\.\.\.head222` changed within `pkg\/`, a path from the repository root\./);
   assert.ok(!/\{\{[a-z-]+\}\}/.test(reviewer.prompt), "every slot is filled");
 });
 
@@ -943,4 +979,135 @@ test("a brief reviewer's finding outside the brief's concern is verified without
     { title: "new race", outsideConcern: true, wholeScope: undefined },
     { title: "repository defect", outsideConcern: undefined, wholeScope: "pkg/" },
   ]);
+});
+
+test("a brief grouping that loses or repeats a finding stops the brief review before verification", async (t) => {
+  const twoFindings = () => specialistResult([finding({ title: "first brief defect" }), finding({ title: "second brief defect", line: 9 })]);
+  for (const groups of [
+    (ids) => [{ findingIds: [ids[0]], primary: ids[0], sharedCause: "" }],
+    (ids) => [{ findingIds: ids, primary: ids[0], sharedCause: "" }, { findingIds: [ids[1]], primary: ids[1], sharedCause: "" }],
+    (ids) => [{ findingIds: ids, primary: "elsewhere", sharedCause: "" }],
+    (ids) => [{ findingIds: [...ids, ids[1]], primary: ids[0], sharedCause: "" }],
+  ]) {
+    const { result, calls } = await run(args(), responder({
+      specialist: twoFindings,
+      merge: (_label, prompt) => ({ groups: groups(findingsFromVerifierPrompt(prompt).map((entry) => entry.id)) }),
+    }));
+    assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
+    assert.deepEqual(result.proposedFindings, []);
+    assert.ok(result.incomplete.some((reason) => reason.startsWith("agent brief-merge returned a grouping")), result.incomplete.join("\n"));
+    const verdict = await adjudicateEnvelope(t, result);
+    assert.equal(verdict.status, "incomplete");
+  }
+});
+
+test("a finding a brief verifier raises is verified by a later leg, and one the last round raises stays unchecked", async (t) => {
+  let raisedCount = 0;
+  const { result, calls } = await run(args(), responder({
+    verify: (label, prompt) => ({
+      verdicts: findingsFromVerifierPrompt(prompt).map((entry) => verdictFor(entry.id, { confidence: 92, reason: "confirmed" })),
+      newFindings: [finding({ title: `raised by ${label}`, line: 40 + (raisedCount += 1) })],
+      outOfScopeObservations: [],
+    }),
+  }));
+  const verifierLabels = calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => call.opts.label);
+  assert.equal(verifierLabels.length, 3);
+  const lastLabel = verifierLabels.at(-1);
+  assert.deepEqual(result.proposedFindings.map(({ source, verifyLabel }) => ({ source, verifyLabel })).slice(1), [
+    { source: "verification", verifyLabel: verifierLabels[1] },
+    { source: "verification", verifyLabel: verifierLabels[2] },
+  ]);
+  assert.deepEqual(result.uncheckedFindings.map(({ id, source }) => ({ id, source })), [
+    { id: `${lastLabel}:raised:1`, source: "verification" },
+  ]);
+  assert.ok(result.incomplete.includes("verification stopped after 3 rounds with 1 finding(s) raised and not verified"));
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "incomplete");
+  assert.ok(verdict.incomplete.includes(
+    `finding "raised by ${lastLabel}" has no complete verdict (raised in the last round of verification and never verified)`,
+  ), verdict.incomplete.join("\n"));
+  assert.deepEqual(verdict.confirmedFindings, []);
+});
+
+test("findings brief verifiers raise in one round are merged under the brief's merge label before the next round", async (t) => {
+  const merges = [];
+  const { result } = await run(args(), responder({
+    merge: (label, prompt) => {
+      merges.push(label);
+      return separateGroups(prompt);
+    },
+    verify: (label, prompt) => ({
+      verdicts: findingsFromVerifierPrompt(prompt).map((entry) => verdictFor(entry.id, { confidence: 92, reason: "confirmed" })),
+      newFindings: label.startsWith("verify-brief-round-") ? [] : [
+        finding({ title: "first raised defect", line: 50 }),
+        finding({ title: "second raised defect", line: 60 }),
+      ],
+      outOfScopeObservations: [],
+    }),
+  }));
+  assert.deepEqual(merges, ["brief-merge-round-2"], "one proposed finding needs no merge; the two raised ones do");
+  assert.ok(result.requiredModelEvidence.some((leg) => leg.label === "brief-merge-round-2" && leg.role === "merge"));
+  assert.equal(result.proposedFindings.filter((entry) => entry.source === "verification").length, 2);
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+});
+
+test("the relevance and partition legs are sent their shipped prompts with every slot filled", async () => {
+  const relevant = brief(".review/errors.md", "---\nrelevance: Error-path changes.\n---\nJudge errors.");
+  const whole = brief(".review/pkg/layout.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge the layout.");
+  const { calls } = await run(args({
+    briefs: [relevant, whole],
+    occasion: "release",
+    trackedFiles: [{ path: "pkg/x.go" }, { path: "pkg/y.go" }, { path: "other/z.go" }],
+  }), responder({ specialist: () => specialistResult([]) }));
+
+  const relevance = calls.find((call) => call.opts.label === "brief-relevance").prompt;
+  assert.match(relevance, /^# Brief relevance\n/);
+  assert.match(relevance, /The change under review is `git diff target111\.\.\.head222`\./);
+  assert.match(relevance, /PROJECT_GUIDANCE_TEAL/);
+  assert.deepEqual(relevanceConditionsFromPrompt(relevance), [{ brief: ".review/errors.md", relevance: "Error-path changes." }]);
+  assert.ok(!/\{\{[a-z-]+\}\}/.test(relevance), "every relevance slot is filled");
+
+  const partition = calls.find((call) => call.opts.label.startsWith("brief-partition-")).prompt;
+  assert.match(partition, /^# Brief partition\n/);
+  assert.match(partition, /<repository-brief path="\.review\/pkg\/layout\.md">\n---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge the layout\.\n<\/repository-brief>/);
+  assert.match(partition, /PROJECT_GUIDANCE_TEAL/);
+  assert.deepEqual(fileInventoryFromPrompt(partition), ["pkg/x.go", "pkg/y.go"]);
+  assert.ok(!/\{\{[a-z-]+\}\}/.test(partition), "every partition slot is filled");
+});
+
+test("a partitioned unit's reviewer is assigned its part, its unit and its files from the shipped assignment parts", async () => {
+  const whole = brief(".review/layout.md", "---\nextent: full\nsweep: per-file\noccasion: release\n---\nJudge the layout.");
+  const { calls } = await run(args({
+    briefs: [whole],
+    occasion: "release",
+    trackedFiles: [{ path: "pkg/x.go" }, { path: "pkg/y.go" }],
+  }), responder({
+    partition: () => ({ units: [{ id: "all", concern: "The package's one module, read for its layout.", files: ["pkg/x.go", "pkg/y.go"] }] }),
+    specialist: () => specialistResult([]),
+  }));
+  const reviewer = calls.find((call) => call.opts.label?.startsWith("repository-")).prompt;
+  const expected = [
+    "All of `./`, a path from the repository root, as it stands at the head commit, `head222`, whether or not the change touched it.",
+    "The plan for reading that part gives you this unit of it: The package's one module, read for its layout.",
+    "The files you answer for:\n\n- `pkg/x.go`\n- `pkg/y.go`",
+  ].join("\n\n");
+  assert.ok(reviewer.includes(expected), reviewer);
+  assert.ok(!/\{\{[a-z-]+\}\}/.test(reviewer), "every slot is filled");
+});
+
+test("a brief input missing a shipped brief-planner or assignment prompt fails before dispatch", async () => {
+  for (const prompts of [
+    { ...shippedBriefPrompts, briefRelevance: undefined },
+    { ...shippedBriefPrompts, briefPartition: `${shippedBriefPrompts.briefPartition}\n{{findings}}` },
+    { ...shippedBriefPrompts, assignment: { ...shippedBriefPrompts.assignment, files: undefined } },
+    { ...shippedBriefPrompts, assignment: undefined },
+  ]) {
+    const calls = [];
+    await assert.rejects(run(args({ prompts }), (label, prompt, opts) => {
+      calls.push(label);
+      return responder()(label, prompt, opts);
+    }));
+    assert.deepEqual(calls, []);
+  }
 });
