@@ -244,9 +244,23 @@ test("a run with no review classifies nothing, and one with no confirmed finding
 
 test("a filing destination this run cannot read is said to be unread", (t) => {
   const { run } = fixtureRun(t);
+  const orientation = { guidance: [] };
 
-  assert.match(filedEntries(run, { kind: "issue", repository: "owner/plans" }), /\(issue on owner\/plans\) could not be read/);
-  assert.match(filedEntries(run, { kind: "pull-request-comment" }), /could not be read/);
-  assert.match(filedEntries(run, { kind: "none" }), /files nothing/);
-  assert.match(filedEntries(run, { kind: "file", path: "MISSING.md" }), /does not exist on the target branch/);
+  assert.match(filedEntries(run, { kind: "issue", repository: "owner/plans" }, orientation), /\(issue on owner\/plans\) could not be read/);
+  assert.match(filedEntries(run, { kind: "pull-request-comment" }, orientation), /could not be read/);
+  assert.match(filedEntries(run, { kind: "file", repository: "owner/plans", path: "ISSUES.md" }, orientation), /\(file on owner\/plans\) could not be read/);
+  assert.match(filedEntries(run, { kind: "none" }, orientation), /files nothing/);
+  assert.match(filedEntries(run, { kind: "file", path: "MISSING.md" }, orientation), /does not exist on the target branch/);
+});
+
+test("a file in a repository setup cloned for guidance is read from that clone", (t) => {
+  const { run } = fixtureRun(t);
+  const clone = join(operationRoot(t, "minos-classify-plans-"), "owner", "plans");
+  mkdirSync(clone, { recursive: true });
+  writeFileSync(join(clone, "README.md"), "Plans.\n");
+  writeFileSync(join(clone, "ISSUES.md"), "- Pause naming differs.\n");
+  const orientation = { guidance: [{ source: { repository: "owner/plans", path: "README.md" }, location: join(clone, "README.md"), origin: "configured" }] };
+
+  assert.equal(filedEntries(run, { kind: "file", repository: "owner/plans", path: "ISSUES.md" }, orientation), "- Pause naming differs.\n");
+  assert.match(filedEntries(run, { kind: "file", repository: "owner/plans", path: "TODO.md" }, orientation), /TODO\.md does not exist in owner\/plans/);
 });

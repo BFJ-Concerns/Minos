@@ -12,7 +12,8 @@
 // decision, `brief` absent when the brief stage returned no verdict.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { earlierMinosFindings } from "../earlier-minos-findings.mjs";
 import { decisionFrom, stage as verdictClassification } from "../judgements/verdict-classification.mjs";
@@ -39,24 +40,44 @@ export function groupFindings(verdict, threshold) {
 
 // What the filing destination already holds, where this run can read it
 // without another clone: a file in the reviewed repository, as the target
-// carries it. Anywhere else is said to be unread, and the stage classifies
-// without it.
-export function filedEntries(run, destination) {
+// carries it, or a file in a repository setup already cloned as a guidance
+// source, as that clone holds it. Anywhere else is said to be unread, and
+// the stage classifies without it.
+export function filedEntries(run, destination, orientation) {
   if (destination.kind === "none") return "This repository files nothing, so no entries are on file.";
   if (destination.kind === "file" && !destination.repository) {
     try {
-      const text = execFileSync("git", ["-C", run.workspace, "show", `${run.target}:${destination.path}`], {
+      return entriesText(destination.path, execFileSync("git", ["-C", run.workspace, "show", `${run.target}:${destination.path}`], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         maxBuffer: Infinity,
-      });
-      return text.trim() === "" ? `${destination.path} is empty.` : text;
+      }));
     } catch {
       return `${destination.path} does not exist on the target branch, so no entries are on file.`;
     }
   }
+  const clone = destination.kind === "file" && guidanceClone(orientation, destination.repository);
+  if (clone) {
+    const location = join(clone, destination.path);
+    return existsSync(location)
+      ? entriesText(destination.path, readFileSync(location, "utf8"))
+      : `${destination.path} does not exist in ${destination.repository}, so no entries are on file.`;
+  }
   const where = destination.repository ? `${destination.kind} on ${destination.repository}` : destination.kind;
   return `The filing destination (${where}) could not be read in this run.`;
+}
+
+function entriesText(path, text) {
+  return text.trim() === "" ? `${path} is empty.` : text;
+}
+
+// The working tree setup cloned a secondary repository into, found from a
+// guidance document it read there: the document's location less its path.
+function guidanceClone(orientation, repository) {
+  const entry = (orientation.guidance || []).find((guidance) =>
+    guidance.source && guidance.source.repository === repository &&
+    typeof guidance.location === "string" && guidance.location.endsWith(`/${guidance.source.path}`));
+  return entry ? entry.location.slice(0, -(entry.source.path.length + 1)) : null;
 }
 
 function filingDestination(env) {
@@ -96,7 +117,7 @@ export async function classify(run, settled) {
     threshold,
     findings,
     earlierFindings: earlierMinosFindings(snapshot, threads).map(({ path, line, head, finding }) => ({ path, line, head, finding })),
-    filedEntries: filedEntries(run, filingDestination(run.env)),
+    filedEntries: filedEntries(run, filingDestination(run.env), orientation),
   };
 
   const answer = await run.judge(verdictClassification, input);
