@@ -39,6 +39,7 @@ import { fileURLToPath } from "node:url";
 import { JUDGEMENT_RUNNER, JUDGEMENT_WORKFLOW, answerFrom, judgementArgs, judgementRecord } from "./judgement-stage.mjs";
 import { CHANGES_REQUESTED, CLEAN, CONTINUATION, INCOMPLETE, SUPERSEDED, spendsHead } from "./run-endings.mjs";
 import { prepareStage } from "./run-process.mjs";
+import { chooseReviewMode } from "./run-steps/choose-review-mode.mjs";
 import { claim } from "./run-steps/claim.mjs";
 import { classify } from "./run-steps/classify.mjs";
 import { conclude } from "./run-steps/conclude.mjs";
@@ -54,7 +55,10 @@ import { settleEarlierFindings } from "./run-steps/settle-earlier-findings.mjs";
 import { withdraw } from "./run-steps/withdraw.mjs";
 import { writeReport } from "./run-steps/write-report.mjs";
 
-export const COURSE = [claim, markWorking, inspectPush, review, reviewBriefs, classify, settleEarlierFindings, publish, conclude];
+export const COURSE = [
+  claim, markWorking, inspectPush, chooseReviewMode, review, reviewBriefs,
+  classify, settleEarlierFindings, publish, conclude,
+];
 export const CLOSING = [recordFailure, withdraw, writeReport];
 
 const pressureBoundaries = new Map([

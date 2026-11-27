@@ -98,6 +98,12 @@ test("complete legs and a complete verifier result produce a complete adapter ve
     }],
   );
   assert.equal("reviewBody" in adapterVerdict, false);
+  // A main review names its mode and the verdict carries it; the brief
+  // stage names none, and nothing but a mode is taken for one.
+  assert.equal("mode" in adapterVerdict, false);
+  for (const mode of ["specialist", "quick"])
+    assert.equal((await adjudicate({ envelope: { ...envelope, mode }, recordDir: fixtureArchiveDir })).mode, mode);
+  assert.equal("mode" in await adjudicate({ envelope: { ...envelope, mode: "automatic" }, recordDir: fixtureArchiveDir }), false);
   assert.deepEqual(adapterVerdict.ran, [{ brief: ".review/errors.md", title: "Error handling" }]);
   assert.deepEqual(adapterVerdict.skipped, []);
   assert.deepEqual(adapterVerdict.misconfigurations, []);
