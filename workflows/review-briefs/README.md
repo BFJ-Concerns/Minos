@@ -13,7 +13,6 @@ slots and sends it.
 | `repository.md` | one proposing leg for each unit of a reviewed repository's `.review/` brief | `specialistSchema` |
 | `merge.md` | one leg, between proposing and verifying | `mergeSchema` |
 | `verifier.md` | the verifier legs, a batch of findings each | `verifierSchema` |
-| `scope.md` | the engagement gate in `review-scope.js` | its own schema there |
 
 `reviewed-change.md`, `writing-a-finding.md` and `severity-scale.md` are
 sections several of those prompts share. They are never sent on their own.

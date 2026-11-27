@@ -11,7 +11,6 @@ test("both engines provisioned and nothing configured is the cross-family pairin
     exploration: { engine: "codex", model: "gpt-6.1-sol", effort: "high" },
     proposer: { engine: "codex", model: "gpt-6.2-astra", effort: "medium" },
     verifier: { engine: "claude", model: "claude-opus-5-5", effort: "medium" },
-    "engagement-gate": { engine: "codex", model: "gpt-6.1-sol", effort: "medium" },
     "brief-planner": { engine: "codex", model: "gpt-6.1-sol", effort: "high" },
     judgement: { engine: "claude", model: "claude-opus-5-5", effort: "medium" },
   });

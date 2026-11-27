@@ -9,7 +9,7 @@
 
 // `judgement` is the role every one-shot judgement stage of the run driver
 // takes (workflows/judgements/README.md).
-export const ROLES = ["exploration", "proposer", "verifier", "engagement-gate", "brief-planner", "judgement"];
+export const ROLES = ["exploration", "proposer", "verifier", "brief-planner", "judgement"];
 export const ENGINES = ["claude", "codex"];
 // The Ensemble runtime's canonical effort domain; the Go loader validates the
 // configured value against the same list, so nothing the run receives can be
@@ -28,7 +28,6 @@ const DEFAULT_EFFORT = {
   exploration: "high",
   proposer: "medium",
   verifier: "medium",
-  "engagement-gate": "medium",
   "brief-planner": "high",
   judgement: "medium",
 };
@@ -40,7 +39,6 @@ const PAIRED_ENGINE = {
   exploration: "codex",
   proposer: "codex",
   verifier: "claude",
-  "engagement-gate": "codex",
   "brief-planner": "codex",
   judgement: "claude",
 };

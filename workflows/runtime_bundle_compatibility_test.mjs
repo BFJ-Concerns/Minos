@@ -24,7 +24,6 @@ const expectedCallSites = new Map([
   ["judgement.js", 1],
   ["review.js", 1],
   ["review-briefs.js", 2],
-  ["review-scope.js", 1],
   ["review-stages.mjs", 3],
 ]);
 

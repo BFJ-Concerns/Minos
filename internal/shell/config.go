@@ -147,12 +147,11 @@ type RoleRouting struct {
 
 // Routing holds the workflow roles by their configured names.
 type Routing struct {
-	Exploration    RoleRouting `toml:"exploration"`
-	Proposer       RoleRouting `toml:"proposer"`
-	Verifier       RoleRouting `toml:"verifier"`
-	EngagementGate RoleRouting `toml:"engagement-gate"`
-	BriefPlanner   RoleRouting `toml:"brief-planner"`
-	Judgement      RoleRouting `toml:"judgement"`
+	Exploration  RoleRouting `toml:"exploration"`
+	Proposer     RoleRouting `toml:"proposer"`
+	Verifier     RoleRouting `toml:"verifier"`
+	BriefPlanner RoleRouting `toml:"brief-planner"`
+	Judgement    RoleRouting `toml:"judgement"`
 }
 
 // Roles lists the set roles by name for export and validation; an unset role
@@ -164,7 +163,7 @@ func (r Routing) Roles() map[string]RoleRouting {
 		routing RoleRouting
 	}{
 		{"exploration", r.Exploration}, {"proposer", r.Proposer}, {"verifier", r.Verifier},
-		{"engagement-gate", r.EngagementGate}, {"brief-planner", r.BriefPlanner},
+		{"brief-planner", r.BriefPlanner},
 		{"judgement", r.Judgement},
 	} {
 		if role.routing != (RoleRouting{}) {

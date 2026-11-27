@@ -807,7 +807,7 @@ test("the enumerator reads a tracked-file listing larger than the default child-
   assert.deepEqual(enumerated.briefs, []);
 });
 
-test("a file moved out of a brief's directory engages the brief in the scope gate and the brief builder alike", (t) => {
+test("a file moved out of a brief's directory engages the brief for the resident lead and the brief builder alike", (t) => {
   const fixture = mkdtempSync(join(tmpdir(), "minos-brief-rename-"));
   t.after(() => rmSync(fixture, { recursive: true, force: true }));
   const root = join(fixture, "workspace");
@@ -838,9 +838,7 @@ test("a file moved out of a brief's directory engages the brief in the scope gat
 
   const scope = built(scopeInputScriptPath);
   const briefInput = built(inputScriptPath);
-  assert.deepEqual(scope.briefDispositions, [
-    { brief: ".review/pkg/layout.md", title: "Layout", engaged: true, via: "path-scope" },
-  ]);
+  assert.deepEqual(scope, { briefsEngage: true });
   assert.deepEqual(briefInput.changedPaths, ["elsewhere/moved.go", "pkg/moved.go"]);
   assert.equal(briefInput.briefs.length, 1);
   assert.equal(briefInput.briefs[0].disposition.triggered, true);

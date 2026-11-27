@@ -41,8 +41,7 @@ if (argumentError) {
   }).split("\0").filter(Boolean);
   // Without rename detection a moved file lists both its old and its new
   // path, so a file moved out of a brief's directory still engages the
-  // brief; the scope gate (review-scope-inputs.mjs) reads the diff the same
-  // way, so the two agree on which briefs a change engages.
+  // brief. Push inspection counts both paths for the same reason.
   const changedPaths = gitLines("diff", "--no-renames", "--name-only", "-z", target, head);
   const trackedPaths = gitLines("ls-files", "-z");
   const trackedFiles = [];

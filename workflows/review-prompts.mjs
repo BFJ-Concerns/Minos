@@ -26,7 +26,6 @@ export const STAGE_RUN_SLOTS = {
   "brief-relevance": [...REVIEWED_CHANGE_SLOTS, "changed-paths", "relevance-conditions"],
   "brief-partition": [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "file-inventory"],
   assignment: ["target", "head", "brief-directory", "unit-concern", "unit-files"],
-  scope: [...REVIEWED_CHANGE_SLOTS, "concerns", "changed-files"],
   merge: ["target", "head", "findings"],
   verifier: [...REVIEWED_CHANGE_SLOTS, "findings"],
 };
@@ -118,7 +117,6 @@ export function reviewPrompts(repositoryRoot) {
         unit: prompt("assignment", "assignment/unit.md"),
         files: prompt("assignment", "assignment/files.md"),
       },
-      scope: prompt("scope", "scope.md"),
       merge: prompt("merge", "merge.md"),
       verifier: prompt("verifier", "verifier.md"),
     },
@@ -142,7 +140,7 @@ export function concernsFromInput(input) {
   return concerns;
 }
 
-// A concern as the planning and scope prompts list it: its name and the
+// A concern as the planning prompt list it: its name and the
 // summary that completes "reads the change for …".
 export function concernLine(concern) {
   return `- \`${concern.name}\`: ${concern.summary}`;
