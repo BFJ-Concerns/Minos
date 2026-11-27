@@ -139,7 +139,7 @@ func TestAppendFailureDigestWritesFailuresMarkdown(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if appended, err := appendFailureDigest(runDir, cfg.Runs.FailuresRepo); err != nil {
+	if appended, err := appendFailureDigest(runDir, cfg); err != nil {
 		t.Fatal(err)
 	} else if !appended {
 		t.Fatal("failure evidence was not appended")
@@ -266,7 +266,7 @@ func TestFailureDigestUsesExplicitBoundedEvidenceSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	appended, err := appendFailureDigest(runDir, cfg.Runs.FailuresRepo)
+	appended, err := appendFailureDigest(runDir, cfg)
 	if err != nil || !appended {
 		t.Fatalf("appendFailureDigest() = %t, %v", appended, err)
 	}
@@ -356,7 +356,7 @@ func TestFailureDigestNotesUnreadableEvidenceAndContinues(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(runDir, "ensemble-records", "run.json"), "ensemble evidence\n")
-	appended, err := appendFailureDigest(runDir, cfg.Runs.FailuresRepo)
+	appended, err := appendFailureDigest(runDir, cfg)
 	if err != nil || !appended {
 		t.Fatalf("appendFailureDigest() = %t, %v", appended, err)
 	}
@@ -664,5 +664,102 @@ test -f "$1/accept"
 	}
 	if got, want := string(attempts), strings.Repeat("minos-run-crashed-pr1\nowner-repo-pr2\n", 2); got != want {
 		t.Fatalf("archive attempts = %q, want %q", got, want)
+	}
+}
+
+func TestSweepRunResidueFallsBackToLocalFailureLog(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+
+	cfg := scratchTestConfig(t)
+	cfg.Runs.FailuresRepo = ""
+	cfg.Runs.FailureLog = filepath.Join(t.TempDir(), "logs", "failures.log")
+	crashed := filepath.Join(cfg.Runs.Dir, "minos-run-crashed-pr1")
+	terminal := filepath.Join(cfg.Runs.Dir, "minos-run-terminal-pr2")
+	writeTestFile(t, filepath.Join(crashed, "report.md"), "crash evidence\n")
+	writeTestFile(t, filepath.Join(terminal, "report.md"), "terminal evidence\n")
+	writeTestFile(t, filepath.Join(terminal, archivePendingFile), "terminal-pr2\n")
+
+	// An unwritable log keeps the crash evidence available for a retry.
+	if err := os.MkdirAll(cfg.Runs.FailureLog, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := sweepRunResidue(t.Context(), cfg, nil); err == nil {
+		t.Fatal("sweep accepted a directory as its failure log")
+	}
+	if _, err := os.Stat(crashed); err != nil {
+		t.Fatalf("crash evidence lost after failed append: %v", err)
+	}
+	if err := os.Remove(cfg.Runs.FailureLog); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, cfg.Runs.FailureLog, "earlier failure\n")
+	if err := os.Chmod(cfg.Runs.FailureLog, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Runs.ArchiveCommand = "/bin/false"
+	if err := sweepRunResidue(t.Context(), cfg, nil); err == nil {
+		t.Fatal("sweep accepted failed archiving")
+	}
+	before, err := os.ReadFile(cfg.Runs.FailureLog)
+	if err != nil || !strings.HasPrefix(string(before), "earlier failure\n") ||
+		!strings.Contains(string(before), "crash evidence") || strings.Contains(string(before), "terminal evidence") {
+		t.Fatalf("local failure log = %q, %v", before, err)
+	}
+	info, err := os.Stat(cfg.Runs.FailureLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("local failure log permissions = %o", info.Mode().Perm())
+	}
+
+	cfg.Runs.ArchiveCommand = "/bin/true"
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(cfg.Runs.FailureLog)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("archive retry changed the local failure log: %q, %v", after, err)
+	}
+	if _, err := os.Stat(crashed); !os.IsNotExist(err) {
+		t.Fatalf("crash evidence directory survived accepted archiving: %v", err)
+	}
+}
+
+func TestConcurrentSalvageAppendsOneLocalFailureDigest(t *testing.T) {
+	cfg := scratchTestConfig(t)
+	cfg.Runs.FailuresRepo = ""
+	cfg.Runs.FailureLog = filepath.Join(t.TempDir(), "failures.log")
+	name := "minos-run-crashed-pr1"
+	runDir := filepath.Join(cfg.Runs.Dir, name)
+	writeTestFile(t, filepath.Join(runDir, "report.md"), "crash evidence\n")
+
+	type result struct {
+		appended bool
+		err      error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			_, appended, err := prepareResidueArchive(cfg, runDir, name)
+			results <- result{appended, err}
+		}()
+	}
+	appends := 0
+	for range 2 {
+		got := <-results
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.appended {
+			appends++
+		}
+	}
+	log, err := os.ReadFile(cfg.Runs.FailureLog)
+	if err != nil || appends != 1 || strings.Count(string(log), "crash evidence") != 1 {
+		t.Fatalf("local log after %d appends = %q, %v", appends, log, err)
 	}
 }
