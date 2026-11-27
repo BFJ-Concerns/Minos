@@ -398,10 +398,11 @@ best-effort and cannot change the run result. Until the archive command
 succeeds, the run directory carries a `.archive-pending` file and is kept for
 the sweep to archive again; a run that cannot write that file exits with
 status 74 and keeps its directory. Before each reconciliation pass,
-the sweep records a digest for each dead run with crash evidence, archives its
-transcripts, and removes its scratch directory after the archive is accepted.
+the sweep records a digest for each dead run with crash evidence and removes its
+scratch directory once the configured archive destination accepts its evidence.
 A dead run already marked `.archive-pending` is archived again without a
-second digest.
+second digest. Without an archive command, the sweep removes the directory
+after recording the digest.
 With `runs.failures-repo` configured, the sweep appends to the checkout's
 existing regular `FAILURES.md` and attempts to commit and push it.
 `provision-failure-checkout` clones the repository and configures Git, so

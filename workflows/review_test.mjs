@@ -746,7 +746,8 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post the reviews in that order, one scripted review per entry/);
   assert.match(lifecycle, /compose-review-publication\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication" "\$MINOS_ORIENTATION" "\$MINOS_REVIEW_THRESHOLD"/);
   assert.match(lifecycle, /A request-changes plan contains one review with the blocking findings\s+from both review stages and nothing else[\s\S]*A clean plan has no posts/);
-  assert.match(lifecycle, /A finding judged non-gating is advisory\. It goes to the repository's\s+configured filing destination on either outcome and is never posted on\s+the pull request/);
+  assert.match(lifecycle, /A finding that neither gates nor takes a class is advisory\. It goes to\s+the repository's configured filing destination on either outcome and\s+is never posted on the pull request/);
+  assert.match(lifecycle, /A finding that fits a class takes it at any severity[\s\S]*?such a finding is published and filed nowhere[\s\S]*?A classed finding stays in\s+the run record/);
   assert.match(lifecycle, /file-triage\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication\/triage-entries\.json" \\\s+"\$MINOS_ORIENTATION" \\\s+>/);
   assert.match(lifecycle, /`unfiled` means delivery\s+failed or the destination kind is unavailable[\s\S]*Filing failure never generates a pull-request comment,\s+never falls back to another surface, and changes no verdict/);
 });
@@ -785,10 +786,11 @@ test("the lifecycle prescribes the verdict-classification seam", () => {
   assert.match(lifecycle, /The one upward exception\s+is judging a below-threshold finding's severity an undergrade that\s+genuinely belongs at or above the threshold, named as such/);
   assert.match(lifecycle, /`\$MINOS_RUN_DIR\/verdict-decision\.json` \(`verdict-decision-brief\.json`\s+for the brief verdict\)[\s\S]*?"kind": "minos-verdict-decision-v1"[\s\S]*?"basis":[\s\S]*?"gating": false, "class": "declared-out-of-scope"[\s\S]*?"gating": true, "undergrade":/);
   assert.match(lifecycle, /Validate each decision before any forge write[\s\S]*?verdict-classification\.mjs" \\\s+--validate VERDICT_FILE DECISION_FILE "\$MINOS_REVIEW_THRESHOLD"/);
-  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition, a `class` on a gating finding, a blank `defect` label or\s+one whose findings gate or are classed differently — is corrected and\s+re-validated rather than worked around; nothing has touched the forge\s+yet/);
+  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition, a `class` on a gating finding, a blank `defect` label or\s+one whose findings, those already raised aside, gate or are classed\s+differently — is corrected and\s+re-validated rather than worked around; nothing has touched the forge\s+yet/);
   assert.match(lifecycle, /A gating disposition carries no `class` at all/);
   assert.match(lifecycle, /a brief finding at the same line and under the same title\s+as a main-review finding even where you gave them no label, because\s+the composer merges the two as one finding/);
-  assert.match(lifecycle, /It refuses, with nothing written,\s+a label whose findings gate differently across the two decisions, and\s+an advisory defect the two decisions class differently/);
+  assert.match(lifecycle, /Those findings aside,\s+it refuses, with nothing written, a label whose findings gate\s+differently across the two decisions, and a non-gating defect the two\s+decisions class differently/);
+  assert.match(lifecycle, /Give every one of those findings\s+the one `defect` label\. Class the finding at the earlier site\s+`already-raised`\.[\s\S]*?The findings at the new sites take their own call/);
   assert.match(lifecycle, /The run's overall verdict is\s+`request-changes` when either validated decision is; `clean` only when\s+every validated decision is clean/);
   assert.match(lifecycle, /take the same `defect`\s+label on their dispositions[\s\S]*?they gate\s+alike — so a below-threshold restatement of a gating defect gates too,\s+and carries an `undergrade`[\s\S]*?publishes a labelled defect once, at its highest-severity\s+site[\s\S]*?Distinct\s+defects at one\s+line take no label/);
 });

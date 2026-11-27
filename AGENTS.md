@@ -32,8 +32,8 @@ nothing else.
 - Minos reviews; it does not repair and it does not merge. A run never
   builds or tests the reviewed change, never syncs the branch with its
   target, never writes to the pull-request branch, and dispatches no agent
-  to modify the reviewed code. Fixing and landing belong to the author, and
-  the forge's own CI is the build evidence.
+  to modify the reviewed code. Fixing and landing belong to the author,
+  and the forge's own CI is the build evidence.
 - Keep one accountable lead from claim through the review workflow, the
   `.review/` briefs stage, verdict classification and publication.
 - Keep the review as Ensemble workflows the lead invokes through the
@@ -47,53 +47,62 @@ nothing else.
   resolve, and verify, where verifier legs give each merged finding one
   verdict — `confirmed`, `refuted` or `unsettled`. Only a confirmed
   finding is a defect; a refuted one reaches no surface; an unsettled one
-  is never a defect and is filed as an open question to a `file` or `issue`
-  destination only, the pull-request-comment and `none` kinds dropping it
-  (`workflows/finding-disposition.mjs`, `workflows/filing-destination.mjs`).
-  The brief stage reports a skipped concern as skipped, never as passed.
-- The workflow dispatches every leg on the engine its role's routing names.
-  With both engines provisioned, the default routing
+  is never a defect and is filed as an open question to a `file` or
+  `issue` destination only, the pull-request-comment and `none` kinds
+  dropping it (`workflows/finding-disposition.mjs`,
+  `workflows/filing-destination.mjs`). The brief stage reports a skipped
+  concern as skipped, never as passed.
+- The workflow dispatches every leg on the engine its role's routing
+  names. With both engines provisioned, the default routing
   (`workflows/role-routing.mjs`) proposes on Codex and verifies on Claude,
   so a finding is verified by the family that did not propose it, a
   verifier's own new finding included. `[routing]` can put the proposer
-  and verifier on one engine, and then that pairing no longer holds. A leg that does not
-  complete or a finding without a complete verifier verdict makes the run
-  incomplete: no review is published and no clean status is set.
-- The lead sizes each review by reading the change: nothing, the
-  increment since the head Minos last finished on, or the whole pull
-  request (`lifecycle/lifecycle.md`, step 2). That earlier head is known
-  by the content of the pull request's files, not by its commits
-  (`minos forge earlier`), from a record kept under the runs directory.
-  The record is a cache: without it, `minos forge earlier` looks for
-  Minos's result among the pull request's recent commits, and a full
-  review follows only when the earlier head has left the history. The lifecycle
-  dispatches no scope workflow; `workflows/review-scope.js` ships unused.
-- The pull request carries only what blocks it. Confirmed findings that do
-  not block, and unverified observations from outside the change, go to
-  the configured filing destination; a finding already on the pull request
-  or classed as speculative hardening goes nowhere
-  (`workflows/compose-review-publication.mjs`).
+  and verifier on one engine, and then that pairing no longer holds. A leg
+  that does not complete or a finding without a complete verifier verdict
+  makes the run incomplete: no review is published and no clean status is
+  set.
+- The lead sizes each review by reading the change: nothing, the increment
+  since the head Minos last finished on, or the whole pull request
+  (`lifecycle/lifecycle.md`, step 2). That earlier head is known by the
+  content of the pull request's files, not by its commits (`minos forge
+  earlier`), from a record kept under the runs directory. The record is a
+  cache: without it, `minos forge earlier` looks for Minos's result among
+  the pull request's recent commits, and a full review follows only when
+  the earlier head has left the history. The lifecycle dispatches no scope
+  workflow; `workflows/review-scope.js` ships unused.
+- The pull request carries only what blocks it. A confirmed finding that
+  neither blocks nor takes a class is advisory and goes to the configured
+  filing destination, as do unverified observations from outside the
+  change where that destination is a `file` or an `issue`. A finding the
+  lead puts in one of the three never-gating classes is published and
+  filed nowhere, and stays in the run record: a gap the pull-request
+  description declares as known or out of scope (`declared-out-of-scope`),
+  a request for a safeguard against something the project is not shown to
+  face (`speculative-hardening`), and a restatement of a finding the
+  author already has (`already-raised`) (`lifecycle/lifecycle.md`, step 5;
+  `workflows/compose-review-publication.mjs`).
 - The verdict is the lead's classification judgement, informed by the
   configured severity threshold and never mechanically bound to it
   (`workflows/verdict-classification.mjs` owns the digest and the
   fail-closed decision validation).
 - The forge carries the durable result through the current head's review,
-  reactions and `Minos` status. The status is a best-effort write, informational only — it never serves as a required check. Scratch
-  data may disappear with the run.
-- Webhooks and the sweep both reconcile current forge state. The completion
-  marker is head-bound — a terminal Minos review of the current head, or a
-  clean/attention status on it — and any head movement is the author's,
-  spending the marker. Every status is the lead's but one: admission,
-  from a webhook or the sweep, writes `attention` when a continuation
-  made no progress beyond its predecessor, and stops it
+  reactions and `Minos` status. The status is a best-effort write,
+  informational only — it never serves as a required check. Scratch data
+  may disappear with the run.
+- Webhooks and the sweep both reconcile current forge state. The
+  completion marker is head-bound — a terminal Minos review of the current
+  head, or a clean/attention status on it — and any head movement is the
+  author's, spending the marker. Every status is the lead's but one:
+  admission, from a webhook or the sweep, writes `attention` when a
+  continuation made no progress beyond its predecessor, and stops it
   (`internal/shell/spawn.go`, `stopStalledContinuation`).
   `runs.max-concurrent` caps how many runs are live at once.
 - Minos carries no sandbox of its own: whatever isolates the deployment is
-  the security boundary, and the docs recommend a dedicated container or VM
-  without requiring one. Run-scoped containment layers, policy gates and
-  health bookkeeping stay out by design. The continuation handoff, with the
-  progress record that lets admission stop a stalled continuation, is the
-  run-lifecycle state the service keeps.
+  the security boundary, and the docs recommend a dedicated container or
+  VM without requiring one. Run-scoped containment layers, policy gates
+  and health bookkeeping stay out by design. The continuation handoff,
+  with the progress record that lets admission stop a stalled
+  continuation, is the run-lifecycle state the service keeps.
 
 ## The vendored Ensemble runtime
 

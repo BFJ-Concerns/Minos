@@ -519,7 +519,7 @@ for (const [mainClass, briefClass] of [["already-raised", undefined], [undefined
 test("a label whose findings are classed differently across the two decisions stops the composer with nothing written", (t) => {
   const { result, scratch } = compose(t, {
     main: verdict([finding("a", { severity: "Medium", title: "MinInt64 overflows Split", line: 83 })]),
-    mainDecision: decision("clean", [{ key: "a", gating: false, class: "already-raised", defect: "minint-overflow" }]),
+    mainDecision: decision("clean", [{ key: "a", gating: false, class: "declared-out-of-scope", defect: "minint-overflow" }]),
     brief: verdict([finding("b", { severity: "Low", title: "Split rejects the minimum value", line: 75, source: "Conservation" })]),
     briefDecision: decision("clean", [{ key: "b", gating: false, defect: "minint-overflow" }]),
   });
@@ -601,7 +601,77 @@ test("a finding classed as already raised reaches no review and no filing", (t) 
   assert.equal(clean.result.status, 0, clean.result.stderr);
   assert.deepEqual(clean.plan.posts, []);
   assert.equal(clean.plan.alreadyRaised, 2);
-  assert.deepEqual(clean.readJson(clean.plan.triage.entries).map((entry) => entry.id), ["b"]);
+  assert.equal(clean.plan.declaredOutOfScope, 1);
+  assert.deepEqual(clean.readJson(clean.plan.triage.entries), []);
+});
+
+test("a finding classed as a declared out-of-scope gap reaches no review and no filing", (t) => {
+  const confirmed = [finding("a"), finding("b", { line: 7 }), finding("c", { severity: "Low", line: 9 }), finding("d", { severity: "Low", line: 11 })];
+  const { result, plan, read, readJson } = compose(t, {
+    main: verdict(confirmed),
+    mainDecision: decision("request-changes", [
+      { key: "a", gating: true },
+      { key: "b", gating: false, class: "declared-out-of-scope" },
+      { key: "c", gating: false, class: "declared-out-of-scope" },
+      { key: "d", gating: false },
+    ]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(plan.declaredOutOfScope, 2);
+  assert.deepEqual(readJson(plan.posts[0].comments).map((comment) => comment.line), [42]);
+  assert.doesNotMatch(read(plan.posts[0].body), /Finding [bc]/);
+  assert.deepEqual(readJson(plan.triage.entries).map((entry) => entry.id), ["d"]);
+  assert.equal(plan.triage.advisory, 1);
+});
+
+// One defect the author was told of at one site and not at another: the
+// earlier site is not said again and the new one carries the defect's call.
+for (const order of ["earlier site first", "new site first"])
+  for (const placement of ["one decision", "across the decisions"])
+    test(`a labelled defect at an already-raised site and a new site posts only the new site (${placement}, ${order})`, (t) => {
+      const earlier = { found: finding("old", { title: "MinInt64 overflows Split", line: 83 }), disposition: { key: "old", gating: false, class: "already-raised", defect: "minint-overflow" } };
+      const fresh = { found: finding("new", { title: "Split rejects the minimum value", line: 75, source: "Conservation" }), disposition: { key: "new", gating: true, defect: "minint-overflow" } };
+      const members = order === "earlier site first" ? [earlier, fresh] : [fresh, earlier];
+      const groups = placement === "one decision"
+        ? {
+          main: verdict(members.map((member) => member.found)),
+          mainDecision: decision("request-changes", members.map((member) => member.disposition)),
+        }
+        : {
+          main: verdict([earlier.found]),
+          mainDecision: decision("clean", [earlier.disposition]),
+          brief: verdict([fresh.found]),
+          briefDecision: decision("request-changes", [fresh.disposition]),
+        };
+      const { result, plan, readJson } = compose(t, groups);
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(posts(plan), [{ review: "main", verdict: "request-changes" }]);
+      const comments = readJson(plan.posts[0].comments);
+      assert.deepEqual(comments.map((comment) => comment.line), [75]);
+      assert.doesNotMatch(comments[0].body, /Also at/);
+      assert.equal(plan.alreadyRaised, 1);
+      assert.deepEqual(readJson(plan.triage.entries), []);
+    });
+
+test("a labelled defect at an already-raised site files its new sites as one advisory entry", (t) => {
+  const { result, plan, readJson } = compose(t, {
+    main: verdict([
+      finding("old", { severity: "Low", title: "MinInt64 overflows Split", line: 83 }),
+      finding("new-a", { severity: "Low", title: "Split rejects the minimum value", line: 75 }),
+      finding("new-b", { severity: "Low", title: "Split rejects the minimum value", line: 91 }),
+    ]),
+    mainDecision: decision("clean", [
+      { key: "old", gating: false, class: "already-raised", defect: "minint-overflow" },
+      { key: "new-a", gating: false, defect: "minint-overflow" },
+      { key: "new-b", gating: false, defect: "minint-overflow" },
+    ]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(plan.posts, []);
+  assert.equal(plan.alreadyRaised, 1);
+  const entries = readJson(plan.triage.entries);
+  assert.equal(entries.length, 1);
+  assert.match(issueLogEntry(entries[0], "Filed"), /\(`internal\/review\.go:75`, also at `internal\/review\.go:91`\)/);
 });
 
 test("an id-less verdict uses its content key", (t) => {

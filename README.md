@@ -92,10 +92,9 @@ default comment-review destination they are not posted anywhere.
 
 Reviewers treat the pull request's description as the author's account of
 the change. Where it explicitly puts something out of scope and the project
-guidance doesn't contradict it, a finding about the missing piece does not
-block the pull request: it is advisory and goes to the filing destination
-with the other advisory findings. Incorrect behaviour in the code the change
-does carry can still block.
+guidance doesn't contradict it, a finding about the missing piece is neither
+posted nor filed; it stays in the run's own record. Incorrect behaviour in
+the code the change does carry can still block.
 
 ## Requirements
 
