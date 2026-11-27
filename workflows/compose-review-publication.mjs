@@ -126,7 +126,12 @@ function nameSource(finding, source) {
 // one finding: same site and same title merge into the main group's
 // finding, which gates if either disposition gates, carries the higher
 // severity, names the brief that also raised it, and keeps the twin's
-// `defect` label so the labelled merge below still sees it.
+// `defect` label so the labelled merge below still sees it. A merged
+// finding that gates carries no never-gating class, whichever disposition
+// held one; twins that both stay advisory keep the class they share, and
+// twins classed differently are a decision to correct, so the composer
+// refuses them rather than publish or withhold the finding by one side's
+// call.
 if (brief) {
   const mainBySiteAndTitle = new Map(main.findings.map((finding) => [siteAndTitle(finding), finding]));
   brief.findings = brief.findings.filter((finding) => {
@@ -138,11 +143,16 @@ if (brief) {
     const twinDisposition = main.dispositionOf(twin) || {};
     if (typeof disposition.defect === "string" && typeof twinDisposition.defect === "string" && disposition.defect !== twinDisposition.defect)
       refuse(`one finding at ${finding.path}:${finding.line} carries two defect labels across the decisions: ${twinDisposition.defect} and ${disposition.defect}`);
-    main.dispositions.set(findingKey(twin), {
+    const gating = twinDisposition.gating === true || disposition.gating === true;
+    if (!gating && twinDisposition.class !== disposition.class)
+      refuse(`one finding at ${finding.path}:${finding.line} is classed differently across the decisions: ${twinDisposition.class ?? "unclassed"} and ${disposition.class ?? "unclassed"}`);
+    const merged = {
       ...twinDisposition,
-      ...(disposition.gating === true ? { gating: true } : {}),
+      gating,
       ...(typeof disposition.defect === "string" && typeof twinDisposition.defect !== "string" ? { defect: disposition.defect } : {}),
-    });
+    };
+    if (gating) delete merged.class;
+    main.dispositions.set(findingKey(twin), merged);
     return false;
   });
 }
@@ -154,9 +164,9 @@ const groups = [main, brief].filter(Boolean);
 // the composer publishes once at its highest-severity member (the main
 // group's, then the first path, then the lowest line, on ties), naming the
 // other members' sites and the groups that also raised it. Members gate
-// alike: the validator holds that within one decision, and the composer
-// refuses a label split across the two, so the canonical member's own
-// disposition is the defect's. The site-and-title merge above is the floor
+// and are classed alike: the validator holds that within one decision, and
+// the composer refuses a label split across the two, so the canonical
+// member's own disposition is the defect's. The site-and-title merge above is the floor
 // a decision without labels still gets; this pass is the same-defect
 // judgement that merge cannot make.
 const byDefect = new Map();
@@ -170,6 +180,8 @@ for (const [label, members] of byDefect) {
   if (members.length < 2) continue;
   const gatings = new Set(members.map(({ group, finding }) => group.dispositionOf(finding)?.gating === true));
   if (gatings.size > 1) refuse(`findings labelled one defect gate differently across the decisions: ${label}`);
+  const classes = new Set(members.map(({ group, finding }) => group.dispositionOf(finding)?.class));
+  if (classes.size > 1) refuse(`findings labelled one defect are classed differently across the decisions: ${label}`);
   members.sort((a, b) =>
     SEVERITY[b.finding.severity] - SEVERITY[a.finding.severity]
     || groups.indexOf(a.group) - groups.indexOf(b.group)

@@ -1,0 +1,29 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+# The pull request's conversation comments as one JSON array, oldest first,
+# each with its author's login and its body. Review comments are not among
+# them: those are read thread by thread. Pages until the empty page or a
+# repeated one, so a forge that ignores paging answers once and stops.
+owner="$1"
+repo="$2"
+pr="$3"
+
+comments='[]'
+previous=''
+page=1
+while :; do
+  current="$(api GET "/api/v1/repos/${owner}/${repo}/issues/${pr}/comments?limit=50&page=${page}")"
+  count="$(printf '%s' "$current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected an issue-comment array") end')"
+  ! repeats_previous_page "$current" "$previous" || break
+  [ "$count" -gt 0 ] || break
+  comments="$(json_concat "$comments" "$current")"
+  previous="$current"
+  page=$((page + 1))
+done
+printf '%s' "$comments" | jq -c 'sort_by((.created_at // ""), (.id // 0)) | map({
+  user: (.user.login // .user.username // ""),
+  body: (.body // "")
+})'

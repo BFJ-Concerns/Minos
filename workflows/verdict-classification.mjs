@@ -120,7 +120,7 @@ export function verdictDigest(input) {
 // black and white: the decision names this contract, states its basis,
 // disposes of every confirmed finding exactly once, declassifies an
 // at-or-above-threshold finding only under one of the never-gating
-// classes (named per finding), gates a below-threshold finding only with an
+// classes (named per finding), puts no such class on a gating finding, gates a below-threshold finding only with an
 // undergrade basis naming it, labels restatements of one defect with one
 // non-empty `defect` label whose members gate and are classed alike, and earns
 // request-changes exactly when a gating finding exists.
@@ -153,6 +153,8 @@ export function validateVerdictDecision(decision, digest) {
       return { ok: false, reason: `finding disposition must set gating true or false: ${disposition.key}` };
     if (disposition.class !== undefined && !NEVER_GATING_CLASSES.includes(disposition.class))
       return { ok: false, reason: `finding disposition carries an unknown class: ${disposition.key}` };
+    if (disposition.gating === true && disposition.class !== undefined)
+      return { ok: false, reason: `a gating finding carries no never-gating class: ${disposition.key}` };
     if (disposition.undergrade !== undefined && (typeof disposition.undergrade !== "string" || disposition.undergrade.trim() === ""))
       return { ok: false, reason: `finding disposition undergrade must be a non-empty string: ${disposition.key}` };
     if (disposition.defect !== undefined && (typeof disposition.defect !== "string" || disposition.defect.trim() === "" || disposition.defect !== disposition.defect.trim()))
