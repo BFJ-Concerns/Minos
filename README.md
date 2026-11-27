@@ -73,12 +73,12 @@ label on the pull request, and, where there are findings, a review.
 | Under review | `pending` — Reviewing changes | The in-flight marker (an `eyes` reaction by default) |
 | Continuing | `pending` — Review continuing in a fresh run | The in-flight marker stays while a fresh run carries on the review |
 | Changes needed | `failure` — Changes need attention | A request-changes review carrying the blocking findings, inline where they can be anchored to the diff and in the review body otherwise, plus the attention marker if one is configured |
-| Clean | `success` — Changes approved | The clean marker (a `+1` reaction by default), and an approving review where Minos's latest review had requested changes |
+| Clean | `success` — Changes approved | The clean marker (a `+1` reaction by default), and an approving review where Minos's latest verdict on the pull request had requested changes |
 | Incomplete | `error` — Review incomplete | No review; the head is retried on a later sweep pass. A run that fails before the lead starts writes no status |
 
 Each finding comment opens with **Blocking** and its severity, and closes
 with the models that proposed and verified it (for example, *Proposed by
-`gpt-6.1-sol`; verified by `claude-opus-5-5`.*). The review body names the
+`gpt-6.2-astra`; verified by `claude-opus-5-5`.*). The review body names the
 briefs it applied and the lead model that signed it.
 
 On either outcome, confirmed findings that do not block go to the
@@ -255,7 +255,7 @@ just verify
 |------|----------|
 | [`cmd/minos`](cmd/minos) | The service binary |
 | [`internal/`](internal) | Webhook receiver, sweep, run lifecycle and forge bridge |
-| [`workflows/`](workflows) | The Ensemble review workflows and reviewer briefs |
+| [`workflows/`](workflows) | The Ensemble review workflows and the prompts their agents receive |
 | [`runtime/`](runtime) | The vendored Ensemble runtime |
 | [`scripts/`](scripts) | Forge adaptations, per-run scripts and installers |
 | [`lifecycle/`](lifecycle) | The lead's run prompt |
