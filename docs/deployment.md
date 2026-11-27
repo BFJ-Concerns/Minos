@@ -377,8 +377,10 @@ is promoted it delivers that record a second time as a sidecar beside it —
 the tarball's name with `.tar.zst` replaced by `.timings.json` — readable
 without extracting anything. This presentation archive and its sidecar are
 best-effort and cannot change the run result. Before each reconciliation pass,
-the sweep records a digest for each dead run with crash evidence, archives its
-transcripts, and removes its scratch directory after the archive is accepted.
+the sweep records a digest for each dead run with crash evidence and removes its
+scratch directory once the configured archive destination accepts its evidence.
+Without an archive command, the sweep removes the directory after recording
+the digest.
 With `runs.failures-repo` configured, the sweep appends to the checkout's
 existing regular `FAILURES.md` and attempts to commit and push it.
 `provision-failure-checkout` clones the repository and configures Git, so

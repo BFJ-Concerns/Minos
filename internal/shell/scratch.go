@@ -39,9 +39,6 @@ var walkEvidenceRoot = filepath.WalkDir
 var failureLedgerCommand = processGroupCommandContext
 
 func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[string]Facts) error {
-	if cfg.Runs.ArchiveCommand == "" {
-		return fmt.Errorf("runs.archive-command is not configured; preserve run residue until archiving is provisioned")
-	}
 	active, err := activeRunUnits(ctx)
 	if err != nil {
 		return err
@@ -78,9 +75,11 @@ func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[str
 				sweepErrors = append(sweepErrors, fmt.Errorf("publish salvaged failure for %s: %w", entry.Name(), err))
 			}
 		}
-		if err := archiveRunEvidence(ctx, cfg.Root, cfg.Runs.ArchiveCommand, runDir, label); err != nil {
-			sweepErrors = append(sweepErrors, fmt.Errorf("preserve %s for archive retry: %w", entry.Name(), err))
-			continue
+		if cfg.Runs.ArchiveCommand != "" {
+			if err := archiveRunEvidence(ctx, cfg.Root, cfg.Runs.ArchiveCommand, runDir, label); err != nil {
+				sweepErrors = append(sweepErrors, fmt.Errorf("preserve %s for archive retry: %w", entry.Name(), err))
+				continue
+			}
 		}
 		_, removeErr := removeRunDirIfStillDead(ctx, cfg, factsByUnit, runDir, entry.Name())
 		if removeErr != nil {

@@ -435,19 +435,31 @@ func TestSweepRunResiduePreservesStructurallyValidHandoffWithoutCurrentFacts(t *
 	}
 }
 
-func TestSweepRunResidueRequiresProvisionedArchiveCommand(t *testing.T) {
+func TestSweepRunResidueRecordsCrashAndRemovesScratchWithoutArchiveCommand(t *testing.T) {
 	original := commandCombinedOutput
 	t.Cleanup(func() { commandCombinedOutput = original })
 	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	cfg := scratchTestConfig(t)
 	cfg.Runs.ArchiveCommand = ""
-	runDir := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr16-dead")
-	writeTestFile(t, filepath.Join(runDir, "report.md"), "evidence\n")
-	if err := sweepRunResidue(t.Context(), cfg, nil); err == nil {
-		t.Fatal("sweep accepted an unprovisioned archive command")
+	cfg.Runs.FailuresRepo = ""
+	cfg.Runs.FailureLog = filepath.Join(t.TempDir(), "failures.log")
+	crashed := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr16-dead")
+	terminal := filepath.Join(cfg.Runs.Dir, "minos-run-owner-repository-pr17-terminal")
+	writeTestFile(t, filepath.Join(crashed, "report.md"), "crash evidence\n")
+	writeTestFile(t, filepath.Join(terminal, "report.md"), "already recorded\n")
+	writeTestFile(t, filepath.Join(terminal, archivePendingFile), "terminal label\n")
+
+	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(runDir); err != nil {
-		t.Fatalf("run was removed without provisioned archiving: %v", err)
+	for _, runDir := range []string{crashed, terminal} {
+		if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+			t.Fatalf("run directory %s remained without an archive command: %v", runDir, err)
+		}
+	}
+	content, err := os.ReadFile(cfg.Runs.FailureLog)
+	if err != nil || !strings.Contains(string(content), "crash evidence") || strings.Contains(string(content), "already recorded") {
+		t.Fatalf("local failure log = %q, %v, want only crash evidence", content, err)
 	}
 }
 
