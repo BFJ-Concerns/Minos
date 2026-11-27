@@ -23,6 +23,7 @@ const optionBlockPattern =
 const expectedCallSites = new Map([
   ["judgement.js", 1],
   ["review.js", 1],
+  ["quick-review.js", 0],
   ["review-briefs.js", 2],
   ["review-stages.mjs", 3],
 ]);

@@ -1049,7 +1049,7 @@ test("a specialist is shown the other planned units of its own concern, and an o
 test("the lifecycle finds its workflow's status snapshot by the names the workflows declare", async () => {
   assert.match(lifecycle, /`\$MINOS_RUN_DIR\/ensemble\.<run-id>\.local\.json`/);
   assert.doesNotMatch(lifecycle, /`\$MINOS_RUN_DIR\/ensemble\.local\.json`/);
-  for (const [file, stage] of [["./review.js", "the main review"], ["./review-briefs.js", "the brief stage"]]) {
+  for (const [file, stage] of [["./review.js", "the main review"], ["./quick-review.js", "the main review"], ["./review-briefs.js", "the brief stage"]]) {
     const source = await readFile(fileURLToPath(new URL(file, import.meta.url)), "utf8");
     const name = source.match(/^\s*name: "([^"]+)"/m)?.[1];
     assert.ok(name, `${file} declares a workflow name`);
