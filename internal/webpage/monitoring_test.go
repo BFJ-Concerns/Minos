@@ -148,3 +148,19 @@ func assertMonitoringPage(t *testing.T, code int, body string, want ...string) {
 		}
 	}
 }
+
+func TestOverviewShowsTheReviewerForEachForge(t *testing.T) {
+	site, _ := testSite(t, Readings{Configuration: func() (shell.ServiceConfig, []shell.RepoConfig, error) {
+		var cfg shell.ServiceConfig
+		cfg.Service.BotLogin = "default-bot"
+		cfg.Forges = map[string]shell.ForgeConfig{"github": {BotLogin: "github-reviewer"}}
+		return cfg, []shell.RepoConfig{
+			{Forge: "github", Owner: "acme", Repo: "github-project"},
+			{Forge: "forgejo", Owner: "acme", Repo: "forgejo-project"},
+		}, nil
+	}}, Settings{})
+	response := visit(site, "/", signIn(t, site))
+	assertMonitoringPage(t, response.Code, response.Body.String(),
+		`github-project</a></td><td>github</td><td></td><td>github-reviewer</td>`,
+		`forgejo-project</a></td><td>forgejo</td><td></td><td>default-bot</td>`)
+}
