@@ -249,15 +249,18 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    shipped example comments an illustrative value of 4).
 
    `[routing]` maps each workflow role — `exploration`, `proposer`,
-   `verifier`, `engagement-gate`, `brief-planner` — to an engine, model
-   and effort. A role left unset defaults at run time: with both engines
-   provisioned, proposing and planning roles (`exploration`, `proposer`,
-   `engagement-gate`, `brief-planner`) run on Codex and the `verifier` on
-   Claude. With one engine provisioned, every role runs on it. A role on
+   `verifier`, `engagement-gate`, `brief-planner`, `judgement` — to an
+   engine, model and effort. A role left unset defaults at run time: with
+   both engines provisioned, proposing and planning roles (`exploration`,
+   `proposer`, `engagement-gate`, `brief-planner`) run on Codex, and the
+   `verifier` and `judgement` on Claude. With one engine provisioned, every
+   role runs on it. A role on
    Claude defaults to `claude-opus-5-5`; on Codex the `proposer` defaults to
    `gpt-6.2-astra` and every other role to `gpt-6.1-sol`. Default effort is `high` for
    `exploration` and `brief-planner`, and `medium` for `proposer`,
-   `verifier` and `engagement-gate`. The verifier's routing also carries
+   `verifier`, `engagement-gate` and `judgement`. `judgement` is the role
+   of the run driver's one-shot judgement stages
+   (`workflows/judgements/`). The verifier's routing also carries
    the leg that merges findings one fix would resolve before they are
    verified. A finding a verifier raises while checking another is
    verified on the `proposer`'s routing when that runs on the other engine,
