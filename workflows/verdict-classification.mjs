@@ -18,13 +18,21 @@ export const DEFAULT_THRESHOLD = "High";
 // gating; a below-threshold finding may carry one too. The first two object
 // to the kind of finding. The third objects to saying it again: the author
 // already has this finding from Minos and has answered it, or the filing
-// destination already carries it. Speculative hardening and already-raised
-// findings leave the run on no surface at all. Any other basis for
+// destination already carries it. A finding in any of the three leaves the
+// run on no surface at all: the run record keeps it. Any other basis for
 // declassification is the mechanical binding the lead's judgement exists to
 // prevent.
+export const DECLARED_OUT_OF_SCOPE_CLASS = "declared-out-of-scope";
 export const ALREADY_RAISED_CLASS = "already-raised";
 export const SPECULATIVE_HARDENING_CLASS = "speculative-hardening";
-export const NEVER_GATING_CLASSES = ["declared-out-of-scope", SPECULATIVE_HARDENING_CLASS, ALREADY_RAISED_CLASS];
+export const NEVER_GATING_CLASSES = [DECLARED_OUT_OF_SCOPE_CLASS, SPECULATIVE_HARDENING_CLASS, ALREADY_RAISED_CLASS];
+
+// A gap the pull request's description declares as known or out of scope
+// is published and filed nowhere: the author has said they know of it, so
+// neither the pull request nor the filing destination is told it again.
+export function declaredOutOfScope(disposition) {
+  return Boolean(disposition) && disposition.gating === false && disposition.class === DECLARED_OUT_OF_SCOPE_CLASS;
+}
 
 // A finding the lead classed as already raised is published and filed
 // nowhere: the review comment or the filed entry it restates is the copy

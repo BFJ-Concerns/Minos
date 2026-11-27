@@ -601,7 +601,27 @@ test("a finding classed as already raised reaches no review and no filing", (t) 
   assert.equal(clean.result.status, 0, clean.result.stderr);
   assert.deepEqual(clean.plan.posts, []);
   assert.equal(clean.plan.alreadyRaised, 2);
-  assert.deepEqual(clean.readJson(clean.plan.triage.entries).map((entry) => entry.id), ["b"]);
+  assert.equal(clean.plan.declaredOutOfScope, 1);
+  assert.deepEqual(clean.readJson(clean.plan.triage.entries), []);
+});
+
+test("a finding classed as a declared out-of-scope gap reaches no review and no filing", (t) => {
+  const confirmed = [finding("a"), finding("b", { line: 7 }), finding("c", { severity: "Low", line: 9 }), finding("d", { severity: "Low", line: 11 })];
+  const { result, plan, read, readJson } = compose(t, {
+    main: verdict(confirmed),
+    mainDecision: decision("request-changes", [
+      { key: "a", gating: true },
+      { key: "b", gating: false, class: "declared-out-of-scope" },
+      { key: "c", gating: false, class: "declared-out-of-scope" },
+      { key: "d", gating: false },
+    ]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(plan.declaredOutOfScope, 2);
+  assert.deepEqual(readJson(plan.posts[0].comments).map((comment) => comment.line), [42]);
+  assert.doesNotMatch(read(plan.posts[0].body), /Finding [bc]/);
+  assert.deepEqual(readJson(plan.triage.entries).map((entry) => entry.id), ["d"]);
+  assert.equal(plan.triage.advisory, 1);
 });
 
 test("an id-less verdict uses its content key", (t) => {
