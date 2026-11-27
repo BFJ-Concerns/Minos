@@ -69,37 +69,52 @@ func descriptionFailurePath(cfg ServiceConfig, repo RepoConfig) string {
 	return strings.TrimSuffix(repositoryDescriptionPath(cfg, repo), ".json") + ".failed"
 }
 
-type descriptionFailure struct {
-	Commit   string `json:"commit"`
-	FailedAt string `json:"failed_at"`
+// DescriptionFailure records the default branch commit and time of a failed write.
+type DescriptionFailure struct {
+	Commit   string    `json:"commit"`
+	FailedAt time.Time `json:"failed_at"`
 }
 
 func recordDescriptionFailure(cfg ServiceConfig, repo RepoConfig, commit string, now time.Time) error {
 	path := descriptionFailurePath(cfg, repo)
-	encoded, err := json.Marshal(descriptionFailure{Commit: commit, FailedAt: now.UTC().Format(time.RFC3339)})
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	failure := DescriptionFailure{Commit: commit, FailedAt: now.UTC().Truncate(time.Second)}
+	return publishProjectionDocument(dir, filepath.Base(path), failure, os.Rename)
+}
+
+func readDescriptionFailure(cfg ServiceConfig, repo RepoConfig) (*DescriptionFailure, error) {
+	raw, err := os.ReadFile(descriptionFailurePath(cfg, repo))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+	var failure DescriptionFailure
+	if err := json.Unmarshal(raw, &failure); err != nil {
+		return nil, fmt.Errorf("decode repository description failure: %w", err)
 	}
-	return os.WriteFile(path, append(encoded, '\n'), 0o600)
+	if failure.Commit == "" {
+		return nil, fmt.Errorf("repository description failure has no commit")
+	}
+	if failure.FailedAt.IsZero() {
+		return nil, fmt.Errorf("repository description failure has no timestamp")
+	}
+	return &failure, nil
 }
 
 // descriptionRetryHeld reports whether the description of commit failed
 // within descriptionRetryDelay of now. An unreadable failure record holds
 // nothing back.
 func descriptionRetryHeld(cfg ServiceConfig, repo RepoConfig, commit string, now time.Time) bool {
-	raw, err := os.ReadFile(descriptionFailurePath(cfg, repo))
-	if err != nil {
+	failure, err := readDescriptionFailure(cfg, repo)
+	if err != nil || failure == nil || failure.Commit != commit {
 		return false
 	}
-	var failure descriptionFailure
-	if json.Unmarshal(raw, &failure) != nil || failure.Commit != commit {
-		return false
-	}
-	failedAt, err := time.Parse(time.RFC3339, failure.FailedAt)
-	return err == nil && now.Sub(failedAt) < descriptionRetryDelay
+	return now.Sub(failure.FailedAt) < descriptionRetryDelay
 }
 
 // activeDescriptionUnitNames lists the live description units, without

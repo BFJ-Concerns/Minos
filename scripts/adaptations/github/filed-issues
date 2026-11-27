@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+github_authenticate "$1" "$2"
+issues="$(collect "/repos/$1/$2/issues" "state=open&sort=created&direction=asc")"
+printf '%s' "$issues" | jq -ec --arg login "$3" '
+  map(select(.pull_request == null and .state == "open" and .user.login == $login)
+      | select((.body // "") | test("<!-- minos:[A-Za-z0-9_-]+ -->"))
+      | {title, body})'

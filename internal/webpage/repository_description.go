@@ -16,6 +16,7 @@ var repositoryDescriptionPage = Page{
 type repositoryDescriptionView struct {
 	Repository  shell.RepoConfig
 	Description *shell.RepositoryDescription
+	Failure     *shell.DescriptionFailure
 }
 
 func showRepositoryDescription(r *http.Request, read Readings) (any, error) {
@@ -23,9 +24,9 @@ func showRepositoryDescription(r *http.Request, read Readings) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	description, err := read.RepositoryDescription(repo)
+	description, failure, err := read.RepositoryDescription(repo)
 	if err != nil {
 		return nil, err
 	}
-	return repositoryDescriptionView{Repository: repo, Description: description}, nil
+	return repositoryDescriptionView{Repository: repo, Description: description, Failure: failure}, nil
 }

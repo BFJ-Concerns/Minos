@@ -349,6 +349,31 @@ func (a *Adapter) AddMarker(ctx context.Context, guard Guard, marker Marker) Wri
 	return a.markerWrite(ctx, guard, marker, "guarded-add-reaction", "guarded-add-label")
 }
 
+// FiledIssue is an open issue carrying the service's filing marker.
+type FiledIssue struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+// FiledIssues reads the open issues filed by the service in the destination repository.
+func (a *Adapter) FiledIssues(ctx context.Context, repository Repository) ([]FiledIssue, error) {
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "filed-issues",
+		Arguments: []string{repository.Owner, repository.Name, a.serviceLogin},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var issues []FiledIssue
+	if err := json.Unmarshal(out, &issues); err != nil {
+		return nil, fmt.Errorf("decode forge filed issues: %w", err)
+	}
+	if issues == nil {
+		return nil, fmt.Errorf("forge filed issues must be a JSON array")
+	}
+	return issues, nil
+}
+
 // FileIssue delivers one marked entry to its configured repository. Its
 // identity survives reviewed-head movement and closed destination issues.
 func (a *Adapter) FileIssue(ctx context.Context, repository Repository, title, body string) WriteResult {

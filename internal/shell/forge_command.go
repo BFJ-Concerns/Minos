@@ -20,11 +20,24 @@ import (
 // the pull request it was started for.
 func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minos forge snapshot|threads|comments|claim|status|summary|earlier|review|approve|marker|file-issue|repository-metadata|clone-credential")
+		return fmt.Errorf("usage: minos forge snapshot|threads|comments|claim|status|summary|earlier|review|approve|marker|file-issue|filed-issues|repository-metadata|clone-credential")
 	}
-	// Repository metadata and the clone credential are not about the pull
-	// request, so they need the run's forge but none of its coordinates.
+	// These repository reads need the run's forge but no pull-request coordinates.
 	switch args[0] {
+	case "filed-issues":
+		if len(args) != 2 || !repositoryName.MatchString(args[1]) {
+			return fmt.Errorf("usage: minos forge filed-issues REPOSITORY")
+		}
+		adapter, _, err := runForge()
+		if err != nil {
+			return err
+		}
+		owner, name, _ := strings.Cut(args[1], "/")
+		issues, err := adapter.FiledIssues(ctx, forge.Repository{Owner: owner, Name: name})
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(issues)
 	case "repository-metadata":
 		if len(args) != 3 || !repositoryName.MatchString(args[1]+"/"+args[2]) {
 			return fmt.Errorf("usage: minos forge repository-metadata OWNER REPO")
