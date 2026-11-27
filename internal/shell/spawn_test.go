@@ -773,6 +773,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	repo.Review.Threshold = "Medium"
 	repo.Review.FileSafeguardRequests = true
 	repo.Review.Depth = "thorough"
+	repo.Review.Mode = "quick"
 	repo.PushInspection.Outcomes = []string{"increment", "full"}
 	repo.Routing.Verifier = RoleRouting{Engine: "codex", Model: "gpt-6-astra", Effort: "low"}
 	repo.Routing.Concerns = map[string]RoleRouting{"security": {Engine: "claude", Effort: "high"}}
@@ -826,6 +827,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_REVIEW_THRESHOLD=Medium",
 		"MINOS_FILE_SAFEGUARD_REQUESTS=true",
 		"MINOS_REVIEW_DEPTH=thorough",
+		"MINOS_REVIEW_MODE=quick",
 		"MINOS_COMMIT_AUTHOR_NAME=Reviewer Bot",
 		"MINOS_COMMIT_AUTHOR_EMAIL=reviewer@example.invalid",
 		"MINOS_STATUS_CONTEXT=Review Bot",
@@ -1433,6 +1435,7 @@ func TestSpawnRunExportsTheShippedReviewDefaults(t *testing.T) {
 		"MINOS_REVIEW_THRESHOLD":        "High",
 		"MINOS_FILE_SAFEGUARD_REQUESTS": "false",
 		"MINOS_REVIEW_DEPTH":            "standard",
+		"MINOS_REVIEW_MODE":             "specialist",
 	} {
 		if got, present := environment[name]; !present || got != want {
 			t.Fatalf("run environment %s = %q, present = %t; want %q", name, got, present, want)

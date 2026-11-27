@@ -1,8 +1,10 @@
 // The stages every review workflow runs: the proposing legs, the merge of
 // the findings one fix would resolve, and their verification in rounds.
-// review.js and review-briefs.js plan their proposing units and prompt them
-// in different ways; the dispatch of those units and everything after it
-// is shared.
+// Each workflow comes by its proposing units and prompts them in its own
+// way: review.js from exploration's plan, review-briefs.js from the
+// repository's briefs, and a quick review (review-mode.mjs) from the
+// change itself or its division into shares. The dispatch of those units
+// and everything after it is shared.
 //
 // A workflow script cannot import statically, so it loads this module
 // where it needs it, from beside itself:
@@ -84,16 +86,18 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
 
   // The proposing legs: one for each unit, each sent the unit's own
   // `prompt` under its `label` on the unit's `route`, or on the proposer
-  // route where it carries none. A unit's `source` names it on the
-  // observations it records. Each unit comes back with whether its leg
-  // completed and its usable output, null where the leg failed or answered
-  // nothing, which already marks the run incomplete.
+  // route where it carries none. A unit answers on its own `schema` and
+  // its leg is recorded under its own `role`; one that names neither is a
+  // specialist answering on the specialist schema. A unit's `source` names
+  // it on the observations it records. Each unit comes back with whether
+  // its leg completed and its usable output, null where the leg failed or
+  // answered nothing, which already marks the run incomplete.
   async function proposeUnits(units, phaseName) {
     const routeOf = (unit) => unit.route || routing.proposer;
-    for (const unit of units) addLeg(unit.label, "specialist", routeOf(unit).model);
+    for (const unit of units) addLeg(unit.label, unit.role || "specialist", routeOf(unit).model);
     const settlements = await parallel(units.map((unit) => () => agent(unit.prompt, {
       engine: routeOf(unit).engine,
-      schema: contracts.specialistSchema,
+      schema: unit.schema || contracts.specialistSchema,
       model: routeOf(unit).model,
       effort: routeOf(unit).effort,
       strip: ["skills", "agents"],
@@ -171,6 +175,7 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
         ? subject.members.map(({ finding }) => ({ title: finding.title, explanation: finding.explanation }))
         : undefined,
       wholeScope: subject.wholeScope,
+      wholeScopeBrief: subject.wholeScopeBrief,
     }, contracts.verifierFindingFields);
   }
 
@@ -260,17 +265,16 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
       recordObservations(response.outOfScopeObservations, "verification", batch.label);
       (Array.isArray(response.newFindings) ? response.newFindings : []).forEach((raisedFinding, findingIndex) => {
         // The name of the finding being checked is provenance, never part of
-        // the write-up; it lends that finding's whole scope where the raised
-        // finding's path lies within it (raisedFindingShape).
+        // the write-up; it lends that finding's whole scope, and the brief
+        // that asked for it, where the raised finding's path lies within it
+        // (raisedFindingShape).
         const { foundWhileChecking, ...finding } = raisedFinding || {};
         const checked = batch.items.find((item) => item.id === foundWhileChecking);
-        const wholeScope = checked?.wholeScope !== undefined && pathWithinScope(finding.path, checked.wholeScope)
-          ? checked.wholeScope
-          : undefined;
+        const lendsScope = checked?.wholeScope !== undefined && pathWithinScope(finding.path, checked.wholeScope);
         raised.push({
           id: `${batch.label}:raised:${findingIndex + 1}`,
           finding,
-          ...(wholeScope !== undefined ? { wholeScope } : {}),
+          ...(lendsScope ? { wholeScope: checked.wholeScope, wholeScopeBrief: checked.wholeScopeBrief } : {}),
           source: "verification",
           reportedBy: "verification",
           outsideConcern: false,
@@ -319,16 +323,17 @@ export function pathWithinScope(path, scope) {
 // One finding to verify: a merged group's primary write-up, with what the
 // group's other write-ups add, or a finding a verifier raised. A group
 // holding a whole-scope brief's finding is verified as whole-scope, under
-// the first such write-up's directory, whichever write-up is primary.
+// the first such write-up's directory and brief, whichever write-up is
+// primary.
 export function subjectOf({ primary, members }) {
   const writeUps = [primary, ...members];
   const dependsOn = [...new Set(writeUps
     .map((item) => typeof item.finding.dependsOn === "string" ? item.finding.dependsOn.trim() : "")
     .filter((fact) => fact !== ""))].join("; ");
-  const wholeScope = writeUps.find((item) => item.wholeScope !== undefined)?.wholeScope;
+  const whole = writeUps.find((item) => item.wholeScope !== undefined);
   return {
     ...primary,
-    ...(wholeScope !== undefined ? { wholeScope } : {}),
+    ...(whole ? { wholeScope: whole.wholeScope, wholeScopeBrief: whole.wholeScopeBrief } : {}),
     finding: { ...primary.finding, dependsOn },
     members,
   };
@@ -342,7 +347,7 @@ export function proposedFindingOf(subject) {
     ...subject.finding,
     source: subject.source,
     ...(subject.outsideConcern ? { outsideConcern: true } : {}),
-    ...(subject.wholeScope !== undefined ? { wholeScope: subject.wholeScope } : {}),
+    ...(subject.wholeScope !== undefined ? { wholeScope: subject.wholeScope, wholeScopeBrief: subject.wholeScopeBrief } : {}),
     ...(subject.members.length > 0 ? {
       mergedFrom: subject.members.map((member) => ({
         id: member.id,

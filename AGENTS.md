@@ -55,7 +55,11 @@ Claude Code by default or on Codex (`MINOS_LEAD_ENGINE`).
   installed launcher and adjudication wrapper (`workflows/review.js`, then
   `workflows/review-briefs.js` for the reviewed repository's `.review/`
   briefs). In the main review an exploration leg plans the review and
-  concern specialists propose findings over the selected range. In the
+  concern specialists propose findings over the selected range; a
+  repository whose `review.mode` is `quick` gets `workflows/quick-review.js`
+  in its place, where general reviewers with no concern propose, divided
+  into shares only when the reviewer given the whole change judges it too
+  large for one (`workflows/review-mode.mjs`). In the
   brief stage a planner selects the briefs the change gives work to and
   divides them into units, each proposed on by its own leg.
   Both then merge, where one leg groups the findings one fix would

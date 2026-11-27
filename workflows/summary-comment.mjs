@@ -31,9 +31,13 @@ export const INSPECTING = "inspecting";
 export const REVIEWING = "reviewing";
 export const STATES = [INSPECTING, REVIEWING, CLEAN, CHANGES_REQUESTED, INCOMPLETE];
 
-// The kinds of section a review has.
+// The kinds of section a review has: a specialist concern, a repository
+// brief, or the quick review's general reviewers taken together, whose
+// section is named GENERAL_SECTION.
 export const CONCERN = "concern";
 export const BRIEF = "brief";
+export const GENERAL = "general";
+export const GENERAL_SECTION = "General review";
 
 const HEADLINE = {
   [INSPECTING]: "looking at what changed",
@@ -56,7 +60,8 @@ function state({ state, head, target, condition }) {
   return lines.join("\n");
 }
 
-// The review's sections, one row each: a specialist concern or a brief,
+// The review's sections, one row each: a specialist concern, the general
+// review or a brief,
 // with the count of findings it returned, that it found none, or why it
 // was skipped. A skipped section is never shown as one that found none.
 // Absent or empty, as before a review has run and on a head that needed
@@ -119,8 +124,8 @@ function checkFacts(facts) {
   for (const section of sections) {
     const counted = Number.isInteger(section?.findings) && section.findings >= 0;
     const skipped = typeof section?.skipped === "string" && section.skipped.trim() !== "";
-    if (![CONCERN, BRIEF].includes(section?.kind) || typeof section.name !== "string" || section.name === "" || counted === skipped)
-      throw new Error(`a summary section names a concern or a brief and either its count of findings or why it was skipped: ${JSON.stringify(section)}`);
+    if (![CONCERN, GENERAL, BRIEF].includes(section?.kind) || typeof section.name !== "string" || section.name === "" || counted === skipped)
+      throw new Error(`a summary section names a concern, the general review or a brief and either its count of findings or why it was skipped: ${JSON.stringify(section)}`);
   }
   for (const finding of outstanding)
     if (typeof finding?.path !== "string" || !Number.isInteger(finding.line) || typeof finding.head !== "string")

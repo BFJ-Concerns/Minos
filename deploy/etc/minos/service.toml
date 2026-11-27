@@ -53,7 +53,7 @@ signature-header = "X-Forgejo-Signature"
 # Per-repository knobs, set once here for every opted-in repository; any
 # repository's own file under repos/ overrides a knob whole. Unset at both
 # levels, a repository gets: threshold High, no safeguard requests filed,
-# standard review depth, its own checked-in guidance (the first present of
+# standard review depth, the specialist review, its own checked-in guidance (the first present of
 # AGENTS.md, CLAUDE.md, README.md), a pull-request comment as its filing
 # destination, and no work-in-progress prefixes.
 [repositories]
@@ -79,6 +79,12 @@ signature-header = "X-Forgejo-Signature"
 # deeply the specialists read: light, standard or thorough. It never bounds
 # the findings a review returns.
 # depth = "standard"
+# The review mode says which review a head gets: specialist, where an
+# exploration leg plans the review and a specialist reads for each concern,
+# or quick, where one general reviewer reads the change for every kind of
+# problem, dividing it among several only when it is too large for one.
+# Either way every finding is merged and verified before it is published.
+# mode = "specialist"
 # Push inspection reads each new head before any review and chooses no
 # review, a review of what changed since the head Minos last finished on,
 # or a full review. Outcomes lists the ones it may choose; full is required.

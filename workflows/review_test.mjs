@@ -115,6 +115,12 @@ function finding(overrides = {}) {
   };
 }
 
+// A finding a fake verifier raises, naming the first finding of its batch
+// as the one it was checking, as the verifier schema requires.
+function raisedFinding(prompt, overrides = {}) {
+  return finding({ foundWhileChecking: findingsFromVerifierPrompt(prompt)[0].id, ...overrides });
+}
+
 function observation(overrides = {}) {
   return {
     title: "pre-existing defect",
@@ -169,7 +175,7 @@ test("the script emits an envelope with every routed leg and raw verifier output
   const { result, calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
 
   assert.deepEqual(Object.keys(result).sort(), [
-    "briefs", "dispatches", "exploration", "misconfigurations", "outOfScopeObservations", "proposedFindings",
+    "briefs", "dispatches", "exploration", "misconfigurations", "mode", "outOfScopeObservations", "proposedFindings",
     "requiredModelEvidence", "reviewed", "reviewers", "stage", "uncheckedFindings",
   ]);
   assert.equal(result.stage, "present");
@@ -207,6 +213,7 @@ test("malformed exploration scope entries fail closed before specialist dispatch
     assert.deepEqual(specialistCalls(calls), []);
     assert.deepEqual(result, {
       reviewed: { target: ARGS.target, head: ARGS.head, occasion: null },
+      mode: "specialist",
       stage: "present",
       incomplete: ["exploration returned a malformed review plan"],
       requiredModelEvidence: [{
@@ -514,7 +521,7 @@ test("a single-engine deployment verifies a verifier's own findings on the one e
   const { calls } = await runScript(args, responder({
     verify: (label, prompt) => ({
       ...verifierResult(prompt),
-      newFindings: raised ? [] : [finding({ title: "raised once", line: 70 }), (raised = true)].slice(0, 1),
+      newFindings: raised ? [] : [raisedFinding(prompt, { title: "raised once", line: 70 }), (raised = true)].slice(0, 1),
     }),
   }));
   assert.deepEqual(calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => call.opts.label),
@@ -1048,7 +1055,7 @@ test("a specialist is shown the other planned units of its own concern, and an o
 test("the lifecycle finds its workflow's status snapshot by the names the workflows declare", async () => {
   assert.match(lifecycle, /`\$MINOS_RUN_DIR\/ensemble\.<run-id>\.local\.json`/);
   assert.doesNotMatch(lifecycle, /`\$MINOS_RUN_DIR\/ensemble\.local\.json`/);
-  for (const [file, stage] of [["./review.js", "the main review"], ["./review-briefs.js", "the brief stage"]]) {
+  for (const [file, stage] of [["./review.js", "the main review"], ["./quick-review.js", "the main review"], ["./review-briefs.js", "the brief stage"]]) {
     const source = await readFile(fileURLToPath(new URL(file, import.meta.url)), "utf8");
     const name = source.match(/^\s*name: "([^"]+)"/m)?.[1];
     assert.ok(name, `${file} declares a workflow name`);
@@ -1155,7 +1162,7 @@ test("a finding a verifier raises is verified by a later leg, and one the last r
   const { result, calls } = await runScript(ARGS, responder({
     verify: (label, prompt) => ({
       ...verifierResult(prompt),
-      newFindings: [finding({ title: `raised by ${label}`, line: 40 + (raisedCount += 1) })],
+      newFindings: [raisedFinding(prompt, { title: `raised by ${label}`, line: 40 + (raisedCount += 1) })],
     }),
   }));
   const verifierLabels = calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => call.opts.label);
@@ -1200,7 +1207,7 @@ test("findings verifiers raise in one round are merged before the next round ver
     },
     verify: (label, prompt) => ({
       ...verifierResult(prompt),
-      newFindings: label.startsWith("verify-round-") ? [] : [finding({ title: "same defect both batches traced", line: 90 })],
+      newFindings: label.startsWith("verify-round-") ? [] : [raisedFinding(prompt, { title: "same defect both batches traced", line: 90 })],
     }),
   }));
   assert.deepEqual(merges, ["merge", "merge-round-2"]);

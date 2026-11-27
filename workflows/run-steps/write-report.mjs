@@ -24,6 +24,9 @@ export async function writeReport(run, settled, ending, closingProblems = []) {
   const skipped = (settled.briefReview?.skipped ?? []).map(({ brief, reason }) => `- Skipped ${brief} — ${reason}`);
   const earlierFindings = run.judgementAnswers?.get("earlier-findings")?.findings ?? [];
   const timings = await timingLines(run, problems);
+  // The mode the main review names in its verdict, a carried one included;
+  // the mode the run settled where no verdict came back.
+  const mode = settled.review?.mode ?? settled.reviewMode?.mode;
 
   const lines = [
     `# ${owner}/${repository}#${number}`, "",
@@ -32,6 +35,7 @@ export async function writeReport(run, settled, ending, closingProblems = []) {
     ...(settled.terminalCause ? [settled.terminalCause] : []),
     "", "## Review", "",
     ...(inspection ? [`- Push inspection chose **${inspection.outcome}**. ${inspection.reason}`] : []),
+    ...(mode ? [`- Main review in the **${mode}** mode.`] : []),
     ...(settled.carriedReview ? ["- Reused the predecessor's completed main review."] : []),
     ...(decisions?.main ? [`- Main classification — ${decisions.main.basis}`] : []),
     ...(decisions?.brief ? [`- Brief classification — ${decisions.brief.basis}`] : []),

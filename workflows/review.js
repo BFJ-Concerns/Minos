@@ -21,6 +21,7 @@ const { repositoryDescriptionFromInput, repositoryDescriptionSection } = await i
 const { pullRequestFromInput, pullRequestSection } = await import("./pull-request-description.mjs");
 const { promptFits, fillPrompt, concernsFromInput, concernLine } = await import("./review-prompts.mjs");
 const { reviewStages, proposalsOf, subjectOf, proposedFindingOf, uncheckedFindingOf } = await import("./review-stages.mjs");
+const { SPECIALIST } = await import("./review-mode.mjs");
 
 function promptsFromInput(input, concerns) {
   const prompts = input && input.prompts;
@@ -96,6 +97,7 @@ const {
 function envelope(fields) {
   return {
     reviewed: { target, head, occasion },
+    mode: SPECIALIST,
     stage: "present",
     ...(incomplete.length > 0 ? { incomplete } : {}),
     requiredModelEvidence: legs,
