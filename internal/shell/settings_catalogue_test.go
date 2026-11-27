@@ -173,6 +173,7 @@ func TestTypedSettingValuesAreReadByTheirForm(t *testing.T) {
 		{"filing-destination", `{kind = "none"}`, map[string]any{"kind": "none"}, false},
 		{"guidance-sources", `[{path = "AGENTS.md"}]`, []any{map[string]any{"path": "AGENTS.md"}}, false},
 		{"markers", `{clean = `, nil, true},
+		{"filing-destination", "{kind = \"file\"}\npath = \"notes.md\"", nil, true},
 	} {
 		got, err := ParseSettingValue(setting(test.setting), test.typed)
 		if test.refused {

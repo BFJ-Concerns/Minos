@@ -192,6 +192,11 @@ func ParseSettingValue(setting Setting, typed string) (any, error) {
 	if _, err := toml.Decode("value = "+typed, &decoded); err != nil {
 		return nil, fmt.Errorf("%s: %q is not a TOML value as the file would hold it: %v", setting.Name(), typed, err)
 	}
+	if len(decoded) != 1 {
+		// Lines after the value decode as keys of their own, which would be
+		// dropped unwritten.
+		return nil, fmt.Errorf("%s takes one value: %q holds more than one statement", setting.Name(), typed)
+	}
 	return copyTOMLValue(decoded["value"]), nil
 }
 
