@@ -301,8 +301,14 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 	if root == "" {
 		root = DefaultConfigRoot
 	}
+	return loadServiceConfigFile(root, filepath.Join(root, "service.toml"))
+}
+
+// loadServiceConfigFile loads the configuration rooted at root from path:
+// root's own service.toml, or a candidate about to replace it.
+func loadServiceConfigFile(root, path string) (ServiceConfig, error) {
 	var cfg ServiceConfig
-	metadata, err := decodeStrictTOML(filepath.Join(root, "service.toml"), &cfg)
+	metadata, err := decodeStrictTOML(path, &cfg)
 	if err != nil {
 		return ServiceConfig{}, err
 	}
@@ -402,28 +408,37 @@ func LoadRepoConfigs(cfg ServiceConfig) ([]RepoConfig, error) {
 		if !strings.HasSuffix(entry.Name(), ".toml") {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
-		var repo RepoConfig
-		metadata, err := decodeStrictTOML(path, &repo)
+		repo, err := loadRepoConfigFile(cfg, filepath.Join(dir, entry.Name()))
 		if err != nil {
-			return nil, err
-		}
-		repo.Path = path
-		if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
-			return nil, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
-		}
-		// The file's own values are validated before resolution fills a
-		// default, so an incomplete table is an error, never a silent default.
-		if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
-			return nil, err
-		}
-		repo.RepositoryKnobs = resolveRepositoryKnobs(cfg.Repositories, repo.RepositoryKnobs, metadata.IsDefined)
-		if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
 			return nil, err
 		}
 		repos = append(repos, repo)
 	}
 	return repos, nil
+}
+
+// loadRepoConfigFile loads one repository file, an enrolled one or a
+// candidate about to replace it, and resolves its knobs against cfg.
+func loadRepoConfigFile(cfg ServiceConfig, path string) (RepoConfig, error) {
+	var repo RepoConfig
+	metadata, err := decodeStrictTOML(path, &repo)
+	if err != nil {
+		return RepoConfig{}, err
+	}
+	repo.Path = path
+	if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
+		return RepoConfig{}, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
+	}
+	// The file's own values are validated before resolution fills a
+	// default, so an incomplete table is an error, never a silent default.
+	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
+		return RepoConfig{}, err
+	}
+	repo.RepositoryKnobs = resolveRepositoryKnobs(cfg.Repositories, repo.RepositoryKnobs, metadata.IsDefined)
+	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
+		return RepoConfig{}, err
+	}
+	return repo, nil
 }
 
 // resolveRepositoryKnobs layers a repository file's knobs over the service
