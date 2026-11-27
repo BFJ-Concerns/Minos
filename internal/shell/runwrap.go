@@ -33,12 +33,14 @@ func RunCommand(ctx context.Context, args []string) error {
 	if err := os.Remove(filepath.Join(runDir, runOwnerMarker)); err != nil {
 		return fmt.Errorf("refuse nested Minos run: this invocation does not own run directory %q: %w", runDir, err)
 	}
-	archivePending := filepath.Join(runDir, archivePendingFile)
-	// A resumed continuation may still have its predecessor's archive
-	// request. The driver archives the combined evidence when this run ends.
-	if err := os.Remove(archivePending); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("clear predecessor archive request: %w", err)
+	// Each invocation produces its own archive summary. Keep the raw
+	// timings and worker evidence when a continuation reuses the workspace.
+	for _, name := range []string{archivePendingFile, "timing-record.json"} {
+		if err := os.Remove(filepath.Join(runDir, name)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clear predecessor archive file %s: %w", name, err)
+		}
 	}
+	archivePending := filepath.Join(runDir, archivePendingFile)
 	cmd := exec.CommandContext(ctx, runBodyPath())
 	cmd.Dir = runDir
 	cmd.Env = append(os.Environ(), "MINOS_RUN_STARTED_AT="+strconv.FormatInt(time.Now().Unix(), 10))

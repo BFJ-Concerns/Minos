@@ -153,13 +153,19 @@ func archivedRuns(ctx context.Context, cfg ServiceConfig, hours, limit int) ([]r
 		}
 		var identity timingIdentity
 		if err := json.Unmarshal(record, &identity); err == nil {
-			run.Owner = identity.PullRequest.Owner
-			run.Repo = identity.PullRequest.Repository
-			run.PR = identity.PullRequest.Number
+			pull := identity.PullRequest
+			if validPullRequestIdentity(pull.Owner, pull.Repository, pull.Number) {
+				run.Owner, run.Repo, run.PR = pull.Owner, pull.Repository, pull.Number
+			}
 		}
 		runs = append(runs, run)
 	}
 	return runs, nil
+}
+
+func validPullRequestIdentity(owner, repo, number string) bool {
+	pr, err := strconv.ParseInt(number, 10, 64)
+	return owner != "" && repo != "" && err == nil && pr > 0
 }
 
 // unitFromArchiveName recovers the run unit from the archive's trailing run
@@ -170,7 +176,10 @@ func unitFromArchiveName(remainder string) string {
 	if index < 0 {
 		return ""
 	}
-	name := remainder[index:]
+	return unitFromRunDirectory(remainder[index:])
+}
+
+func unitFromRunDirectory(name string) string {
 	if cut := strings.LastIndex(name, "-"); cut > len("minos-run-") {
 		return name[:cut]
 	}

@@ -54,6 +54,7 @@ func showRecent(r *http.Request, read Readings) (any, error) {
 
 type archivedSummary struct {
 	Outcome         string `json:"outcome"`
+	Salvaged        bool   `json:"salvaged"`
 	DurationSeconds *int64 `json:"duration_seconds"`
 	Skipped         bool   `json:"review_skipped"`
 	SkipReason      string `json:"skip_reason"`
@@ -84,7 +85,7 @@ func describeArchivedRun(run shell.RecentRun) archivedRunView {
 			view.Duration = duration(time.Duration(*seconds) * time.Second)
 		}
 	}
-	if view.Duration == "" {
+	if view.Duration == "" && !details.Salvaged {
 		var spans struct {
 			Commands []archivedSpan
 			Workers  []archivedSpan
