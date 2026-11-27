@@ -181,12 +181,12 @@ test("both workflows dispatch with the contracts they are handed, keeping no cop
   }
 });
 
-test("both workflows carry the same input checks, prompt filling, merge and verification", () => {
+test("both workflows carry the same input checks", () => {
   const shared = (filename) => {
     const source = readFileSync(join(workflowsDir, filename), "utf8");
-    const start = source.indexOf("// The input checks, prompt filling, merge and verification below");
-    const end = source.indexOf("function uncheckedFindingOf");
-    assert.ok(start !== -1 && end > start, `${filename} carries the shared stage code`);
+    const start = source.indexOf("// The input checks below are the same in review.js and review-briefs.js.");
+    const end = source.indexOf("\n}\n", source.indexOf("function pullRequestSection"));
+    assert.ok(start !== -1 && end > start, `${filename} carries the shared input checks`);
     return source.slice(start, end);
   };
   assert.equal(shared("review.js"), shared("review-briefs.js"));

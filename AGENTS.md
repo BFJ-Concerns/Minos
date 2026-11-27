@@ -41,11 +41,17 @@ forge, and nothing else.
   (`minos forge earlier`), from a record kept under the runs directory.
   The record is a cache: losing it costs one full review. The lifecycle
   dispatches no scope workflow; `workflows/review-scope.js` ships unused.
-- The pull request carries only what blocks it. Confirmed findings that do
-  not block, and unverified observations from outside the change, go to
-  the configured filing destination; a finding already on the pull request
-  or classed as speculative hardening goes nowhere
-  (`workflows/compose-review-publication.mjs`).
+- The pull request carries only what blocks it. A confirmed finding that
+  neither blocks nor takes a class is advisory and goes to the configured
+  filing destination, as do unverified observations from outside the
+  change. A finding the lead puts in one of the three never-gating
+  classes is published and filed nowhere, and stays in the run record: a
+  gap the pull-request description declares as known or out of scope
+  (`declared-out-of-scope`), a request for a safeguard against something
+  the project is not shown to face (`speculative-hardening`), and a
+  restatement of a finding the author already has (`already-raised`)
+  (`lifecycle/lifecycle.md`, step 5;
+  `workflows/compose-review-publication.mjs`).
 - The verdict is the lead's classification judgement, informed by the
   configured severity threshold and never mechanically bound to it
   (`workflows/verdict-classification.mjs` owns the digest and the

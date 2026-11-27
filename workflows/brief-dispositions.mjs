@@ -1,7 +1,7 @@
 // The deterministic brief pass, computed once by the input builders and
-// handed to the sandboxed workflows as data: the Ensemble sandbox cannot
-// import modules, so what both the scope and the brief workflow need to
-// agree on is decided here and carried in their input.
+// handed to the workflows as data: what the scope and the brief workflow
+// need to agree on is decided here and carried in their input, so both
+// read one settlement of each brief.
 
 export function parseFrontmatter(content) {
   const front = { title: null, extent: "diff", sweep: "per-file", occasion: [], relevance: null };

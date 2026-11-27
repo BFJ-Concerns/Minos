@@ -18,13 +18,21 @@ export const DEFAULT_THRESHOLD = "High";
 // gating; a below-threshold finding may carry one too. The first two object
 // to the kind of finding. The third objects to saying it again: the author
 // already has this finding from Minos and has answered it, or the filing
-// destination already carries it. Speculative hardening and already-raised
-// findings leave the run on no surface at all. Any other basis for
+// destination already carries it. A finding in any of the three leaves the
+// run on no surface at all: the run record keeps it. Any other basis for
 // declassification is the mechanical binding the lead's judgement exists to
 // prevent.
+export const DECLARED_OUT_OF_SCOPE_CLASS = "declared-out-of-scope";
 export const ALREADY_RAISED_CLASS = "already-raised";
 export const SPECULATIVE_HARDENING_CLASS = "speculative-hardening";
-export const NEVER_GATING_CLASSES = ["declared-out-of-scope", SPECULATIVE_HARDENING_CLASS, ALREADY_RAISED_CLASS];
+export const NEVER_GATING_CLASSES = [DECLARED_OUT_OF_SCOPE_CLASS, SPECULATIVE_HARDENING_CLASS, ALREADY_RAISED_CLASS];
+
+// A gap the pull request's description declares as known or out of scope
+// is published and filed nowhere: the author has said they know of it, so
+// neither the pull request nor the filing destination is told it again.
+export function declaredOutOfScope(disposition) {
+  return Boolean(disposition) && disposition.gating === false && disposition.class === DECLARED_OUT_OF_SCOPE_CLASS;
+}
 
 // A finding the lead classed as already raised is published and filed
 // nowhere: the review comment or the filed entry it restates is the copy
@@ -124,8 +132,9 @@ export function verdictDigest(input) {
 // at-or-above-threshold finding only under one of the never-gating
 // classes (named per finding), puts no such class on a gating finding, gates a below-threshold finding only with an
 // undergrade basis naming it, labels restatements of one defect with one
-// non-empty `defect` label whose members gate and are classed alike, and earns
-// request-changes exactly when a gating finding exists.
+// non-empty `defect` label whose members gate and are classed alike, save
+// those already raised, and earns request-changes exactly when a gating
+// finding exists.
 export function validateVerdictDecision(decision, digest) {
   if (!digest || digest.kind !== DIGEST_KIND || digest.status !== "complete")
     return { ok: false, reason: "verdict decision validation needs a complete verdict digest" };
@@ -183,10 +192,12 @@ export function validateVerdictDecision(decision, digest) {
   // Restatements of one defect are one call: a label whose members gate
   // or are classed differently is a decision that has not decided, and the
   // composer would publish or withhold the defect by whichever member it
-  // happened to keep.
+  // happened to keep. A member already raised stands apart from that call:
+  // the author has the defect at that site, and the defect's sites the
+  // author has not been told of take the call on their own.
   const callByDefect = new Map();
   for (const disposition of decision.findings) {
-    if (typeof disposition.defect !== "string") continue;
+    if (typeof disposition.defect !== "string" || alreadyRaised(disposition)) continue;
     const seen = callByDefect.get(disposition.defect);
     if (seen !== undefined && seen.gating !== disposition.gating)
       return { ok: false, reason: `findings labelled one defect gate differently: ${disposition.defect}` };

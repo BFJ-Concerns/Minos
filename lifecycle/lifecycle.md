@@ -553,8 +553,9 @@ write, matching the target rule above.)
    The digest lists every confirmed finding with its severity, confidence
    values, and threshold position, and a `thresholdIndication` — what the
    configured threshold alone would say. Classification is your judgement,
-   informed by the threshold rather than mechanically bound to it (the
-   commission's balance rule): a confirmed finding at or above the
+   informed by the threshold rather than mechanically bound to it: the
+   threshold gives each finding its default, and you depart from a
+   default only on a basis this step names. A confirmed finding at or above the
    threshold gates by default, and only three classes may be judged out.
    Two object to the kind of finding:
    a gap the pull-request description explicitly declares as known or out
@@ -565,28 +566,38 @@ write, matching the target rule above.)
    guidance shows the project to have, where the change's own logic does
    nothing wrong (`speculative-hardening`). The severity threshold alone
    does not catch either class, because verifiers confirm the facts while
-   the objection is to the kind. Speculative hardening takes a finding at
-   any severity, and such a finding is published and filed nowhere: a
-   filed entry is read later as work to do, and work done from these is
-   how a project fills with guards it never needed. A test that cannot
-   fail, behaviour the change adds and leaves unproved, and a document
-   the code contradicts are real gaps, not hardening. The third objects
-   to saying it again (`already-raised`), and takes a finding at any
-   severity: it restates an earlier finding, in a thread or in a review
+   the objection is to the kind. A test that cannot fail, behaviour the
+   change adds and leaves unproved, and a document the code contradicts
+   are real gaps, not hardening. The third objects to saying it again
+   (`already-raised`): the finding
+   restates an earlier finding, in a thread or in a review
    body alike, and the code it cites has not changed since the head that
-   finding was raised on. Such a finding is published and filed nowhere,
-   because the author has it; whether it still blocks is step 7's
+   finding was raised on. Whether the earlier finding still blocks is
+   step 7's
    question. A below-threshold finding that restates an entry the filing
    destination already carries takes the class too; a finding at or above
-   the threshold never takes it on that ground. A verifier's reason may say
-   that the delivered behaviour is correct and the finding is a gap; that
-   is advice for your gating call, never grounds for a class. The one upward exception
+   the threshold never takes it on that ground.
+
+   A finding that fits a class takes it at any severity: one below the
+   threshold is classed, not left advisory. Whatever its class,
+   such a finding is published and filed nowhere, and each class has its
+   reason. The author declared the gap, so no surface tells them of it
+   again. A filed hardening request is read later as work to do, and work
+   done from these is how a project fills with guards it never needed.
+   What was already raised, the author has. A classed finding stays in
+   the run record: the verdict file holds the finding and your decision
+   holds its class.
+
+   A verifier's reason may say that the delivered behaviour is correct
+   and the finding is a gap; that is advice for your gating call, never
+   grounds for a class. The one upward exception
    is judging a below-threshold finding's severity an undergrade that
    genuinely belongs at or above the threshold, named as such. Any gating
    finding makes the verdict `request-changes`; none makes it `clean`.
-   A finding judged non-gating is advisory. It goes to the repository's
-   configured filing destination on either outcome and is never posted on
-   the pull request, which carries only what blocks it.
+   A finding that neither gates nor takes a class is advisory. It goes to
+   the repository's configured filing destination on either outcome and
+   is never posted on the pull request, which carries only what blocks
+   it.
 
    Write your decision per verdict to
    `$MINOS_RUN_DIR/verdict-decision.json` (`verdict-decision-brief.json`
@@ -602,7 +613,8 @@ write, matching the target rule above.)
        { "key": "ANOTHER_KEY", "gating": false, "class": "declared-out-of-scope" },
        { "key": "AN_ANSWERED_KEY", "gating": false, "class": "already-raised" },
        { "key": "A_BELOW_THRESHOLD_KEY", "gating": true, "undergrade": "why this severity is an undergrade" },
-       { "key": "A_RESTATEMENT_KEY", "gating": true, "defect": "short-label-you-choose", "undergrade": "restates the High finding above" }
+       { "key": "A_RESTATEMENT_KEY", "gating": true, "defect": "short-label-you-choose", "undergrade": "restates the High finding above" },
+       { "key": "AN_EARLIER_SITE_KEY", "gating": false, "class": "already-raised", "defect": "short-label-you-choose" }
      ]
    }
    ```
@@ -614,27 +626,41 @@ write, matching the target rule above.)
    compared exactly. Each still gets its own disposition, and they gate
    alike — so a below-threshold restatement of a gating defect gates too,
    and carries an `undergrade` naming the sibling it restates. They are
-   classed alike too: left advisory, they all carry the same `class` or
+   classed alike too: left non-gating, they all carry the same `class` or
    all carry none. A gating disposition carries no `class` at all. A
    class is the reason a finding does not gate, so where one finding of a
    defect gates, the others gate with it and none of them keeps a class.
+
+   `already-raised` is the one class that stands outside that single
+   call, because it is a fact about a site and not about the defect. An
+   earlier review may have raised a defect at one line, where the code
+   has not changed, and this run finds the same mistake there and at a
+   line the author has not been told of. Give every one of those findings
+   the one `defect` label. Class the finding at the earlier site
+   `already-raised`. It is not posted again, and the label's call passes
+   it by: the others may gate without it, and none of them takes its
+   class from it. The findings at the new sites take their own call,
+   gating or not, and share it between them as a label's findings do, so
+   the author hears of the defect where it is new.
 
    One defect gets one call across the two decisions as much as within
    one, so write the brief decision with the main decision beside it.
    That covers a brief finding at the same line and under the same title
    as a main-review finding even where you gave them no label, because
-   the composer merges the two as one finding. Whether the author
-   already has that finding is one fact about it, so settle it first and
-   give both twins the same answer: both take `already-raised` and
-   neither gates, or neither takes the class. A class otherwise falls
-   away where a sibling gates, but not this one: a gate on one twin
-   would post again what the author already has.
+   the composer merges the two as one finding. Those twins sit at one
+   site, so whether the author already has the finding is one fact about
+   both: settle it first and give both twins the same answer. Both take
+   `already-raised` and neither gates, or neither takes the class. A
+   gate on one twin would post again what the author already has.
 
    The composer publishes a labelled defect once, at its highest-severity
    site, naming the other sites and the groups that also raised it; an
-   advisory one is filed as one entry. It refuses, with nothing written,
-   a label whose findings gate differently across the two decisions, and
-   an advisory defect the two decisions class differently. It
+   advisory one is filed as one entry. A label's `already-raised`
+   findings are no part of either: the defect is published or filed at
+   its new sites alone, and names no earlier one. Those findings aside,
+   it refuses, with nothing written, a label whose findings gate
+   differently across the two decisions, and a non-gating defect the two
+   decisions class differently. It
    refuses as well twins that one decision classes `already-raised` and
    the other calls new, even where the other gates them. Distinct
    defects at one line take no label — the composer cross-references
@@ -651,7 +677,8 @@ write, matching the target rule above.)
    A decision that fails validation — a missing basis, an unnamed
    declassification, an unnamed undergrade, a finding with no
    disposition, a `class` on a gating finding, a blank `defect` label or
-   one whose findings gate or are classed differently — is corrected and
+   one whose findings, those already raised aside, gate or are classed
+   differently — is corrected and
    re-validated rather than worked around; nothing has touched the forge
    yet. The run's overall verdict is
    `request-changes` when either validated decision is; `clean` only when

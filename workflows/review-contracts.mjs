@@ -1,9 +1,8 @@
 // What each stage of the review workflows returns: the exploration plan,
 // the specialist, merge and verifier schemas both workflows share, what the merge and verifier
-// legs are shown of a finding, and the verifier batch size. A workflow
-// script imports nothing, so the input builders attach these as
-// `args.contracts` and each workflow validates them before dispatching
-// anything; neither keeps a copy.
+// legs are shown of a finding, and the verifier batch size. The input
+// builders attach these as `args.contracts` and each workflow validates
+// them before dispatching anything; neither keeps a copy.
 
 export const VERIFIER_BATCH_SIZE = 6;
 
