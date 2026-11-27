@@ -2,6 +2,7 @@
 set -eu
 # shellcheck source-path=SCRIPTDIR
 . "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
 
 # The pull request's conversation comments as one JSON array, oldest first,
 # each with its author's login and its body. Review comments are not among
