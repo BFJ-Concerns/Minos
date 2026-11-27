@@ -567,27 +567,44 @@ func respellTOML(written string, want, have any) (string, error) {
 		opening = written[1:fields[0].start]
 		closing = written[fields[len(fields)-1].valueEnd : len(written)-1]
 	}
+	// Fields are taken by the name their key opens with: dotted fields
+	// sharing a first segment together set that one name.
+	sharing := map[string]int{}
+	for _, field := range fields {
+		sharing[field.key[0]]++
+	}
 	var spelled []string
 	seen := map[string]bool{}
 	for _, field := range fields {
-		if len(field.key) != 1 {
-			// A dotted field sets a table of its own; the whole value is
-			// spelt afresh rather than taken apart.
-			return inlineTOML(want)
-		}
 		name := field.key[0]
+		first := !seen[name]
 		seen[name] = true
 		value, kept := wantTable[name]
 		if !kept {
 			continue
 		}
-		valueText := written[field.valueStart:field.valueEnd]
-		if !reflect.DeepEqual(value, haveTable[name]) {
-			if valueText, err = respellTOML(valueText, value, haveTable[name]); err != nil {
+		fieldText := written[field.start:field.valueEnd]
+		switch {
+		case reflect.DeepEqual(value, haveTable[name]):
+			// Every field setting an unchanged name stays as written.
+		case len(field.key) == 1 && sharing[name] == 1:
+			valueText, err := respellTOML(written[field.valueStart:field.valueEnd], value, haveTable[name])
+			if err != nil {
 				return "", err
 			}
+			fieldText = written[field.start:field.valueStart] + valueText
+		case !first:
+			// A changed name written as several dotted fields is spelt
+			// afresh once, where its first field stood.
+			continue
+		default:
+			inline, err := inlineTOML(value)
+			if err != nil {
+				return "", err
+			}
+			fieldText = tomlKeySegment(name) + " = " + inline
 		}
-		spelled = append(spelled, written[field.start:field.valueStart]+valueText)
+		spelled = append(spelled, fieldText)
 	}
 	for _, name := range sortedTOMLKeys(wantTable) {
 		if seen[name] {

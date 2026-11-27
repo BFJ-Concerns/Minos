@@ -282,6 +282,18 @@ func TestEditTOMLLeavesWhatTheEditDidNotAskToChange(t *testing.T) {
 			value: 1,
 			want:  "m = {b = 'two', a = 1}\n",
 		},
+		"a changed name of dotted fields leaves the other names as written": {
+			text:  "routing = { proposer.engine = 'codex', verifier.engine = 'claude' }\n",
+			key:   []string{"routing", "proposer"},
+			value: map[string]any{"engine": "claude"},
+			want:  "routing = { proposer = {engine = \"claude\"}, verifier.engine = 'claude' }\n",
+		},
+		"a name of several dotted fields changes once where it first stood": {
+			text:  "r = { p.engine = 'codex', v = 1, p.effort = 'low' }\n",
+			key:   []string{"r", "p"},
+			value: map[string]any{"engine": "claude"},
+			want:  "r = { p = {engine = \"claude\"}, v = 1 }\n",
+		},
 		"a file without a final newline keeps none": {
 			text:  "a = 1",
 			key:   []string{"a"},
