@@ -361,6 +361,19 @@ test("every leg runs on the routing the input carries, and labels follow the rou
   );
 });
 
+test("a single-engine deployment verifies a verifier's own findings on the one engine it has", async () => {
+  const args = enumeratedArgs("aaa111", "bbb222", { provisioned: "claude" });
+  let raised = false;
+  const { calls } = await runScript(args, responder({
+    verify: (label, prompt) => ({
+      ...verifierResult(prompt),
+      newFindings: raised ? [] : [finding({ title: "raised once", line: 70 }), (raised = true)].slice(0, 1),
+    }),
+  }));
+  assert.deepEqual(calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => call.opts.label),
+    ["verify-1-claude", "verify-round-2-1-claude"]);
+});
+
 test("a single-engine deployment routes every role to the one provisioned engine", async () => {
   const args = enumeratedArgs("aaa111", "bbb222", { provisioned: "claude" });
   const { calls } = await runScript(args, responder());
@@ -933,13 +946,18 @@ test("a finding a verifier raises is verified by a later leg, and one the last r
     }),
   }));
   const verifierLabels = calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => call.opts.label);
-  assert.deepEqual(verifierLabels, ["verify-1-claude", "verify-round-2-1-claude", "verify-round-3-1-claude"]);
+  assert.deepEqual(verifierLabels, ["verify-1-claude", "verify-round-2-1-codex", "verify-round-3-1-claude"]);
+  assert.deepEqual(
+    calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => [call.opts.engine, call.opts.model]),
+    [["claude", "claude-opus-5-5"], ["codex", "gpt-6.2-astra"], ["claude", "claude-opus-5-5"]],
+    "each round is verified by the family that did not raise its findings",
+  );
   assert.deepEqual(result.proposedFindings.map(({ id, proposingLabel, verifyLabel }) => ({ id, proposingLabel, verifyLabel })), [
     { id: "specialist-1-logic-codex:1", proposingLabel: "specialist-1-logic-codex", verifyLabel: "verify-1-claude" },
-    { id: "verify-1-claude:raised:1", proposingLabel: "verify-1-claude", verifyLabel: "verify-round-2-1-claude" },
-    { id: "verify-round-2-1-claude:raised:1", proposingLabel: "verify-round-2-1-claude", verifyLabel: "verify-round-3-1-claude" },
+    { id: "verify-1-claude:raised:1", proposingLabel: "verify-1-claude", verifyLabel: "verify-round-2-1-codex" },
+    { id: "verify-round-2-1-codex:raised:1", proposingLabel: "verify-round-2-1-codex", verifyLabel: "verify-round-3-1-claude" },
   ]);
-  assert.ok(result.proposedFindings.every((entry) => entry.proposingLabel !== entry.verifyLabel));
+  assert.ok(result.proposedFindings.every((entry) => entry.proposingLabel.split("-").at(-1) !== entry.verifyLabel.split("-").at(-1)));
   assert.deepEqual(result.uncheckedFindings.map(({ id, source }) => ({ id, source })), [
     { id: "verify-round-3-1-claude:raised:1", source: "verification" },
   ]);

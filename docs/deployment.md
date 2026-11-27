@@ -200,7 +200,9 @@ needs; it is not required.
    `exploration` and `brief-planner`, and `medium` for `proposer`,
    `verifier` and `engagement-gate`. The verifier's routing also carries
    the leg that merges findings one fix would resolve before they are
-   verified. A configured role overrides only the fields it sets.
+   verified. A finding a verifier raises while checking another is
+   verified on the `proposer`'s routing when that runs on the other engine,
+   so it too is checked by the family that did not raise it. A configured role overrides only the fields it sets.
 
    Size every capacity decision — this cap, the slice envelope, the box
    itself — by **anonymous memory plus swap peak, never the journal's cgroup

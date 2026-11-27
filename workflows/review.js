@@ -253,9 +253,12 @@ function shownToVerifier(subject) {
 async function verifySubjects(subjects, labelPrefix, mergeLabel, phaseName) {
   const verified = [];
   let pending = subjects;
+  let raisedBy = routing.proposer.engine;
   for (let round = 1; round <= contracts.verificationRounds && pending.length > 0; round += 1) {
-    const raised = await verificationRound(pending, round === 1 ? labelPrefix : `${labelPrefix}-round-${round}`, phaseName);
+    const route = verifierRoute(raisedBy);
+    const raised = await verificationRound(pending, round === 1 ? labelPrefix : `${labelPrefix}-round-${round}`, route, phaseName);
     verified.push(...pending);
+    raisedBy = route.engine;
     if (raised.length === 0 || round === contracts.verificationRounds) {
       pending = raised;
       break;
@@ -269,15 +272,25 @@ async function verifySubjects(subjects, labelPrefix, mergeLabel, phaseName) {
   return { verified, unchecked: pending };
 }
 
-async function verificationRound(subjects, labelPrefix, phaseName) {
+// The route that verifies findings proposed on an engine: the verifier's,
+// unless the verifier runs on that same engine and the proposer's does
+// not, as for a finding a verifier raised. A deployment with one engine
+// has no other family to offer.
+function verifierRoute(proposedOn) {
+  if (routing.verifier.engine !== proposedOn) return routing.verifier;
+  if (routing.proposer.engine !== proposedOn) return routing.proposer;
+  return routing.verifier;
+}
+
+async function verificationRound(subjects, labelPrefix, route, phaseName) {
   const batches = [];
   for (let offset = 0; offset < subjects.length; offset += contracts.verifierBatchSize) {
     const items = subjects.slice(offset, offset + contracts.verifierBatchSize);
-    const label = `${labelPrefix}-${batches.length + 1}-${routing.verifier.engine}`;
+    const label = `${labelPrefix}-${batches.length + 1}-${route.engine}`;
     const findingIds = items.map((item) => item.id);
     items.forEach((item) => { item.verifyLabel = label; item.rawVerifier = null; });
     batches.push({ items, label, findingIds });
-    addLeg(label, "verifier", routing.verifier.model, findingIds);
+    addLeg(label, "verifier", route.model, findingIds);
   }
   const settlements = await parallel(batches.map((batch) => () =>
     agent(
@@ -286,10 +299,10 @@ async function verificationRound(subjects, labelPrefix, phaseName) {
         findings: JSON.stringify(batch.items.map(shownToVerifier), null, 2),
       }),
       {
-        engine: routing.verifier.engine,
+        engine: route.engine,
         schema: contracts.verifierSchema,
-        model: routing.verifier.model,
-        effort: routing.verifier.effort,
+        model: route.model,
+        effort: route.effort,
         strip: ["skills", "agents"],
         identity: true,
         label: batch.label,
