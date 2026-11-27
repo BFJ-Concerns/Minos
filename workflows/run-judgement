@@ -1,0 +1,52 @@
+#!/usr/bin/env node
+
+// Runs one judgement stage's workflow and prints its answer. It is the
+// runner a judgement stage takes under dispatch-stage and the whole of what
+// replay-judgement.mjs runs, so a stage answers a recorded input through
+// exactly the path it answers a live one. The Ensemble launcher is the one
+// installed beside this tree, and the workflow's agent works in the
+// caller's working directory: the clone the stage reads.
+//
+// A stage that gave no usable answer exits non-zero with nothing on
+// standard output, so dispatch-stage leaves no result file and no caller
+// mistakes a missing judgement for one.
+
+import { spawn } from "node:child_process";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const LAUNCHER = resolve(dirname(fileURLToPath(import.meta.url)), "..", "runtime", "ensemble.mjs");
+
+function launch(jsonArgs, workflowScript) {
+  return new Promise((settle, reject) => {
+    const child = spawn(process.execPath, [LAUNCHER, "--json-args", jsonArgs, workflowScript], {
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) settle(stdout);
+      else reject(new Error(signal ? `ensemble launcher ended on ${signal}` : `ensemble launcher exited ${code}`));
+    });
+  });
+}
+
+const [workflowScript, flag, jsonArgs, ...extra] = process.argv.slice(2);
+try {
+  if (!workflowScript || flag !== "--json-args" || !jsonArgs || !jsonArgs.startsWith("@") || extra.length > 0)
+    throw new Error("usage: run-judgement <workflow-script-abs-path> --json-args @<argsfile>");
+  if (!isAbsolute(workflowScript)) throw new Error("workflow script path must be absolute");
+  const lines = (await launch(jsonArgs, workflowScript)).split(/\r?\n/).filter((line) => line !== "");
+  if (lines.length !== 1) throw new Error(`ensemble launcher emitted ${lines.length} stdout lines; expected one result`);
+  const result = JSON.parse(lines[0]);
+  if (!result || typeof result.stage !== "string" || result.stage === "")
+    throw new Error("the judgement workflow returned no stage name");
+  if (!result.answer || typeof result.answer !== "object" || Array.isArray(result.answer))
+    throw new Error(`stage ${result.stage} gave no answer`);
+  process.stdout.write(`${JSON.stringify({ stage: result.stage, answer: result.answer })}\n`);
+} catch (error) {
+  process.stderr.write(`run-judgement: ${error.message}\n`);
+  process.exitCode = 1;
+}
