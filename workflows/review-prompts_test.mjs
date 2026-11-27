@@ -6,9 +6,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { promptSettingsFromEnvironment } from "./prompt-settings.mjs";
 import { STAGE_RUN_SLOTS, parseConcern, reviewPrompts, slotNames } from "./review-prompts.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+// Every prompt setting as it stands when a repository sets none.
+const unset = promptSettingsFromEnvironment({});
 
 // A copy of the shipped prompts a test may break.
 function promptCopy(t) {
@@ -19,7 +22,7 @@ function promptCopy(t) {
 }
 
 test("every shipped prompt has its file slots filled and carries only its stage's run slots", () => {
-  const { concerns, prompts } = reviewPrompts(repositoryRoot);
+  const { concerns, prompts } = reviewPrompts(repositoryRoot, unset);
   assert.deepEqual(concerns.map(({ name }) => name), ["failure", "fit", "logic", "security", "tests"]);
   assert.ok(concerns.every(({ summary }) => summary.length > 0));
   const stages = [
@@ -48,7 +51,7 @@ test("every shipped prompt has its file slots filled and carries only its stage'
 test("a prompt carrying a slot no stage fills is refused when the input is built", (t) => {
   const root = promptCopy(t);
   writeFileSync(join(root, "workflows", "review-briefs", "merge.md"), "Group these.\n\n{{findings}}\n{{project-documents}}\n");
-  assert.throws(() => reviewPrompts(root), /merge\.md carries slots its stage never fills: project-documents/);
+  assert.throws(() => reviewPrompts(root, unset), /merge\.md carries slots its stage never fills: project-documents/);
 });
 
 test("a concern file needs exactly a summary in its front matter and a body", () => {
@@ -59,7 +62,7 @@ test("a concern file needs exactly a summary in its front matter and a body", ()
 });
 
 test("the repository prompt keeps a whole-scope brief's older defects in findings, not observations", () => {
-  const { prompts } = reviewPrompts(repositoryRoot);
+  const { prompts } = reviewPrompts(repositoryRoot, unset);
   const observationLine = prompts.repository.split("\n").find((line) => line.startsWith("- `outOfScopeObservations`:"));
   assert.ok(observationLine, "the repository prompt says what an observation is");
   assert.match(observationLine, /the change did not introduce, other than those an assignment of a whole part puts in `findings`/);
