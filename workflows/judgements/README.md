@@ -8,6 +8,8 @@ answer the driver carries out as given.
 | Stage | Decides | Driver step |
 |---|---|---|
 | `push-inspection` | how much review a head needs: none, the increment since the head Minos last finished on, or the whole pull request | `run-steps/inspect-push.mjs` |
+| `verdict-classification` | which confirmed findings of the main and brief verdicts gate, take a never-gating class or are advisory | `run-steps/classify.mjs` |
+| `earlier-findings` | whether each blocking finding of an earlier Minos review still stands: answered by the author, gone from the code, or not | `run-steps/settle-earlier-findings.mjs` |
 
 ## A stage's files
 
