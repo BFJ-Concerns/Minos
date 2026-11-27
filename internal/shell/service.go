@@ -169,7 +169,8 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + reason), DeferralReason: reason, DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
 	}
 	if eligibility.completedRun {
-		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
+		completed := ReconcileResult{Decision: ReconcileNothing, DeferralReason: "completed-marker", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}
+		return completed, settleCompletedMarkers(ctx, adapter, guard, repo.Markers, eligibility.terminalOutcome)
 	}
 	if eligibility.dependencyDeferred {
 		return ReconcileResult{Decision: ReconcileDecision(deferredDecisionPrefix + eligibility.dependencyReason), DeferralReason: eligibility.dependencyReason, DeferralReasons: eligibility.reasons}, nil
@@ -201,6 +202,31 @@ func staleTerminalMarker(snapshot forge.Snapshot, botLogin, statusContext string
 		}
 	}
 	return true
+}
+
+// settleCompletedMarkers gives a completed head the markers its verdict
+// calls for: no in-flight marker, and the terminal marker of the outcome
+// when one is configured. The run writes both itself; this repairs a head
+// whose run recorded its verdict and then failed a marker write, without
+// another review. Both writes are idempotent, so a head already carrying
+// the right markers costs only the guards' reads. The other outcome's
+// terminal marker is removed by the stale-marker pass above.
+func settleCompletedMarkers(ctx context.Context, adapter *forge.Adapter, guard forge.Guard, markers Markers, outcome string) error {
+	if markers.InFlight != nil {
+		if result := adapter.RemoveMarker(ctx, guard, *markers.InFlight); result.Outcome != forge.WriteApplied {
+			return fmt.Errorf("remove in-flight marker from completed head: %s: %s", result.Outcome, result.Reason)
+		}
+	}
+	terminal := markers.Attention
+	if outcome == product.Clean().Name() {
+		terminal = markers.Clean
+	}
+	if terminal != nil {
+		if result := adapter.AddMarker(ctx, guard, *terminal); result.Outcome != forge.WriteApplied {
+			return fmt.Errorf("add %s marker to completed head: %s: %s", outcome, result.Outcome, result.Reason)
+		}
+	}
+	return nil
 }
 
 // pullRequestAdmissionEligibility holds the non-writing admission chain. The

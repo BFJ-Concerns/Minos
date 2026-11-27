@@ -612,6 +612,73 @@ func TestForgejoSweepReconciliationKeepsDecisionSnapshotFresh(t *testing.T) {
 	})
 }
 
+func TestForgejoReconciliationSettlesACompletedHeadsMarkers(t *testing.T) {
+	sweep := func(t *testing.T, state *forgejoFixtureState) {
+		t.Helper()
+		cfg := writeSweepFixtureConfig(t, state)
+		original := commandCombinedOutput
+		t.Cleanup(func() { commandCombinedOutput = original })
+		commandCombinedOutput = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "systemd-run" {
+				t.Fatalf("sweep started a run on a completed head")
+			}
+			return nil, nil
+		}
+		if err := SweepCommand(t.Context(), []string{"-config", cfg.Root}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("clean status left with the in-flight reaction and no approval reaction", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.reactions = []string{"eyes"}
+		state.setStatuses([]map[string]any{{
+			"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(),
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1",
+			"creator":    map[string]any{"login": "Minos"},
+		}})
+		sweep(t, state)
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if !slices.Equal(state.reactions, []string{"+1"}) {
+			t.Fatalf("reactions = %v, want the in-flight reaction replaced by the clean one", state.reactions)
+		}
+		if writes := state.statusWrites; writes != 0 {
+			t.Fatalf("status writes = %d, want the recorded verdict left alone", writes)
+		}
+	})
+
+	t.Run("requested changes with no attention marker configured", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.reactions = []string{"eyes"}
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "REQUEST_CHANGES", "commit_id": state.headSHA(),
+			"body": "blocking findings", "user": map[string]any{"login": "Minos"},
+		}})
+		sweep(t, state)
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if len(state.reactions) != 0 || state.reactionWrites != 0 {
+			t.Fatalf("reactions = %v after %d additions, want the in-flight reaction removed and nothing added", state.reactions, state.reactionWrites)
+		}
+	})
+
+	t.Run("a completed head already carrying its markers takes no write", func(t *testing.T) {
+		state := newForgejoFixtureState(t)
+		state.reactions = []string{"+1"}
+		state.setReviews([]map[string]any{{
+			"id": 41, "state": "APPROVED", "commit_id": state.headSHA(),
+			"body": "approved", "user": map[string]any{"login": "Minos"},
+		}})
+		sweep(t, state)
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if len(state.writeSequence) != 0 || state.reactionWrites != 0 {
+			t.Fatalf("forge writes = %v and %d reaction additions, want none", state.writeSequence, state.reactionWrites)
+		}
+	})
+}
+
 func TestForgejoReconciliationStripsStaleApprovalReaction(t *testing.T) {
 	staleApproval := func(t *testing.T) *forgejoFixtureState {
 		t.Helper()
