@@ -22,13 +22,13 @@ test("a setting's variable is read as one of its values, unset or empty as its d
       /MINOS_FILE_SAFEGUARD_REQUESTS must be one of false, true/);
 });
 
-test("every setting's value has a non-empty passage for each of its slots", () => {
+test("each of a setting's slots reads differently under each of its values", () => {
   for (const { values, slots } of Object.values(PROMPT_SETTINGS))
     for (const slot of slots)
-      for (const value of values) assert.notEqual(passage(slot, value), "", `${slot}/${value}.md`);
+      assert.equal(new Set(values.map((value) => passage(slot, value))).size, values.length, `${slot} passages differ`);
 });
 
-test("the specialists and the brief reviewer read the safeguard-request passage their repository's setting chooses", () => {
+test("the specialists, the brief reviewer and the verifier read the safeguard-request passages their repository's setting chooses", () => {
   for (const value of ["false", "true"]) {
     const { prompts } = reviewPrompts(repositoryRoot, promptSettingsFromEnvironment({ MINOS_FILE_SAFEGUARD_REQUESTS: value }));
     const other = value === "true" ? "false" : "true";
@@ -37,6 +37,11 @@ test("the specialists and the brief reviewer read the safeguard-request passage 
       assert.ok(!text.includes(passage("safeguard-requests", other)), `${label} under ${value} leaves out ${other}.md`);
       assert.ok(!text.includes("{{safeguard-requests}}"), `${label} has the slot filled`);
     }
+    const chosen = passage("verifier-safeguard-requests", value);
+    const unchosen = passage("verifier-safeguard-requests", other);
+    if (chosen !== "") assert.ok(prompts.verifier.includes(chosen), `the verifier under ${value} carries ${value}.md`);
+    if (unchosen !== "") assert.ok(!prompts.verifier.includes(unchosen), `the verifier under ${value} leaves out ${other}.md`);
+    assert.ok(!prompts.verifier.includes("{{verifier-safeguard-requests}}"), "the verifier has the slot filled");
   }
 });
 

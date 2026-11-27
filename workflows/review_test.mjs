@@ -434,8 +434,9 @@ test("a merged group is verified by the family that did not propose its primary,
   assert.deepEqual(verified, [["verify-1-claude", "claude", ["specialist-2-logic-codex:1"]]]);
 });
 
-test("the input builder hands the specialists the safeguard-request passage the repository's setting chooses", async () => {
+test("the input builder hands the specialists and verifiers the safeguard-request passages the repository's setting chooses", async () => {
   const passage = (value) => readFileSync(new URL(`./review-briefs/safeguard-requests/${value}.md`, import.meta.url), "utf8").trim();
+  const verifierText = (on) => readFileSync(new URL(`./review-briefs/verifier-safeguard-requests/${on}.md`, import.meta.url), "utf8").trim();
   for (const [setting, chosen, other] of [["", "false", "true"], ["false", "false", "true"], ["true", "true", "false"]]) {
     const args = enumeratedArgs("aaa111", "bbb222", { fileSafeguardRequests: setting });
     for (const [concern, text] of Object.entries(args.prompts.specialist)) {
@@ -445,6 +446,10 @@ test("the input builder hands the specialists the safeguard-request passage the 
     const { calls } = await runScript(args, responder({ exploration: explorationFixture({ plan: [unit("correct", "logic")] }) }));
     const specialist = calls.find((call) => call.opts.label?.startsWith("specialist-"));
     assert.ok(specialist.prompt.includes(passage(chosen)), `the dispatched specialist reads ${chosen}.md`);
+    const verifierPassage = verifierText(true);
+    const verifier = calls.find((call) => call.opts.label?.startsWith("verify-"));
+    assert.equal(verifier.prompt.includes(verifierPassage), chosen === "true",
+      `the dispatched verifier under ${JSON.stringify(setting)} carries the request section only when filing is on`);
   }
   assert.throws(() => enumeratedArgs("aaa111", "bbb222", { fileSafeguardRequests: "yes" }),
     /MINOS_FILE_SAFEGUARD_REQUESTS must be one of false, true/);
