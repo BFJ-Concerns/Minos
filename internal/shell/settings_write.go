@@ -15,7 +15,8 @@ import (
 // the deployer would have edited: service.toml, or the repository's own file
 // under repos/. There is no second store, so the next run reads the change
 // the way it reads a hand edit, and the deployer who opens the file finds
-// their comments and layout as they left them with the one key changed.
+// the surrounding comments and layout where they left them. Comments
+// inside a replaced or removed multiline value can be lost.
 //
 // A setting is named by its key path in the file it is written to. A
 // per-repository setting has the same key in a repository's file and, for
@@ -26,9 +27,8 @@ import (
 // the next level out applies again: the service-wide value for a repository,
 // the documented default for the service.
 //
-// Nothing is written unless the file, with the change made, loads under the
-// loader the service itself runs. One bad repository file stops every sweep,
-// so a change that would not load is refused here and the file left alone.
+// Each candidate must pass the loader's validation for the file being
+// edited. A fault in another file can be repaired independently.
 
 // settingsWrites serialises the writes of one process. A hand edit made at
 // the same moment is caught by the comparison before the rename.
@@ -37,29 +37,19 @@ var settingsWrites sync.Mutex
 // WriteServiceSetting sets or removes one key of root's service.toml.
 func WriteServiceSetting(root string, key []string, value any) error {
 	return writeSetting(filepath.Join(root, "service.toml"), key, value, func(candidate string) error {
-		cfg, err := loadServiceConfigFile(root, candidate)
-		if err != nil {
-			return err
-		}
-		// A service-wide value is resolved into every repository, so each
-		// must still load with it.
-		_, err = LoadRepoConfigs(cfg)
+		_, err := loadServiceConfigFile(root, candidate)
 		return err
 	})
 }
 
 // WriteRepositorySetting sets or removes one key of an enrolled repository's
-// own file. repo is as LoadRepoConfigs returned it.
+// own file. repo identifies the file under this root's repos directory.
 func WriteRepositorySetting(root string, repo RepoConfig, key []string, value any) error {
 	if filepath.Dir(repo.Path) != filepath.Join(root, "repos") {
 		return fmt.Errorf("%s is not a repository file of %s", repo.Path, root)
 	}
 	return writeSetting(repo.Path, key, value, func(candidate string) error {
-		cfg, err := LoadServiceConfig(root)
-		if err != nil {
-			return err
-		}
-		_, err = loadRepoConfigFile(cfg, candidate)
+		_, _, err := readRepoConfigFile(candidate)
 		return err
 	})
 }
@@ -85,7 +75,7 @@ func writeSetting(path string, key []string, value any, loads func(candidate str
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	if edited == string(original) {
-		return nil
+		return loads(path)
 	}
 	candidate, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.candidate")
 	if err != nil {

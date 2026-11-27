@@ -57,20 +57,22 @@ if [ "$outcome" = unknown ] && { [ -n "$ledger_failure" ] || [ "$salvaged" = tru
   fi
 fi
 
-skip_reason="$(jq -er '.answer | select(.outcome == "no-review") | .reason | strings' \
-  "$run_dir/judgements/push-inspection.json" 2>/dev/null | head -c 2048 || true)"
+skip_reason=""
 skipped=false
-if [ -n "$skip_reason" ] ||
-   { [ "$marker" = clean ] && [ ! -f "$run_dir/carried-review-result.json" ] &&
-     ! find "$run_dir" -maxdepth 1 -name 'review*-args.json' -print -quit | grep -q .; }; then
-  skipped=true
-fi
-
-# The lead's report is the source of its free-form skip and failure reasons.
-# Keep a bounded excerpt beside the structured record for those runs.
 report=""
-if { [ "$skipped" = true ] || [ "$outcome" != clean ]; } && [ -r "$run_dir/report.md" ]; then
-  report="$(head -c 8192 "$run_dir/report.md")"
+# A recovered workspace can hold a predecessor's judgement and report.
+# Those files remain available in the archive for diagnosis.
+if [ "$salvaged" = false ]; then
+  skip_reason="$(jq -er '.answer | select(.outcome == "no-review") | .reason | strings' \
+    "$run_dir/judgements/push-inspection.json" 2>/dev/null | head -c 2048 || true)"
+  if [ -n "$skip_reason" ] ||
+     { [ "$marker" = clean ] && [ ! -f "$run_dir/carried-review-result.json" ] &&
+       ! find "$run_dir" -maxdepth 1 -name 'review*-args.json' -print -quit | grep -q .; }; then
+    skipped=true
+  fi
+  if { [ "$skipped" = true ] || [ "$outcome" != clean ]; } && [ -r "$run_dir/report.md" ]; then
+    report="$(head -c 8192 "$run_dir/report.md")"
+  fi
 fi
 printf '%s\0' "$ledger_failure" "$skip_reason" "$report" |
   jq -Rs --arg outcome "$outcome" --arg elapsed "$elapsed" --argjson skipped "$skipped" --argjson salvaged "$salvaged" '

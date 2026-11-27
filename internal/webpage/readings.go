@@ -37,6 +37,8 @@ type Readings struct {
 	RecentRuns func(ctx context.Context, hours, limit int) ([]shell.RecentRun, time.Time, error)
 	// FindingHistoryPullRequests lists a page of pull requests in every state.
 	FindingHistoryPullRequests func(ctx context.Context, repo shell.RepoConfig, page int) ([]shell.FindingHistoryPullRequest, bool, error)
+	// SettingsRepositories reads enrolment identities and reports unreadable files.
+	SettingsRepositories func() ([]shell.RepoConfig, []string, error)
 	// ServiceSettings is every setting service.toml holds, the service-wide
 	// value of each per-repository setting among them, and where each
 	// value comes from.
@@ -57,6 +59,7 @@ func readingsFrom(state *shell.StateReader) Readings {
 		RecentRuns:                 state.RecentRuns,
 		FindingHistoryPullRequests: state.FindingHistoryPullRequests,
 		ReviewThreads:              state.ReviewThreads,
+		SettingsRepositories:       state.SettingsRepositories,
 		ServiceSettings:            state.ServiceSettings,
 		RepositorySettings:         state.RepositorySettings,
 	}
@@ -66,8 +69,8 @@ func readingsFrom(state *shell.StateReader) Readings {
 // the configuration file the deployer would have edited, taking effect for
 // the next run. Key is the setting's key path in that file and value the
 // whole setting; nil removes the key, so the next level out applies again.
-// A change the configuration loader would not accept is refused and nothing
-// written, and a Change hands that refusal to the operator as a Refused.
+// The loader validates the edited file before it is written, and Change
+// hands any refusal to the operator.
 type Settings struct {
 	// Service writes a key of service.toml. The service-wide value of a
 	// per-repository setting is at that setting's shell.ServiceWideKey.

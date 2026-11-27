@@ -31,12 +31,26 @@ func TestArchivedMonitoringDistinguishesSalvageFromTerminalRetry(t *testing.T) {
 		"MINOS_ARCHIVE_IDENTITY_FILE="+filepath.Join(cfg.Root, "identity")+"\n"+
 		"MINOS_ARCHIVE_KNOWN_HOSTS="+filepath.Join(cfg.Root, "known-hosts")+"\n")
 
+	// If recovery samples its own cgroup, these counters would replace
+	// the terminal retry's figures and show up on the recovered run too.
+	cgroup := filepath.Join(cfg.Root, "sweep-cgroup")
+	t.Setenv("MINOS_CGROUP_DIR", cgroup)
+	writeTestFile(t, filepath.Join(cgroup, "memory.stat"), "anon 1000\nworkingset_refault_anon 90\n")
+	writeTestFile(t, filepath.Join(cgroup, "memory.pressure"), "some total=1000\n")
+	baseline := `{"kind":"minos-memory-snapshot-v1","stall_some_us":10,"refault_anon":2}`
+	final := `{"kind":"minos-memory-snapshot-v1","stall_some_us":25,"refault_anon":7}`
+
 	crashed := filepath.Join(cfg.Runs.Dir, statusRunUnit+"-crashed")
 	writeTestFile(t, filepath.Join(crashed, "report.md"), "Workspace from an earlier attempt")
+	writeTestFile(t, filepath.Join(crashed, "judgements", "push-inspection.json"), `{"answer":{"outcome":"no-review","reason":"This was the predecessor."}}`)
+	writeTestFile(t, filepath.Join(crashed, "memory-baseline.json"), baseline)
+	writeTestFile(t, filepath.Join(crashed, "memory-final.json"), final)
 	writeTestFile(t, filepath.Join(crashed, "timing-record.json"), `{"run_summary":{"outcome":"continuation","duration_seconds":999}}`)
 	retrying := filepath.Join(cfg.Runs.Dir, "minos-run-forgejo-example-Relay-pr97-retrying")
 	writeTestFile(t, filepath.Join(retrying, archivePendingFile), "example-Relay-pr97\n")
 	writeTestFile(t, filepath.Join(retrying, "orientation.json"), `{"source":{"owner":"example","repo":"Relay","pr":"97"}}`)
+	writeTestFile(t, filepath.Join(retrying, "memory-baseline.json"), baseline)
+	writeTestFile(t, filepath.Join(retrying, "memory-final.json"), final)
 	writeTestFile(t, filepath.Join(retrying, "timing-record.json"), `{"run_summary":{"outcome":"clean","duration_seconds":42}}`)
 	if err := sweepRunResidue(t.Context(), cfg, nil); err != nil {
 		t.Fatal(err)
@@ -67,8 +81,16 @@ func TestArchivedMonitoringDistinguishesSalvageFromTerminalRetry(t *testing.T) {
 		var record struct {
 			Summary struct {
 				Outcome  string
-				Duration *int `json:"duration_seconds"`
+				Duration *int   `json:"duration_seconds"`
+				Salvaged bool   `json:"salvaged"`
+				Skipped  bool   `json:"review_skipped"`
+				Skip     string `json:"skip_reason"`
+				Report   string `json:"report_excerpt"`
 			} `json:"run_summary"`
+			Memory struct {
+				Final map[string]any
+				Delta map[string]int
+			}
 		}
 		if err := json.Unmarshal(run.Timings, &record); err != nil {
 			t.Fatal(err)
@@ -80,6 +102,15 @@ func TestArchivedMonitoringDistinguishesSalvageFromTerminalRetry(t *testing.T) {
 		delete(wantOutcome, run.PR)
 		if run.PR == "96" && summary.Duration != nil || run.PR == "97" && (summary.Duration == nil || *summary.Duration != 42) {
 			t.Fatalf("pull %s has the wrong invocation duration: %s", run.PR, run.Timings)
+		}
+		if run.PR == "96" {
+			if !summary.Salvaged || summary.Skipped || summary.Skip != "" || summary.Report != "" ||
+				record.Memory.Final != nil || record.Memory.Delta != nil {
+				t.Fatalf("recovered run carries unowned evidence: %s", run.Timings)
+			}
+		} else if record.Memory.Final["stall_some_us"] != float64(25) ||
+			record.Memory.Delta["stall_some_us"] != 15 || record.Memory.Delta["refault_anon"] != 5 {
+			t.Fatalf("terminal retry lost the live run's memory sample: %s", run.Timings)
 		}
 	}
 }

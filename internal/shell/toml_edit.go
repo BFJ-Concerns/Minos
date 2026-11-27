@@ -18,7 +18,8 @@ import (
 // editTOML returns text with the value at key replaced by value, or with the
 // key removed when value is nil, and every other byte the deployer wrote left
 // where it was: their comments, blank lines, key order and spelling of each
-// value the edit does not change.
+// value the edit does not change. A replaced or removed multiline value
+// can lose comments within the value.
 //
 // The edit is made in the text, statement by statement, and then proved: the
 // result is decoded, and it must equal the original decoded with that one

@@ -160,10 +160,9 @@ archive-command = "/opt/minos/run-body/archive-run"
 # pressure-threshold-percent = 85
 
 [ensemble]
-# Live agents a review workflow may run at once on each engine. Set both or
-# neither: with both unset each defaults to 2. Raising one finishes a run
-# sooner at the cost of more concurrent load on that engine's allowance and
-# on the box's memory.
+# Live agents a review workflow may run at once on each engine. Each engine
+# defaults to 2 when its key is omitted. Raising one uses more of that
+# engine's allowance and the box's memory.
 # concurrency-claude = 2
 # concurrency-codex = 2
 # Caps a workflow's live agents across both engines together. Unset, there

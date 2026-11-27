@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -133,8 +132,8 @@ func settingsCatalogue() []Setting {
 		serviceSetting("runs.failures-repo", "The local checkout of the failure-ledger repository, whose FAILURES.md each failure is appended to.", "Unset: failures go to the local failure log.", TextForm),
 		serviceSetting("runs.failures-forge", "The forge the failures repository is on.", "The one configured forge, where only one is.", TextForm),
 		serviceSetting("runs.failures-credential-file", "The credential the failure ledger is published to its forge with.", "Unset: the ledger is kept in the local checkout and not published.", TextForm),
-		serviceSetting("runs.archive-command", "The command each terminal run is archived by before its directory is deleted.", "Unset: runs are deleted unarchived.", TextForm),
-		serviceSetting("runs.timings-command", "The command that assembles a run's timing record from what the run has written.", "Unset: no timing records.", TextForm),
+		serviceSetting("runs.archive-command", "The command that archives terminal runs before deletion.", "The shipped run body uses archive-run when archive.env is readable. Without an archive destination it deletes runs unarchived.", TextForm),
+		serviceSetting("runs.timings-command", "The command that reads worker timings for live runs.", "Unset disables live worker timings. The shipped archiver still records timings.", TextForm),
 		serviceSetting("runs.recent-timings-command", "The command that lists the timing records archived since a cutoff, for recent runs.", "Unset: no recent runs are reported.", TextForm),
 		serviceSetting("runs.recent-timings-cache-seconds", "How long a listing of recent runs is served before the archive host is asked again.", strconv.Itoa(defaultRecentTimingsCacheSeconds), NumberForm),
 		serviceSetting("runs.max-concurrent", "How many runs may be live at once.", "1", NumberForm),
@@ -148,7 +147,7 @@ func settingsCatalogue() []Setting {
 		Setting{Key: []string{"adaptation", "run-body"}, Scope: RepositoryFileScope, About: "The program each run of this repository starts.", Form: TextForm},
 		repositorySetting("admission", "Which pull requests are reviewed: by label (labels, exclude-labels), author (authors), base branch (base-branches), draft state (drafts: ready, any or only), title (title-pattern), touched paths (paths) and whether forks are admitted (allow-forks).", "Every pull request that is not a draft and not from a fork.", TOMLForm),
 		repositorySetting("work-in-progress-branch-prefixes", "Branch name prefixes whose pull requests are not reviewed.", "None.", TOMLForm),
-		repositorySetting("review.threshold", "The severity at and above which a confirmed finding blocks the pull request.", "High", ChoiceForm).choosing("Critical", "High", "Medium", "Low"),
+		repositorySetting("review.threshold", "The severity at and above which a confirmed finding blocks by default. Classification can make a finding blocking or advisory at any severity.", "High", ChoiceForm).choosing("Critical", "High", "Medium", "Low"),
 		repositorySetting("review.depth", "How widely exploration plans and how deeply specialists read.", defaultReviewDepth, ChoiceForm).choosing(slices.Clone(reviewDepths)...),
 		repositorySetting("review.file-safeguard-requests", "Whether confirmed requests for a safeguard against a failure nobody has observed go to the filing destination, each marked as a safeguard request; they never block.", "false", BoolForm).choosing("false", "true"),
 		repositorySetting("push-inspection.outcomes", "What a run may decide to review after a push: no-review, increment or full; full is always among them.", `["no-review", "increment", "full"]`, TOMLForm),
@@ -217,6 +216,24 @@ type SettingState struct {
 	ServiceWide string
 	// File is the path a change to this setting is written to.
 	File string
+}
+
+// UsesDefault reports whether the value in force is the documented
+// default, including explicit values the configuration treats as unset.
+func (state SettingState) UsesDefault() bool {
+	if state.Level == SetNowhere {
+		return true
+	}
+	switch state.Name() {
+	case "review.threshold":
+		return state.Value == ""
+	case "runs.max-concurrent":
+		return state.Value == int64(0)
+	case "runs.recent-timings-cache-seconds":
+		seconds, ok := state.Value.(int64)
+		return ok && seconds < 1
+	}
+	return false
 }
 
 // Spelled is Value in TOML.
@@ -300,6 +317,9 @@ func RepositorySettings(root string, repo RepoConfig) ([]SettingState, error) {
 				state.Level = SetForRepository
 			}
 			state.ServiceWide = serviceWide.Spelled()
+			if serviceWide.Level == SetServiceWide && serviceWide.UsesDefault() {
+				state.ServiceWide = serviceWide.Default
+			}
 			states = append(states, state)
 		}
 	}
@@ -355,18 +375,4 @@ func FindSetting(states []SettingState, name string) (SettingState, bool) {
 		return SettingState{}, false
 	}
 	return states[index], true
-}
-
-// catalogueKeys is every dotted key the catalogue names, a forge's under
-// forges.*, for the test that holds it to the configuration's struct tags.
-func catalogueKeys() []string {
-	var keys []string
-	for _, setting := range settingsCatalogue() {
-		keys = append(keys, setting.Name())
-	}
-	for _, setting := range forgeSettings {
-		keys = append(keys, "forges.*."+setting.Name())
-	}
-	sort.Strings(keys)
-	return keys
 }
