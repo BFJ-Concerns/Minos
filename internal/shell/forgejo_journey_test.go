@@ -2451,6 +2451,7 @@ type forgejoFixtureState struct {
 	pullRequestReads         map[string]int
 	priorityBoundaryMutation func()
 	writeSequence            []string
+	writeRequests            []string
 	virtualRefLookups        int
 	forgeAccounts            map[string]map[string]any
 	filedIssueReadBackLogin  string
@@ -2752,6 +2753,9 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	path := r.URL.Path
+	if r.Method != http.MethodGet {
+		s.writeRequests = append(s.writeRequests, r.Method+" "+path)
+	}
 	account := s.forgeAccounts[strings.TrimPrefix(r.Header.Get("Authorization"), "token ")]
 	pullPath := fmt.Sprintf("/api/v1/repos/minos-e2e-owner/subject/pulls/%v", s.pullRequest["number"])
 	issuePath := fmt.Sprintf("/api/v1/repos/minos-e2e-owner/subject/issues/%v", s.pullRequest["number"])

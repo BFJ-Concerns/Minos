@@ -36,5 +36,7 @@ printf '%s\n' "$files" "$guard_pr_json" "$branch" | jq -ces \
   . as [$files, $pr, $branch] |
   if $pr.base.ref != $ref or ($branch.commit.id // $branch.commit.sha) != $target
     then error("target moved")
+  elif ($pr.changed_files | type) != "number" or ($files | length) != $pr.changed_files
+    then error("incomplete changed-file list")
   else [$files[] | .filename, (.previous_filename // empty)] | unique
   end'

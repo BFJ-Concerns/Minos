@@ -153,15 +153,16 @@ The [deployment guide](docs/deployment.md) covers every step in detail,
 including the forge credentials and the archive host. On Linux amd64,
 download `minos-linux-amd64` from the [GitHub releases page][releases] and
 [check its SHA-256 digest](docs/deployment.md#check-the-release-binary) before
-installing it. Use the source files for the same tag to install the runtime
-and configuration. If the release has no binary asset or you use a
-different architecture, [build from source](#building-from-source).
+installing it with `sudo install -m 0755 minos-linux-amd64 /usr/local/bin/minos`.
+If the release has no binary asset or you use a different architecture,
+[build from source](#building-from-source) and install the resulting binary
+with `sudo install -m 0755 ./minos /usr/local/bin/minos`.
+
+Use the source files for the same tag to install the runtime and configuration.
 
 [releases]: https://github.com/BFJ-Concerns/Minos/releases
 
 ```sh
-sudo install -m 0755 minos-linux-amd64 /usr/local/bin/minos
-
 # Install the forge adaptations, per-run scripts and lead prompt under
 # /opt/minos (see the guide for the exact layout), then the review runtime.
 # The installer stops if a required tool is missing or Node is too old

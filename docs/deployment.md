@@ -62,9 +62,9 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    [GitHub releases page][releases]. [Check its SHA-256 digest](#check-the-release-binary)
    and install it with `sudo install -m 0755 minos-linux-amd64 /usr/local/bin/minos`.
    Use the source files for the same tag for the remaining steps. For a
-   release without a binary asset or for another architecture,
-   [build from source](../README.md#building-from-source) and install the
-   resulting `minos` as `/usr/local/bin/minos`.
+   release without a binary asset or for another architecture, run
+   `go build -o minos ./cmd/minos` from the source tree with Go 1.27.2 or
+   later. Install it with `sudo install -m 0755 ./minos /usr/local/bin/minos`.
 2. Install the whole of `scripts/adaptations/` under
    `/opt/minos/adaptations` — one directory per forge (`forgejo`, `github`),
    each keeping its basenames and modes; install the whole of `scripts/run-body/`
@@ -116,7 +116,9 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
 
    `service.toml` and every repository file are read strictly: a key Minos
    does not know stops the load with `unknown TOML keys:` and the file and
-   keys it found.
+   keys it found. The receiver reloads service and repository settings for
+   each webhook delivery. Restart the receiver for changes to its listener
+   settings.
 
    The `.env` files (`run-body.env`, `archive.env`) are sourced as shell
    programs with `set -a` (automatic export), not parsed as generic dotenv
@@ -426,7 +428,10 @@ as `internal/`, including nested files. Other entries use Go
 directly in `docs/`. A rename can match either its old or new path, and
 a deletion can match the deleted path. Minos reads the pull request's
 file list from the forge only when a path filter is needed. An incomplete
-or unavailable file list leaves the pull request unstarted.
+or unavailable file list leaves the pull request unstarted, and the sweep
+names it in the deferral list. GitHub returns at most 3,000 files for a pull
+request. This limit affects admission only when Minos needs the list to
+evaluate a path filter.
 
 Webhook deliveries and the periodic sweep both use current forge facts.
 A pull request excluded by the rules gets no new run or forge write.
