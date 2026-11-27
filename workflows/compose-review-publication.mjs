@@ -200,12 +200,16 @@ const groups = [main, brief].filter(Boolean);
 // the composer refuses a label split across the two, so the canonical
 // member's own disposition is the defect's. The site-and-title merge above is the floor
 // a decision without labels still gets; this pass is the same-defect
-// judgement that merge cannot make.
+// judgement that merge cannot make. A member already raised merges into
+// nothing: the author has the defect at that site, so it is counted and
+// not said again, while the label's other members carry the defect's call
+// at the sites the author has not been told of.
 const byDefect = new Map();
 for (const group of groups)
   for (const finding of group.findings) {
-    const label = group.dispositionOf(finding)?.defect;
-    if (typeof label !== "string") continue;
+    const disposition = group.dispositionOf(finding);
+    const label = disposition?.defect;
+    if (typeof label !== "string" || alreadyRaised(disposition)) continue;
     byDefect.set(label, [...(byDefect.get(label) || []), { group, finding }]);
   }
 for (const [label, members] of byDefect) {

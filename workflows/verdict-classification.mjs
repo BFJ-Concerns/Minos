@@ -130,8 +130,9 @@ export function verdictDigest(input) {
 // at-or-above-threshold finding only under one of the never-gating
 // classes (named per finding), puts no such class on a gating finding, gates a below-threshold finding only with an
 // undergrade basis naming it, labels restatements of one defect with one
-// non-empty `defect` label whose members gate and are classed alike, and earns
-// request-changes exactly when a gating finding exists.
+// non-empty `defect` label whose members gate and are classed alike, save
+// those already raised, and earns request-changes exactly when a gating
+// finding exists.
 export function validateVerdictDecision(decision, digest) {
   if (!digest || digest.kind !== DIGEST_KIND || digest.status !== "complete")
     return { ok: false, reason: "verdict decision validation needs a complete verdict digest" };
@@ -189,10 +190,12 @@ export function validateVerdictDecision(decision, digest) {
   // Restatements of one defect are one call: a label whose members gate
   // or are classed differently is a decision that has not decided, and the
   // composer would publish or withhold the defect by whichever member it
-  // happened to keep.
+  // happened to keep. A member already raised stands apart from that call:
+  // the author has the defect at that site, and the defect's sites the
+  // author has not been told of take the call on their own.
   const callByDefect = new Map();
   for (const disposition of decision.findings) {
-    if (typeof disposition.defect !== "string") continue;
+    if (typeof disposition.defect !== "string" || alreadyRaised(disposition)) continue;
     const seen = callByDefect.get(disposition.defect);
     if (seen !== undefined && seen.gating !== disposition.gating)
       return { ok: false, reason: `findings labelled one defect gate differently: ${disposition.defect}` };
