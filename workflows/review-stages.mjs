@@ -83,17 +83,19 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
   }
 
   // The proposing legs: one for each unit, each sent the unit's own
-  // `prompt` under its `label` on the proposer route. A unit's `source`
-  // names it on the observations it records. Each unit comes back with
-  // whether its leg completed and its usable output, null where the leg
-  // failed or answered nothing, which already marks the run incomplete.
+  // `prompt` under its `label` on the unit's `route`, or on the proposer
+  // route where it carries none. A unit's `source` names it on the
+  // observations it records. Each unit comes back with whether its leg
+  // completed and its usable output, null where the leg failed or answered
+  // nothing, which already marks the run incomplete.
   async function proposeUnits(units, phaseName) {
-    for (const unit of units) addLeg(unit.label, "specialist", routing.proposer.model);
+    const routeOf = (unit) => unit.route || routing.proposer;
+    for (const unit of units) addLeg(unit.label, "specialist", routeOf(unit).model);
     const settlements = await parallel(units.map((unit) => () => agent(unit.prompt, {
-      engine: routing.proposer.engine,
+      engine: routeOf(unit).engine,
       schema: contracts.specialistSchema,
-      model: routing.proposer.model,
-      effort: routing.proposer.effort,
+      model: routeOf(unit).model,
+      effort: routeOf(unit).effort,
       strip: ["skills", "agents"],
       identity: true,
       label: unit.label,
@@ -179,15 +181,25 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
   // returned unchecked for the record. Where a later round's merge fails,
   // which has already left the run incomplete, the findings it was to group
   // are returned unchecked in the same way.
+  //
+  // Each finding is verified on the route verifierRoute gives the engine
+  // that proposed it: its `proposedOn`, or the proposer's engine where it
+  // names none. A round whose findings came from more than one engine sends
+  // each engine's share to verifier legs of its own, dispatched together.
   async function verifySubjects(subjects, labelPrefix, mergeLabel, phaseName) {
     const verified = [];
     let pending = subjects;
-    let raisedBy = routing.proposer.engine;
     for (let round = 1; round <= contracts.verificationRounds && pending.length > 0; round += 1) {
-      const route = verifierRoute(raisedBy);
-      const raised = await verificationRound(pending, round === 1 ? labelPrefix : `${labelPrefix}-round-${round}`, route, phaseName);
+      const roundPrefix = round === 1 ? labelPrefix : `${labelPrefix}-round-${round}`;
+      const byRoute = new Map();
+      for (const subject of pending) {
+        const route = verifierRoute(subject.proposedOn || routing.proposer.engine);
+        if (!byRoute.has(route)) byRoute.set(route, []);
+        byRoute.get(route).push(subject);
+      }
+      const raised = (await Promise.all([...byRoute].map(([route, share]) =>
+        verificationRound(share, roundPrefix, route, phaseName)))).flat();
       verified.push(...pending);
-      raisedBy = route.engine;
       if (raised.length === 0 || round === contracts.verificationRounds) {
         pending = raised;
         break;
@@ -254,6 +266,7 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
           reportedBy: "verification",
           outsideConcern: false,
           proposingLabel: batch.label,
+          proposedOn: route.engine,
           members: [],
         });
       });
