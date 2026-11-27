@@ -424,10 +424,12 @@ write, matching the target rule above.)
    This deterministic file-reading seam validates `$MINOS_ORIENTATION`,
    reads every guidance document the orientation lists and the
    pull-request description setup recorded, and supplies that content
-   with the shipped role briefs — so reviewers weigh the author's
-   explicitly declared scope rather than rediscovering a declared gap as a
-   defect. Do not ask an agent to reproduce it or hand-author its
-   `guidance`, `pullRequest`, or `instructionBriefs` entries.
+   with the role routing, the concern list, the shipped review prompts
+   read from `workflows/review-briefs/` and the stage contracts — so
+   reviewers weigh the author's explicitly declared scope rather than
+   rediscovering a declared gap as a defect. Do not ask an agent to
+   reproduce it or hand-author its `guidance`, `pullRequest`, `routing`,
+   `concerns`, `prompts` or `contracts` entries.
 
    Choose exactly one branch:
 
