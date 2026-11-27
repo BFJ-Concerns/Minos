@@ -75,5 +75,6 @@ A review proposes, merges, then verifies.
    (`review-contracts.mjs`), and what the last of them raises has no
    verdict, which leaves the run incomplete.
 
-`workflows/finding-disposition.mjs` says what each verdict makes of its
-finding, and what becomes of one left unsettled.
+`workflows/review-stages.mjs` runs the merge and the verification for both
+review workflows. `workflows/finding-disposition.mjs` says what each verdict
+makes of its finding, and what becomes of one left unsettled.

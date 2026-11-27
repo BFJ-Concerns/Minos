@@ -21,9 +21,10 @@ const optionBlockPattern =
   /\{\s*\n\s*engine:\s*[^,\n]+,\s*\n\s*schema:\s*[^,\n]+,\s*\n\s*model:\s*[^,\n]+,\s*\n\s*effort:\s*[^,\n]+,\s*\n(?:\s*strip:\s*\[[^\n]+\],\s*\n)?(?:\s*identity:\s*true,\s*\n)?\s*label:\s*[^,\n]+,\s*\n\s*phase:\s*[^,\n]+,\s*\n\s*\}/g;
 
 const expectedCallSites = new Map([
-  ["review.js", 4],
-  ["review-briefs.js", 5],
+  ["review.js", 2],
+  ["review-briefs.js", 3],
   ["review-scope.js", 1],
+  ["review-stages.mjs", 2],
 ]);
 
 function optionKeySetsFromShippedWorkflows() {
