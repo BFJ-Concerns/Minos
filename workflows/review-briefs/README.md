@@ -60,6 +60,7 @@ for the repository's value.
 | Slot | In | Setting | Files |
 |---|---|---|---|
 | `{{safeguard-requests}}` | `specialist.md`, `repository.md` | `review.file-safeguard-requests` | `false.md`: reviewers leave out requests for a safeguard against a situation nothing suggests will arise. `true.md`: they report them, written as requests |
+| `{{verifier-safeguard-requests}}` | `verifier.md` | `review.file-safeguard-requests` | `false.md`: empty, so a verifier judges every finding as a claimed fault. `true.md`: what each verdict means for a request for a safeguard, and that a confirmed one is filed as a suggestion and never sent to the author as a defect |
 
 A file is empty where its value adds nothing to the prompt, and it is still
 there. A setting that changes two prompts in different ways has a slot and

@@ -17,7 +17,7 @@ export const PROMPT_SETTINGS = {
     variable: "MINOS_FILE_SAFEGUARD_REQUESTS",
     values: ["false", "true"],
     unset: "false",
-    slots: ["safeguard-requests"],
+    slots: ["safeguard-requests", "verifier-safeguard-requests"],
   },
 };
 

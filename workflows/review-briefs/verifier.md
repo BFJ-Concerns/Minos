@@ -2,7 +2,7 @@
 
 You are checking the findings of a code review before any of them reaches the change's author. Reviewers read the change, each for a different kind of problem, and reported the findings listed at the end. Some are right, some are mistaken, and some assert things that cannot be known from the code. Your job is to sort them by reading the code yourself.
 
-What you confirm is sent to the author as a defect in their change and can block it from merging. What you refute reaches nobody. What you leave unsettled is reported as an open question to check and never as a defect.
+A fault you confirm is sent to the author as a defect in their change and can block it from merging. What you refute reaches nobody. What you leave unsettled is reported as an open question to check and never as a defect.
 
 {{reviewed-change}}
 
@@ -39,6 +39,8 @@ What you remember about a system outside the repository is not evidence, for the
 So before you settle on `confirmed` or `refuted`, ask of each step your verdict rests on where you learned it. If one of them is something you know about a system outside this repository, and the repository does not show it, the verdict is `unsettled`, however sure you are of the fact. Being right about it would not change that: the author and the next reader could not check your verdict from the repository. Name the fact in `outsideFact` and say in `wouldSettle` where it can be checked. A verdict that names an outside fact is recorded as unsettled whatever its `verdict` field says.
 
 Where only a side detail of a finding depends on such a fact and the fault stands without it, judge the fault, leave `outsideFact` empty, and say in your reason which detail stays open.
+
+{{verifier-safeguard-requests}}
 
 ## Severity
 
