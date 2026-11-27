@@ -11,15 +11,15 @@
 // Settles `decisions`: `{ main, brief }`, each a validated verdict
 // decision, `brief` absent when the brief stage returned no verdict.
 
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 
-import { earlierMinosFindings } from "../earlier-minos-findings.mjs";
+import { earlierMinosFindings, reviewText } from "../earlier-minos-findings.mjs";
+import { filedReviewBodies, readDefaultBranchFile } from "../filing-destination.mjs";
 import { decisionFrom, stage as verdictClassification } from "../judgements/verdict-classification.mjs";
 import { guidanceFromOrientation } from "../orientation-guidance.mjs";
 import { pullRequestFromOrientation } from "../pull-request-description.mjs";
 import { DECISION_KIND, findingKey, verdictDigest } from "../verdict-classification.mjs";
+import { currentSnapshot } from "./forge-writes.mjs";
 
 // One verdict's confirmed findings as the stage is shown them: the digest's
 // facts with the reviewer's and the verifier's words beside them.
@@ -38,46 +38,28 @@ export function groupFindings(verdict, threshold) {
   });
 }
 
-// What the filing destination already holds, where this run can read it
-// without another clone: a file in the reviewed repository, as the target
-// carries it, or a file in a repository setup already cloned as a guidance
-// source, as that clone holds it. Anywhere else is said to be unread, and
-// the stage classifies without it.
-export function filedEntries(run, destination, orientation) {
+// Supply the advice the file or pull-request filing path already holds.
+export async function filedEntries(run, destination, snapshot) {
   if (destination.kind === "none") return "This repository files nothing, so no entries are on file.";
-  if (destination.kind === "file" && !destination.repository) {
+  if (destination.kind === "pull-request-comment") {
     try {
-      return entriesText(destination.path, execFileSync("git", ["-C", run.workspace, "show", `${run.target}:${destination.path}`], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        maxBuffer: Infinity,
-      }));
+      const text = filedReviewBodies(snapshot).map(reviewText).join("\n\n");
+      return text || "Minos has filed no entries on this pull request.";
     } catch {
-      return `${destination.path} does not exist on the target branch, so no entries are on file.`;
+      return "The pull-request filing comments could not be read in this run.";
     }
   }
-  const clone = destination.kind === "file" && guidanceClone(orientation, destination.repository);
-  if (clone) {
-    const location = join(clone, destination.path);
-    return existsSync(location)
-      ? entriesText(destination.path, readFileSync(location, "utf8"))
-      : `${destination.path} does not exist in ${destination.repository}, so no entries are on file.`;
+  if (destination.kind === "file") {
+    const repository = destination.repository || `${run.pullRequest.owner}/${run.pullRequest.repository}`;
+    try {
+      const text = await readDefaultBranchFile(run, repository, destination.path);
+      if (text === null) return `${destination.path} does not exist on the default branch of ${repository}.`;
+      return text.trim() === "" ? `${destination.path} is empty.` : text;
+    } catch {
+      return `The filing file ${destination.path} on the default branch of ${repository} could not be read in this run.`;
+    }
   }
-  const where = destination.repository ? `${destination.kind} on ${destination.repository}` : destination.kind;
-  return `The filing destination (${where}) could not be read in this run.`;
-}
-
-function entriesText(path, text) {
-  return text.trim() === "" ? `${path} is empty.` : text;
-}
-
-// The working tree setup cloned a secondary repository into, found from a
-// guidance document it read there: the document's location less its path.
-function guidanceClone(orientation, repository) {
-  const entry = (orientation.guidance || []).find((guidance) =>
-    guidance.source && guidance.source.repository === repository &&
-    typeof guidance.location === "string" && guidance.location.endsWith(`/${guidance.source.path}`));
-  return entry ? entry.location.slice(0, -(entry.source.path.length + 1)) : null;
+  return `The filing destination (${destination.kind} on ${destination.repository}) could not be read in this run.`;
 }
 
 function filingDestination(env) {
@@ -106,7 +88,8 @@ export async function classify(run, settled) {
   if (groups.every((group) => findings[group].length === 0))
     return { decisions: Object.fromEntries(groups.map((group) => [group, emptyDecision()])) };
 
-  const [snapshot, threads] = [await run.forge("snapshot"), await run.forge("threads")];
+  const snapshot = await currentSnapshot(run);
+  const threads = await run.forge("threads");
   const orientation = JSON.parse(readFileSync(run.orientation, "utf8"));
   const pullRequest = pullRequestFromOrientation(orientation);
   const input = {
@@ -117,7 +100,7 @@ export async function classify(run, settled) {
     threshold,
     findings,
     earlierFindings: earlierMinosFindings(snapshot, threads).map(({ path, line, head, finding }) => ({ path, line, head, finding })),
-    filedEntries: filedEntries(run, filingDestination(run.env), orientation),
+    filedEntries: await filedEntries(run, filingDestination(run.env), snapshot),
   };
 
   const answer = await run.judge(verdictClassification, input);

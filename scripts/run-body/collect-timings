@@ -133,7 +133,10 @@ memory_snapshot() {
   fi
 }
 baseline_snapshot="$(memory_snapshot "$run_dir/memory-baseline.json")"
-final_snapshot="$(memory_snapshot "$run_dir/memory-final.json")"
+final_snapshot=null
+if [ "${MINOS_TIMINGS_SALVAGED:-false}" != true ]; then
+  final_snapshot="$(memory_snapshot "$run_dir/memory-final.json")"
+fi
 # The run supervisor tracks the run's hungriest anon-plus-swap moment in
 # memory-peak; it is the capacity number admission and ceiling judgements
 # read, which two endpoint snapshots cannot carry.

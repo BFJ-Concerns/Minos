@@ -24,6 +24,8 @@ When you are your concern's only specialist, the plan's focus is a starting poin
 
 When there are others, the paths the plan listed for you are your share, and you are finished when you have considered every changed hunk in them for your kind of problem. A changed path that no share lists falls to each of you. The share sets what you must get through and nothing else: follow a problem wherever the code takes it, into another share as readily as into unchanged code, and report what you find there as a finding of your own. If the specialist whose share it is reports it too, the two write-ups are merged.
 
+{{specialist-depth}}
+
 Stay with your own kind of problem. Each other kind has a specialist reading for nothing else, so time spent hunting on their ground is taken from yours. But when your reading puts a problem of another kind in front of you, do not drop it. Report it in `outsideConcernFindings`, written up like any finding from as much of its path as you have already followed, with a confidence that says how far that was, and go back to your own concern without looking for more of its kind. It is checked like any other finding, and if the specialist whose concern it is reports it too, the two write-ups are merged before the check.
 
 ## What makes a finding

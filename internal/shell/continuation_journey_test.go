@@ -421,6 +421,18 @@ func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "memory-pressure"), []byte("predecessor pressure\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	staleArchive := map[string]string{
+		"report.md":                       "Predecessor report",
+		"judgements/push-inspection.json": `{"answer":{"outcome":"no-review","reason":"Predecessor skip reason"}}`,
+		"failure.log":                     "Predecessor failure",
+		"memory-baseline.json":            "{}",
+		"memory-final.json":               "{}",
+		"memory-peak":                     "123",
+		appliedStatusFile:                 "clean",
+	}
+	for name, content := range staleArchive {
+		writeTestFile(t, filepath.Join(runDir, name), content)
+	}
 	handoff := writeTestHandoff(t, cfg, facts, runDir, facts.HeadSHA)
 
 	body := filepath.Join(fixture.root, "predecessor-body")
@@ -453,6 +465,13 @@ func TestPreservedContinuationStartsAWorkingSuccessor(t *testing.T) {
 	environment := systemdEnvironment(t, systemdArgs)
 	if environment["MINOS_RUN_DIR"] != runDir || environment["MINOS_RESUME"] != "true" {
 		t.Fatalf("successor environment = %#v, want adopted run directory", environment)
+	}
+
+	// Check before the wrapper or driver has a chance to overwrite anything.
+	for name := range staleArchive {
+		if _, err := os.Stat(filepath.Join(runDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("successor inherited %s: %v", name, err)
+		}
 	}
 
 	fixture.runDir = runDir

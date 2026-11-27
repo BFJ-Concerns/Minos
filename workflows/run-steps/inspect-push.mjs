@@ -8,10 +8,10 @@
 // head for an increment, the target for a full review, null when the head
 // needs no review.
 
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import { briefEngagement } from "../brief-dispositions.mjs";
+import { changedPaths } from "../changed-paths.mjs";
 import { FULL, INCREMENT, NO_REVIEW, OUTCOMES, stage as pushInspection } from "../judgements/push-inspection.mjs";
 import { guidanceFromOrientation } from "../orientation-guidance.mjs";
 import { pullRequestFromOrientation } from "../pull-request-description.mjs";
@@ -29,7 +29,7 @@ export function availableOutcomes(earlier, briefsEngage, allowed = OUTCOMES) {
   const unchanged = known && Array.isArray(earlier.changedPaths) && earlier.changedPaths.length === 0;
   return [
     ...(unchanged || !briefsEngage ? [NO_REVIEW] : []),
-    ...(known && earlier.ancestor ? [INCREMENT] : []),
+    ...(known && earlier.ancestor && Array.isArray(earlier.changedPaths) ? [INCREMENT] : []),
     FULL,
   ].filter((outcome) => outcome === FULL || allowed.includes(outcome));
 }
@@ -53,11 +53,7 @@ export function allowedOutcomes(env) {
 // the pull request where there is no earlier head to compare with.
 function authorChangedPaths(run, earlier) {
   if (earlier.outcome !== "none" && earlier.changedPaths !== null) return earlier.changedPaths;
-  return execFileSync("git", ["-C", run.workspace, "diff", "--no-renames", "--name-only", "-z", run.target, run.head], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: Infinity,
-  }).split("\0").filter(Boolean);
+  return changedPaths(run.workspace, run.target, run.head);
 }
 
 export async function inspectPush(run) {

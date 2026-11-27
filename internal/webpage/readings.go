@@ -37,6 +37,15 @@ type Readings struct {
 	RecentRuns func(ctx context.Context, hours, limit int) ([]shell.RecentRun, time.Time, error)
 	// FindingHistoryPullRequests lists a page of pull requests in every state.
 	FindingHistoryPullRequests func(ctx context.Context, repo shell.RepoConfig, page int) ([]shell.FindingHistoryPullRequest, bool, error)
+	// SettingsRepositories reads enrolment identities and reports unreadable files.
+	SettingsRepositories func() ([]shell.RepoConfig, []string, error)
+	// ServiceSettings is every setting service.toml holds, the service-wide
+	// value of each per-repository setting among them, and where each
+	// value comes from.
+	ServiceSettings func() ([]shell.SettingState, error)
+	// RepositorySettings is every setting of one enrolled repository and
+	// whether its own file, service.toml or the documented default sets it.
+	RepositorySettings func(repo shell.RepoConfig) ([]shell.SettingState, error)
 	// ReviewThreads is the threads Minos opened on one pull request, as the
 	// forge holds them now. Each call reaches the forge.
 	ReviewThreads func(ctx context.Context, repo shell.RepoConfig, pullRequest int64) ([]forge.ReviewThread, error)
@@ -50,6 +59,9 @@ func readingsFrom(state *shell.StateReader) Readings {
 		RecentRuns:                 state.RecentRuns,
 		FindingHistoryPullRequests: state.FindingHistoryPullRequests,
 		ReviewThreads:              state.ReviewThreads,
+		SettingsRepositories:       state.SettingsRepositories,
+		ServiceSettings:            state.ServiceSettings,
+		RepositorySettings:         state.RepositorySettings,
 	}
 }
 
@@ -57,11 +69,11 @@ func readingsFrom(state *shell.StateReader) Readings {
 // the configuration file the deployer would have edited, taking effect for
 // the next run. Key is the setting's key path in that file and value the
 // whole setting; nil removes the key, so the next level out applies again.
-// A change the configuration loader would not accept is refused and nothing
-// written, and a Change hands that refusal to the operator as a Refused.
+// The loader validates the edited file before it is written, and Change
+// hands any refusal to the operator.
 type Settings struct {
 	// Service writes a key of service.toml. The service-wide value of a
-	// per-repository setting is that setting's key under "repositories".
+	// per-repository setting is at that setting's shell.ServiceWideKey.
 	Service func(key []string, value any) error
 	// Repository writes a key of one enrolled repository's own file.
 	Repository func(repo shell.RepoConfig, key []string, value any) error

@@ -68,7 +68,7 @@ func TestOperatorLiveRunsShowStatusWithoutOpeningRunDirectories(t *testing.T) {
 		"run-2", "starting", "timings command failed", "Worker timing records could not be read.")
 	status.TimingsConfigured = false
 	response = visit(site, "/live", session)
-	assertMonitoringPage(t, response.Code, response.Body.String(), "Worker timings are disabled.")
+	assertMonitoringPage(t, response.Code, response.Body.String(), "Live worker timings are disabled.")
 	if strings.Contains(response.Body.String(), "No dispatched workers are recorded yet.") {
 		t.Error("disabled worker timings were shown as a pending recording")
 	}
@@ -90,6 +90,11 @@ func TestOperatorRecentRunsShowArchivedEvidenceAndLegacyTimings(t *testing.T) {
 			{Unit: "legacy-unit", Timings: json.RawMessage(`{
 				"commands":[{"started_at":"2026-11-27T04:00:00Z","ended_at":"2026-11-27T04:00:45Z"}]
 			}`)},
+			{Unit: "recovered-unit", Timings: json.RawMessage(`{
+				"run_summary":{"outcome":"failed","salvaged":true,"report_excerpt":"Predecessor report","review_skipped":true,"skip_reason":"Predecessor reason"},
+				"commands":[{"started_at":"2026-11-27T04:00:00Z","ended_at":"2026-11-27T04:00:29Z"}],
+				"workers":[{"started_at":"2026-11-27T04:00:00Z","ended_at":"2026-11-27T04:00:31Z"}]
+			}`)},
 		}, now, nil
 	}}, Settings{})
 	response := visit(site, "/recent", signIn(t, site))
@@ -97,6 +102,10 @@ func TestOperatorRecentRunsShowArchivedEvidenceAndLegacyTimings(t *testing.T) {
 	assertMonitoringPage(t, response.Code, body, "Last 24 hours", "2026-11-27T04:45:00Z", "acme/widget #4", "Clean",
 		"10s", "Only generated output changed.", "failed-unit", "Failed", "1m 15s", "During setup — failed to clone",
 		"&lt;script&gt;archive text&lt;/script&gt;", "legacy-unit", "Unknown", "45s of recorded activity")
+	_, recovered, found := strings.Cut(body, "<h2>recovered-unit</h2>")
+	if !found || !strings.Contains(recovered, "<dt>Duration</dt><dd>Unavailable</dd>") || strings.Contains(recovered, "Predecessor") {
+		t.Fatalf("recovered run showed evidence from its predecessor:\n%s", body)
+	}
 }
 
 func TestOperatorFindingsUseAuthorRepliesAndCurrentThreadState(t *testing.T) {

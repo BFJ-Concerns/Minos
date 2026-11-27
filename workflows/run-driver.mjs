@@ -54,12 +54,13 @@ import { settleEarlierFindings } from "./run-steps/settle-earlier-findings.mjs";
 import { withdraw } from "./run-steps/withdraw.mjs";
 import { writeReport } from "./run-steps/write-report.mjs";
 
-export const COURSE = [claim, markWorking, inspectPush, review, reviewBriefs, classify, publish, settleEarlierFindings, conclude];
+export const COURSE = [claim, markWorking, inspectPush, review, reviewBriefs, classify, settleEarlierFindings, publish, conclude];
 export const CLOSING = [recordFailure, withdraw, writeReport];
 
 const pressureBoundaries = new Map([
   [claim, "claim"], [inspectPush, "push-inspection"], [review, "review"],
-  [reviewBriefs, "review-brief"], [classify, "classification"], [publish, "publication"],
+  [reviewBriefs, "review-brief"], [classify, "classification"],
+  [settleEarlierFindings, "earlier-findings"], [publish, "publication"],
 ]);
 
 export const EXIT_HEAD_SPENT = 0;

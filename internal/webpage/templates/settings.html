@@ -1,0 +1,69 @@
+{{define "content"}}
+{{- if .Repository}}
+<p><a href="/settings">Settings</a></p>
+<h1>Settings for {{.Repository.Owner}}/{{.Repository.Repo}}</h1>
+<p class="muted">{{.Repository.Forge}} · Written to <code>{{.Repository.Path}}</code>. A setting this file leaves out takes the service-wide value from <code>service.toml</code>, or the default where that sets none.</p>
+{{- else}}
+<h1>Settings</h1>
+<p class="muted">Written to <code>service.toml</code> in the configuration directory, the file the deployer edits by hand. Each repository's own file overrides any setting listed under <em>for every repository</em>.</p>
+{{- range .Unavailable}}
+<p class="notice">{{.}}</p>
+{{- end}}
+{{- if .Repositories}}
+<h2>Repositories</h2>
+<ul>
+{{- range .Repositories}}
+<li><a href="/repositories/{{.Forge}}/{{.Owner}}/{{.Repo}}/settings">{{.Owner}}/{{.Repo}}</a> <span class="muted">{{.Forge}}</span></li>
+{{- end}}
+</ul>
+{{- end}}
+{{- end}}
+{{- if .Saved}}
+<p class="notice" role="status">{{.Saved}}</p>
+{{- end}}
+{{- range .Groups}}
+<h2>{{.Title}}</h2>
+{{- range .Settings}}
+<details class="setting" id="{{.Anchor}}"{{if .Refused}} open{{end}}>
+<summary><code>{{.Name}}</code> <span class="tag{{if .Own}} good{{end}}">{{.Source}}</span>
+{{- if .UsesDefault}} <span class="muted">{{if .Default}}{{.Default}}{{else}}not set, and required{{end}}</span>{{else}} <code class="value">{{.Spelled}}</code>{{end}}</summary>
+<p>{{.About}}</p>
+<dl>
+<dt>Default</dt><dd>{{if .Default}}{{.Default}}{{else}}None: the service does not start without it.{{end}}</dd>
+{{- if and .Own .ServiceWide}}
+<dt>Service-wide</dt><dd><code>{{.ServiceWide}}</code>, which this repository's value overrides.</dd>
+{{- end}}
+{{- if .TakesEffect}}
+<dt>Takes effect</dt><dd>{{.TakesEffect}}</dd>
+{{- end}}
+</dl>
+<form method="post" action="{{$.Path}}#{{.Anchor}}">
+<input type="hidden" name="setting" value="{{.Name}}">
+<label for="value-{{.Name}}">{{if .Own}}Change it{{else}}Set it here{{end}}</label>
+{{- if .Choices}}
+<select id="value-{{.Name}}" name="value"{{if or .Refused .InvalidChoice}} aria-invalid="true"{{end}}>
+{{- if .InvalidChoice}}
+<option value="" disabled selected>{{.InvalidChoice}}</option>
+{{- end}}
+{{- $field := .Field}}
+{{- range .Choices}}
+<option{{if eq . $field}} selected{{end}}>{{.}}</option>
+{{- end}}
+</select>
+{{- else if eq .Form "toml"}}
+<textarea id="value-{{.Name}}" name="value" spellcheck="false"{{if .Refused}} aria-invalid="true"{{end}}>{{.Field}}</textarea>
+<p class="muted">As the file would hold it after <code>{{.Name}} =</code>: a "quoted string", a [list] or an {inline = "table"}. Replacing or removing a multiline value can discard comments inside it.</p>
+{{- else}}
+<input id="value-{{.Name}}" name="value" type="{{if eq .Form "number"}}number{{else}}text{{end}}" value="{{.Field}}" spellcheck="false"{{if .Refused}} aria-invalid="true"{{end}}>
+{{- end}}
+<div class="actions">
+<button name="action" value="set">Save</button>
+{{- if and .Own (not .Required)}}
+<button class="quiet" name="action" value="remove">Remove, so {{.Fallback}} applies</button>
+{{- end}}
+</div>
+</form>
+</details>
+{{- end}}
+{{- end}}
+{{end}}

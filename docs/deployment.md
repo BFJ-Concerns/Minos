@@ -249,8 +249,8 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    two consecutive samples of anonymous memory plus swap at that threshold.
    With a higher concurrency cap, raise the envelope toward the runs'
    combined peak, measured as below. Each run paces `ensemble.concurrency-claude` and
-   `concurrency-codex` workers of its own (the loader defaults both to 2
-   when neither is set; the shipped example comments both at 2).
+   `concurrency-codex` workers of its own (the loader defaults each one left
+   unset to 2; the shipped example comments both at 2).
    `ensemble.agent-ceiling` optionally caps a workflow's agents across
    both engines together; unset, the runtime applies no combined cap (the
    shipped example comments an illustrative value of 4).
@@ -665,7 +665,8 @@ waiting run ahead of it on the strength of quiet files.
 
 The receiver serves a web page for the operator at the root of its listener
 (`http://BOX:8919/` with the shipped `bind`), behind one sign-in. It opens on
-an overview of the enrolled repositories. Nothing Minos does depends on the
+an overview of the enrolled repositories, and its settings pages show and
+change the configuration. Nothing Minos does depends on the
 page: a deployment that never opens it reviews exactly the same.
 
 The page is served once the deployment holds an operator credential. Create
@@ -701,6 +702,28 @@ The credential is the whole gate, so keep it as you would the forge token.
 - The page shares the listener with the webhook route. Where a forge reaches
   the listener from the internet, have the proxy forward `/hooks/` alone
   unless you mean the sign-in page to be public too.
+
+**Settings** lists every setting of `service.toml`, with the value that
+applies and where it comes from: the file, or the documented default. Each
+enrolled repository has a settings page of its own, reached from there,
+where each per-repository setting shows whether the repository's file, the
+service-wide value in `service.toml` or the default sets it. Open a setting
+to change it, or to remove it from that file so the next level out applies
+again; a list or table is typed as the file would hold it after the key's
+equals sign.
+
+- A change is written to the same file you would edit by hand, `service.toml`
+  or the repository's file under `repos/`. The surrounding comments and
+  layout stay where they are. Replacing or removing a multiline value can
+  discard comments inside it. The receiver needs write access to the
+  configuration directory and `repos/` and reports a refusal if it lacks access.
+- The service's loader validates the edited file before saving it and
+  shows the reason for any refusal. You can repair each file independently.
+  The receiver and sweep still validate the configuration they use.
+- A change takes effect from the next run, since the sweep, each webhook
+  and each run read the files afresh. The page says where a setting is read
+  only when the receiver starts, or sizes the runs slice and needs
+  `minos install-units` again.
 
 **Queue** shows the last completed sweep's own timestamp, pull requests
 waiting for a run slot, and the reasons the sweep deferred or could not

@@ -17,6 +17,13 @@ export const REVIEW_BODY = "review-body";
 // How a finding's text opens when it blocks (finding-presentation.mjs).
 const BLOCKING_OPENING = "**Blocking";
 const FOLDED_SECTION = "\n\n---\n\nFindings that could not be anchored inline:\n";
+// postReview appends optional attribution and the head-and-target record.
+const REVIEW_FOOTER = /\n\n(?:Reviewed by: `[^`\n]+`\.\n\n)?<!-- Minos:(?: [a-z][a-z0-9-]*=[A-Za-z0-9._/@-]+)+ -->\s*$/;
+
+export function reviewText(body) {
+  return body.replace(REVIEW_FOOTER, "");
+}
+
 const FOLDED_ENTRY = /^#### `(.+)` lines? (\d+)(?:-\d+)?$/;
 
 // The entries of one review body's folded section, each with the path,
@@ -27,7 +34,7 @@ export function foldedEntries(body) {
   if (at === -1) return [];
   const entries = [];
   let current = null;
-  for (const line of body.slice(at + FOLDED_SECTION.length).split("\n")) {
+  for (const line of reviewText(body).slice(at + FOLDED_SECTION.length).split("\n")) {
     const heading = line.match(FOLDED_ENTRY);
     if (heading) {
       current = { path: heading[1], line: Number(heading[2]), lines: [] };

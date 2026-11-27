@@ -53,9 +53,9 @@ signature-header = "X-Forgejo-Signature"
 # Per-repository knobs, set once here for every opted-in repository; any
 # repository's own file under repos/ overrides a knob whole. Unset at both
 # levels, a repository gets: threshold High, no safeguard requests filed,
-# its own checked-in guidance (the first present of AGENTS.md, CLAUDE.md,
-# README.md), a pull-request comment as its filing destination, and no
-# work-in-progress prefixes.
+# standard review depth, its own checked-in guidance (the first present of
+# AGENTS.md, CLAUDE.md, README.md), a pull-request comment as its filing
+# destination, and no work-in-progress prefixes.
 [repositories]
 # work-in-progress-branch-prefixes = ["structural/"]
 # Admission defaults to ready pull requests from the same repository.
@@ -75,6 +75,10 @@ signature-header = "X-Forgejo-Signature"
 # never gates; set true, it goes to the filing destination marked as a
 # safeguard request, and unset or false it is filed nowhere.
 # file-safeguard-requests = false
+# The review depth preset steers how wide the exploration leg plans and how
+# deeply the specialists read: light, standard or thorough. It never bounds
+# the findings a review returns.
+# depth = "standard"
 # Push inspection reads each new head before any review and chooses no
 # review, a review of what changed since the head Minos last finished on,
 # or a full review. Outcomes lists the ones it may choose; full is required.
@@ -156,10 +160,9 @@ archive-command = "/opt/minos/run-body/archive-run"
 # pressure-threshold-percent = 85
 
 [ensemble]
-# Live agents a review workflow may run at once on each engine. Set both or
-# neither: with both unset each defaults to 2. Raising one finishes a run
-# sooner at the cost of more concurrent load on that engine's allowance and
-# on the box's memory.
+# Live agents a review workflow may run at once on each engine. Each engine
+# defaults to 2 when its key is omitted. Raising one uses more of that
+# engine's allowance and the box's memory.
 # concurrency-claude = 2
 # concurrency-codex = 2
 # Caps a workflow's live agents across both engines together. Unset, there

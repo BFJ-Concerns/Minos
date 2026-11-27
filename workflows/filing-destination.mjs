@@ -131,12 +131,14 @@ async function askForge(...args) {
   return stdout;
 }
 
+const askForgeJSON = async (...args) => JSON.parse(await askForge(...args));
+
 // The forge command's structured answer on a failed exit (its stdout), or
 // null: the reason a reader acts on is worded here from that outcome, never
 // passed through from the subprocess's error text.
 function forgeOutcome(error) {
   try {
-    const outcome = JSON.parse(String(error && error.stdout || ""));
+    const outcome = error?.result ?? JSON.parse(String(error?.stdout || ""));
     return outcome && typeof outcome === "object" ? outcome : null;
   } catch {
     return null;
@@ -147,11 +149,11 @@ class EmptyCredential extends Error {}
 
 // The HTTPS git credential the forge's adaptation derives from its own
 // credential for the filing repository. No error built here quotes it.
-async function cloneCredential(repository) {
-  if (!process.env.MINOS_BIN) throw new Error("MINOS_BIN is required to reach the forge");
+async function cloneCredential(repository, forge) {
+  if (!forge && !process.env.MINOS_BIN) throw new Error("MINOS_BIN is required to reach the forge");
   let credential;
   try {
-    credential = JSON.parse(await askForge("clone-credential", ...repository.split("/")));
+    credential = await (forge ?? askForgeJSON)("clone-credential", ...repository.split("/"));
   } catch (error) {
     const outcome = forgeOutcome(error);
     if (outcome && outcome.refusal === "empty-credential") throw new EmptyCredential("forge credential file is empty");
@@ -175,11 +177,11 @@ function describe(error) {
 // The forge names a repository's clone URL and default branch; deriving
 // either from a naming convention is what the configured destination exists
 // to replace.
-async function lookupRepository(repository) {
+async function lookupRepository(repository, forge = askForgeJSON) {
   const [owner, name] = repository.split("/");
   let metadata;
   try {
-    metadata = JSON.parse(await askForge("repository-metadata", owner, name));
+    metadata = await forge("repository-metadata", owner, name);
   } catch (error) {
     const outcome = forgeOutcome(error);
     if (outcome && Number.isInteger(outcome.lookup_status))
@@ -190,6 +192,34 @@ async function lookupRepository(repository) {
       typeof metadata.default_branch !== "string" || metadata.default_branch === "")
     throw new Error(`repository metadata for ${repository} omitted its clone URL or default branch`);
   return { cloneURL: metadata.clone_url, branch: metadata.default_branch };
+}
+
+function gitAuthEnvironment(directory, env, credential) {
+  const config = join(directory, "gitconfig");
+  const authorisation = Buffer.from(`${credential.username}:${credential.password}`).toString("base64");
+  writeFileSync(config, `[http]\n\textraHeader = Authorization: Basic ${authorisation}\n`, { mode: 0o600 });
+  return {
+    ...env, GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "include.path", GIT_CONFIG_VALUE_0: config,
+  };
+}
+
+// Read the same branch as the file delivery uses, including when the
+// reviewed pull request targets a different branch or comes from a fork.
+export async function readDefaultBranchFile(run, repository, path) {
+  const target = await lookupRepository(repository, run.forge);
+  const credential = await cloneCredential(repository, run.forge);
+  const directory = mkdtempSync(join(run.runDir, "filing-read-"));
+  try {
+    const env = gitAuthEnvironment(directory, run.env, credential);
+    const clone = join(directory, "repository");
+    await execFileAsync("git", ["clone", "--quiet", "--depth=1", "--single-branch", "--no-checkout",
+      "--branch", target.branch, "--", target.cloneURL, clone], { env });
+    if (!git(clone, env, "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", path)) return null;
+    return git(clone, env, "cat-file", "blob", `HEAD:${path}`);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 // A fresh single-branch clone of the destination's default branch under the
@@ -227,13 +257,7 @@ async function deliverToFile({ destination, entries, attribution, reviewedReposi
   try {
     mkdirSync(runDir, { recursive: true });
     authDirectory = mkdtempSync(join(runDir, "filing-auth-"));
-    const config = join(authDirectory, "gitconfig");
-    const authorisation = Buffer.from(`${credential.username}:${credential.password}`).toString("base64");
-    writeFileSync(config, `[http]\n\textraHeader = Authorization: Basic ${authorisation}\n`, { mode: 0o600 });
-    const env = {
-      ...process.env, GIT_TERMINAL_PROMPT: "0",
-      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "include.path", GIT_CONFIG_VALUE_0: config,
-    };
+    const env = gitAuthEnvironment(authDirectory, process.env, credential);
     for (let attempt = 1; attempt <= PUSH_ATTEMPTS; attempt += 1) {
       try {
         const target = await lookupRepository(repository);
@@ -300,6 +324,16 @@ async function deliverToIssue({ destination, entries, attribution, reviewedRepos
   }
 }
 
+export function filedReviewBodies(snapshot) {
+  if (!snapshot || typeof snapshot.authenticated_user !== "string" || snapshot.authenticated_user === "" ||
+      !Array.isArray(snapshot.reviews) || snapshot.reviews.some((review) =>
+        !review || typeof review.user !== "string" || typeof review.body !== "string"))
+    throw new Error("forge snapshot omitted the service identity or readable reviews");
+  return snapshot.reviews.filter((review) =>
+    review.user === snapshot.authenticated_user && /<!-- minos:[A-Za-z0-9_-]+ -->/.test(review.body))
+    .map((review) => review.body);
+}
+
 // Reviews are this destination's marker store. Read every service review,
 // including older heads, so the same entry is filed once across pushes.
 async function deliverToPullRequestComment({ entries, attribution, reviewedRepository, runDir }) {
@@ -316,12 +350,7 @@ async function deliverToPullRequestComment({ entries, attribution, reviewedRepos
     }
     const command = (...args) => JSON.parse(execFileSync(binary, ["forge", ...args],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
-    const snapshot = command("snapshot");
-    if (!snapshot || typeof snapshot.authenticated_user !== "string" || snapshot.authenticated_user === "" ||
-        !Array.isArray(snapshot.reviews) || snapshot.reviews.some((review) =>
-          !review || typeof review.user !== "string" || typeof review.body !== "string"))
-      throw new Error("forge snapshot omitted the service identity or readable reviews");
-    const bodies = snapshot.reviews.filter((review) => review.user === snapshot.authenticated_user).map((review) => review.body);
+    const bodies = filedReviewBodies(command("snapshot"));
     const markers = new Set();
     const remaining = entries.filter((entry) => {
       const marker = filingMarker(entry, reviewedRepository);

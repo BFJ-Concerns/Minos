@@ -66,8 +66,9 @@ export const stage = {
     ) return `outcomes must be a non-empty list drawn once each from ${OUTCOMES.join(", ")}`;
     // An increment is reviewed from the earlier head, so it can be offered
     // only where that head can be the base of a range ending at this one.
-    if (outcomes.includes(INCREMENT) && !(input.earlier.outcome !== "none" && input.earlier.ancestor))
-      return "increment may be offered only with an earlier head that is an ancestor of this one";
+    if (outcomes.includes(INCREMENT) &&
+        !(input.earlier.outcome !== "none" && input.earlier.ancestor && Array.isArray(input.earlier.changedPaths)))
+      return "increment may be offered only with an earlier head that is an ancestor of this one and known changed paths";
     return null;
   },
 
