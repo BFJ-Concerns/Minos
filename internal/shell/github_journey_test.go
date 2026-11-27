@@ -1162,7 +1162,8 @@ func (s *githubFixtureState) handleOperations(w http.ResponseWriter, r *http.Req
 			writeFixtureJSON(s.t, w, record)
 			return true
 		case r.Method == http.MethodPost && path == "/repos/acme/widgets/issues/7/comments":
-			record := map[string]any{"id": 800 + len(s.writes), "body": payload["body"], "user": map[string]any{"login": githubFixtureBotLogin}}
+			at := s.tick()
+			record := map[string]any{"id": 800 + len(s.writes), "body": payload["body"], "user": map[string]any{"login": githubFixtureBotLogin}, "created_at": at, "updated_at": at}
 			s.issueComments = append(s.issueComments, record)
 			w.WriteHeader(201)
 			writeFixtureJSON(s.t, w, record)
@@ -1172,6 +1173,7 @@ func (s *githubFixtureState) handleOperations(w http.ResponseWriter, r *http.Req
 			for _, comment := range s.issueComments {
 				if fmt.Sprint(comment["id"]) == id {
 					comment["body"] = payload["body"]
+					comment["updated_at"] = s.tick()
 					writeFixtureJSON(s.t, w, comment)
 					return true
 				}

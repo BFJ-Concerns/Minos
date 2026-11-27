@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -54,32 +55,46 @@ func TestPruneReviewedChangeChecksTheForgeWhenMissingFromOpenList(t *testing.T) 
 	guard := forge.Guard{Repository: forge.Repository{Owner: repo.Owner, Name: repo.Repo}, PullRequest: 1}
 	path := reviewedChangePath(cfg, repo.Forge, guard)
 	writeTestFile(t, path, "{}\n")
-	pruneRetiredReviewedChanges(t.Context(), cfg, repo, []int64{guard.PullRequest}, nil)
+	pruneRetiredRecords(t.Context(), cfg, repo, []int64{guard.PullRequest}, nil)
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("open pull request missing from the list lost its record: %v", err)
 	}
 	state.changePullRequest(func(pr map[string]any) { pr["state"] = "closed" })
-	pruneRetiredReviewedChanges(t.Context(), cfg, repo, []int64{guard.PullRequest}, nil)
+	pruneRetiredRecords(t.Context(), cfg, repo, []int64{guard.PullRequest}, nil)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("closed record survived the sweep: %v", err)
 	}
 }
 
-func TestSweepPrunesReviewedChangeAfterMissedCloseDelivery(t *testing.T) {
-	state := newForgejoFixtureState(t)
-	cfg := writeSweepFixtureConfig(t, state)
-	guard := forge.Guard{Repository: forge.Repository{Owner: "minos-e2e-owner", Name: "subject"}, PullRequest: 1}
-	path := reviewedChangePath(cfg, "forgejo", guard)
-	writeTestFile(t, path, "{}\n")
-	state.changePullRequest(func(pr map[string]any) { pr["state"] = "closed" })
-	original := commandCombinedOutput
-	t.Cleanup(func() { commandCombinedOutput = original })
-	commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
-	if err := SweepCommand(t.Context(), []string{"--config", cfg.Root}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("closed record %s survived the sweep: %v", filepath.Base(path), err)
+// A close the service missed leaves the pull request's records behind; the
+// sweep's retirement check removes each of them, a command record kept
+// without a reviewed change included.
+func TestSweepPrunesPullRequestRecordsAfterMissedCloseDelivery(t *testing.T) {
+	for _, withReviewed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("reviewed=%t", withReviewed), func(t *testing.T) {
+			state := newForgejoFixtureState(t)
+			cfg := writeSweepFixtureConfig(t, state)
+			guard := forge.Guard{Repository: forge.Repository{Owner: "minos-e2e-owner", Name: "subject"}, PullRequest: 1}
+			paths := []string{commandRecordPath(cfg, "forgejo", guard)}
+			if withReviewed {
+				paths = append(paths, reviewedChangePath(cfg, "forgejo", guard))
+			}
+			for _, path := range paths {
+				writeTestFile(t, path, "{}\n")
+			}
+			state.changePullRequest(func(pr map[string]any) { pr["state"] = "closed" })
+			original := commandCombinedOutput
+			t.Cleanup(func() { commandCombinedOutput = original })
+			commandCombinedOutput = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+			if err := SweepCommand(t.Context(), []string{"--config", cfg.Root}); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range paths {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("closed record %s survived the sweep: %v", path, err)
+				}
+			}
+		})
 	}
 }
 

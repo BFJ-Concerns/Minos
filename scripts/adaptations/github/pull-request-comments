@@ -14,9 +14,5 @@ owner="$1"
 repo="$2"
 pr="$3"
 
-collect "/repos/${owner}/${repo}/issues/${pr}/comments" | jq -c 'sort_by((.created_at // ""), (.id // 0)) | map({
-  id: (.id // 0),
-  user: (.user.login // ""),
-  body: (.body // ""),
-  created_at: (.created_at // "")
-})'
+listing="$(collect "/repos/${owner}/${repo}/issues/${pr}/comments")"
+conversation_comment_records "$listing"
