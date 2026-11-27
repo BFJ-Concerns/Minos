@@ -73,7 +73,10 @@ export async function writeWalkthrough(run, settled, ending, problems = []) {
       }
     }
 
+    // The models named are those that answered, which a fallback may have
+    // made others than the ones routed.
     const routing = routingFromEnvironment(run.env);
+    const answeredBy = (stage) => run.judgementModels?.get(stage.name) ?? routing[stage.role].model;
     const { record, omitted, problem } = fitted({
       kind: RECORD_KIND,
       head: run.head,
@@ -82,7 +85,7 @@ export async function writeWalkthrough(run, settled, ending, problems = []) {
       overview: written.overview,
       groups: written.groups,
       diagrams,
-      models: { walkthrough: routing.walkthrough.model, diagrams: routing["walkthrough-diagrams"].model },
+      models: { walkthrough: answeredBy(walkthroughStage), diagrams: answeredBy(walkthroughDiagrams) },
     });
     problems.push(...omitted);
     if (problem) throw new Error(problem);

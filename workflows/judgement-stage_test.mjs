@@ -57,7 +57,7 @@ process.stdout.write(JSON.stringify({ stage: args.stage, answer }) + "\\n");
 test("the judgement workflow sends the prompt it was handed on the stage's routing and returns the answer under the stage's name", async () => {
   const { result, calls } = await invokeWorkflow(script, workflowArgs, () => ({ choice: "this" }));
 
-  assert.deepEqual(result, { stage: "sample-stage", answer: { choice: "this" } });
+  assert.deepEqual(result, { stage: "sample-stage", answer: { choice: "this" }, answeredBy: null });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].prompt, "Decide.");
   assert.deepEqual(calls[0].opts, {
@@ -66,15 +66,27 @@ test("the judgement workflow sends the prompt it was handed on the stage's routi
     model: "claude-opus-5-5",
     effort: "medium",
     strip: ["skills", "agents"],
+    identity: true,
     label: "sample-stage",
     phase: "Judge",
   });
 });
 
+test("the judgement workflow names the model that answered, which may be another than the one routed", async () => {
+  const { result } = await invokeWorkflow(script, workflowArgs, (label) => ({
+    identityEnvelope: {
+      label, phase: "Judge", output: { choice: "this" }, failure: null,
+      answeredBy: { engine: "codex", model: "gpt-6.1-sol", family: "gpt" },
+    },
+  }));
+
+  assert.deepEqual(result, { stage: "sample-stage", answer: { choice: "this" }, answeredBy: "gpt-6.1-sol" });
+});
+
 test("a leg that gave no answer comes back as none, never as a default", async () => {
   const { result } = await invokeWorkflow(script, workflowArgs, () => null);
 
-  assert.deepEqual(result, { stage: "sample-stage", answer: null });
+  assert.deepEqual(result, { stage: "sample-stage", answer: null, answeredBy: null });
 });
 
 test("a workflow input missing its stage, prompt, schema or routing fails before dispatch", async () => {

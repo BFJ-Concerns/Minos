@@ -113,9 +113,15 @@ the step's code and never the stage's.
   "stage": "NAME",
   "input": {},
   "answer": {},
-  "routing": { "engine": "", "model": "", "effort": "" }
+  "routing": { "engine": "", "model": "", "effort": "" },
+  "answeredBy": ""
 }
 ```
+
+`routing` is what the stage was sent on and `answeredBy` the model that
+answered, which differs where the runtime fell back to another; the
+driver keeps the same name in `run.judgementModels` for a step that
+credits the model, as the walkthrough does.
 
 The run's archive carries the directory. A record's `input` is all a stage
 needs to answer again, so a stage is run alone on a recorded head with:
