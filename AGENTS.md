@@ -113,6 +113,13 @@ setting is absent or either companion judgement module is missing,
   reactions and `Minos` status. The status is a best-effort write,
   informational only — it never serves as a required check. Scratch data
   may disappear with the run.
+- A repository with `description.enabled` on has a description kept of
+  it, written by the `repository-description` stage from its default
+  branch. The sweep asks of current forge state whether one is due
+  (`internal/shell/describe.go`) and starts a `minos-describe-` unit,
+  which is no run and takes no run place; a run is handed a copy of the
+  kept record, which its legs are shown beside the guidance and never as
+  the project's intent.
 - Webhooks and the sweep both reconcile current forge state. The
   completion marker is head-bound — a terminal Minos review of the current
   head, or a clean/attention status on it — and any head movement is the
