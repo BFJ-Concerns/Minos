@@ -39,12 +39,15 @@ type Status struct {
 	TargetURL   string      `json:"target_url"`
 }
 
+// Review is one submitted review. SubmittedAt is the forge's own RFC 3339
+// time of submission, so a later comment can be told from an earlier one.
 type Review struct {
-	ID       int64  `json:"id"`
-	State    string `json:"state"`
-	CommitID string `json:"commit_id"`
-	Body     string `json:"body"`
-	User     string `json:"user"`
+	ID          int64  `json:"id"`
+	State       string `json:"state"`
+	CommitID    string `json:"commit_id"`
+	Body        string `json:"body"`
+	User        string `json:"user"`
+	SubmittedAt string `json:"submitted_at"`
 }
 
 // ReviewThread is one inline conversation on a pull request: where it sits,
@@ -67,10 +70,13 @@ type ReviewThreadComment struct {
 }
 
 // PullRequestComment is one comment in a pull request's conversation, apart
-// from any review or thread.
+// from any review or thread. CreatedAt is the forge's RFC 3339 time the
+// comment was written, comparable with a review's SubmittedAt: a comment
+// answers only what was already published when it was written.
 type PullRequestComment struct {
-	User string `json:"user"`
-	Body string `json:"body"`
+	User      string `json:"user"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
 }
 
 type Dependency struct {

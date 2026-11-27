@@ -124,38 +124,67 @@ function nameSource(finding, source) {
 }
 
 // Deduplication across the two groups. The same defect raised by both is
-// one finding: same site and same title merge into the main group's
-// finding, which gates if either disposition gates, carries the higher
-// severity, names the brief that also raised it, and keeps the twin's
-// `defect` label so the labelled merge below still sees it. A merged
-// finding that gates carries no never-gating class, whichever disposition
-// held one; twins that both stay advisory keep the class they share, and
-// twins classed differently are a decision to correct, so the composer
-// refuses them rather than publish or withhold the finding by one side's
-// call.
+// one finding: brief findings with the main group's site and title merge
+// into the main finding, which gates if any member's disposition gates,
+// carries the highest severity, names every brief that also raised it, and
+// keeps the members' one `defect` label so the labelled merge below still
+// sees it. The merge reads all of a main finding's twins together, so the
+// order the brief verdict lists them in changes nothing. A merged finding
+// that gates carries no never-gating class, whichever disposition held
+// one; twins that all stay advisory keep the class they share. Twins that
+// carry two labels, are classed differently while advisory, or disagree on
+// whether the author already has the finding are a decision to correct, so
+// the composer refuses them rather than publish or withhold the finding by
+// one side's call.
 if (brief) {
-  const mainBySiteAndTitle = new Map(main.findings.map((finding) => [siteAndTitle(finding), finding]));
+  // The main review may confirm more than one finding at a site and title.
+  // Brief twins merge into the first by key, so the main listing order
+  // picks nothing, and every main finding there counts when the composer
+  // asks whether the author already has the defect.
+  const mainBySiteAndTitle = new Map();
+  for (const finding of main.findings)
+    mainBySiteAndTitle.set(siteAndTitle(finding), [...(mainBySiteAndTitle.get(siteAndTitle(finding)) || []), finding]);
+  for (const findings of mainBySiteAndTitle.values())
+    findings.sort((a, b) => findingKey(a).localeCompare(findingKey(b)));
+  const briefTwinsOf = new Map();
   brief.findings = brief.findings.filter((finding) => {
-    const twin = mainBySiteAndTitle.get(siteAndTitle(finding));
+    const twin = mainBySiteAndTitle.get(siteAndTitle(finding))?.[0];
     if (!twin) return true;
-    if (SEVERITY[finding.severity] > SEVERITY[twin.severity]) twin.severity = finding.severity;
-    nameSource(twin, finding.source);
-    const disposition = brief.dispositionOf(finding) || {};
-    const twinDisposition = main.dispositionOf(twin) || {};
-    if (typeof disposition.defect === "string" && typeof twinDisposition.defect === "string" && disposition.defect !== twinDisposition.defect)
-      refuse(`one finding at ${finding.path}:${finding.line} carries two defect labels across the decisions: ${twinDisposition.defect} and ${disposition.defect}`);
-    const gating = twinDisposition.gating === true || disposition.gating === true;
-    if (!gating && twinDisposition.class !== disposition.class)
-      refuse(`one finding at ${finding.path}:${finding.line} is classed differently across the decisions: ${twinDisposition.class ?? "unclassed"} and ${disposition.class ?? "unclassed"}`);
-    const merged = {
-      ...twinDisposition,
-      gating,
-      ...(typeof disposition.defect === "string" && typeof twinDisposition.defect !== "string" ? { defect: disposition.defect } : {}),
-    };
-    if (gating) delete merged.class;
-    main.dispositions.set(findingKey(twin), merged);
+    briefTwinsOf.set(twin, [...(briefTwinsOf.get(twin) || []), finding]);
     return false;
   });
+  for (const [twin, briefTwins] of briefTwinsOf) {
+    const at = `${twin.path}:${twin.line}`;
+    const twinDisposition = main.dispositionOf(twin) || {};
+    const briefDispositions = briefTwins.map((finding) => brief.dispositionOf(finding) || {});
+    const members = [twinDisposition, ...briefDispositions];
+    const mainSiblings = mainBySiteAndTitle.get(siteAndTitle(twin)).slice(1)
+      .map((finding) => main.dispositionOf(finding) || {});
+    // Main's call is named first, then the brief's distinct calls in a
+    // fixed order, so a refusal reads the same in any listing order.
+    const calls = (read) => {
+      const first = read(twinDisposition);
+      const others = [...new Set(briefDispositions.map(read))].filter((value) => value !== first)
+        .sort((a, b) => String(a).localeCompare(String(b)));
+      return [first, ...others];
+    };
+    const labels = calls((disposition) => disposition.defect).filter((label) => typeof label === "string");
+    if (labels.length > 1)
+      refuse(`one finding at ${at} carries two defect labels across the decisions: ${labels.join(" and ")}`);
+    const gating = members.some((disposition) => disposition.gating === true);
+    const classes = calls((disposition) => disposition.class);
+    if (!gating && classes.length > 1)
+      refuse(`one finding at ${at} is classed differently across the decisions: ${classes.map((name) => name ?? "unclassed").join(" and ")}`);
+    if (new Set([...members, ...mainSiblings].map(alreadyRaised)).size > 1)
+      refuse(`one finding at ${at} is already raised in one decision and new in the other`);
+    for (const finding of briefTwins) {
+      if (SEVERITY[finding.severity] > SEVERITY[twin.severity]) twin.severity = finding.severity;
+    }
+    for (const source of briefTwins.map((finding) => finding.source).sort()) nameSource(twin, source);
+    const merged = { ...twinDisposition, gating, ...(labels.length === 1 ? { defect: labels[0] } : {}) };
+    if (gating) delete merged.class;
+    main.dispositions.set(findingKey(twin), merged);
+  }
 }
 
 const groups = [main, brief].filter(Boolean);
@@ -163,7 +192,8 @@ const groups = [main, brief].filter(Boolean);
 // Restatements the lead judged. Dispositions carrying the same `defect`
 // label — in one decision or across the two — describe one defect, which
 // the composer publishes once at its highest-severity member (the main
-// group's, then the first path, then the lowest line, on ties), naming the
+// group's, then the first path, the lowest line, the title and the key, on
+// ties, so the listing order never picks it), naming the
 // other members' sites and the groups that also raised it. Members gate
 // and are classed alike: the validator holds that within one decision, and
 // the composer refuses a label split across the two, so the canonical
@@ -187,7 +217,9 @@ for (const [label, members] of byDefect) {
     SEVERITY[b.finding.severity] - SEVERITY[a.finding.severity]
     || groups.indexOf(a.group) - groups.indexOf(b.group)
     || a.finding.path.localeCompare(b.finding.path)
-    || a.finding.line - b.finding.line);
+    || a.finding.line - b.finding.line
+    || normalisedTitle(a.finding).localeCompare(normalisedTitle(b.finding))
+    || findingKey(a.finding).localeCompare(findingKey(b.finding)));
   const [{ finding: canonical }, ...restatements] = members;
   for (const { group, finding } of restatements) {
     const at = `${finding.path}:${finding.line}`;

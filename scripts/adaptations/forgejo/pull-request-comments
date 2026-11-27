@@ -4,9 +4,10 @@ set -eu
 . "$(dirname "$0")/common.sh"
 
 # The pull request's conversation comments as one JSON array, oldest first,
-# each with its author's login and its body. Review comments are not among
-# them: those are read thread by thread. Pages until the empty page or a
-# repeated one, so a forge that ignores paging answers once and stops.
+# each with its author's login, its body and the time it was written.
+# Review comments are not among them: those are read thread by thread.
+# Pages until the empty page or a repeated one, so a forge that ignores
+# paging answers once and stops.
 owner="$1"
 repo="$2"
 pr="$3"
@@ -25,5 +26,6 @@ while :; do
 done
 printf '%s' "$comments" | jq -c 'sort_by((.created_at // ""), (.id // 0)) | map({
   user: (.user.login // .user.username // ""),
-  body: (.body // "")
+  body: (.body // ""),
+  created_at: (.created_at // "")
 })'

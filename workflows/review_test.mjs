@@ -888,6 +888,27 @@ test("a specialist is shown the other planned units of its own concern, and an o
   assert.ok(!only.includes(plan[0].concern) && !only.includes(plan[1].concern), "an only unit is shown no other unit");
 });
 
+test("the lifecycle finds its workflow's status snapshot by the names the workflows declare", async () => {
+  assert.match(lifecycle, /`\$MINOS_RUN_DIR\/ensemble\.<run-id>\.local\.json`/);
+  assert.doesNotMatch(lifecycle, /`\$MINOS_RUN_DIR\/ensemble\.local\.json`/);
+  for (const [file, stage] of [["./review.js", "the main review"], ["./review-briefs.js", "the brief stage"]]) {
+    const source = await readFile(fileURLToPath(new URL(file, import.meta.url)), "utf8");
+    const name = source.match(/^\s*name: "([^"]+)"/m)?.[1];
+    assert.ok(name, `${file} declares a workflow name`);
+    assert.match(lifecycle, new RegExp(`\`${name}\` for ${stage}`));
+  }
+  assert.match(lifecycle, /the later\s+`startedAt` is the attempt you are waiting on/);
+});
+
+test("the lifecycle approves a clean outcome through the guarded command and settles comments by time and author", () => {
+  assert.match(lifecycle, /A clean plan has no posts: write no review,/);
+  assert.doesNotMatch(lifecycle, /publish no approval review/);
+  assert.match(lifecycle, /run\s+`"\$MINOS_BIN" forge approve HEAD TARGET` first, on every clean\s+outcome, a run that reviewed nothing included/);
+  assert.match(lifecycle, /An\s+approval the forge will not take, for any reason but a moved head,[\s\S]*?forge status HEAD TARGET incomplete`/);
+  assert.match(lifecycle, /refuses as well twins that one decision classes `already-raised` and\s+the other calls new, even where the other gates them/);
+  assert.match(lifecycle, /only when its `user` is the\s+snapshot's `author` and its `created_at` is later than the\s+`submitted_at` the snapshot gives for the Minos review whose body\s+holds the finding/);
+});
+
 test("findings one fix would resolve are merged and verified once, with the group's other write-ups beside the primary", async (t) => {
   const plan = [unit("logic", "logic"), unit("failure", "failure")];
   const { result, calls } = await runScript(ARGS, responder({

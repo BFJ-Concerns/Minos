@@ -52,14 +52,14 @@ func TestGitHubAdaptationCarriesPayloadsPastTheArgumentCap(t *testing.T) {
 		state.pullRequest["body"] = body
 		state.reviews = nil
 		for i := range 3 {
-			state.reviews = append(state.reviews, map[string]any{"id": 501 + i, "state": "COMMENTED", "commit_id": "feedfacefeedfacefeedfacefeedfacefeedface", "body": reviewBody, "user": map[string]any{"login": githubFixtureBotLogin}})
+			state.reviews = append(state.reviews, map[string]any{"id": 501 + i, "state": "COMMENTED", "commit_id": "feedfacefeedfacefeedfacefeedfacefeedface", "body": reviewBody, "user": map[string]any{"login": githubFixtureBotLogin}, "submitted_at": fmt.Sprintf("2026-11-01T10:0%d:00Z", i)})
 		}
 		state.mu.Unlock()
 		snapshot, err := state.adapter(t).Snapshot(t.Context(), forge.Repository{Owner: "acme", Name: "widgets"}, 7)
 		if err != nil {
 			t.Fatalf("snapshot: %v", err)
 		}
-		if snapshot.Body != body || len(snapshot.Reviews) != 3 || snapshot.Reviews[2].Body != reviewBody || len(snapshot.Statuses) != 101 {
+		if snapshot.Body != body || len(snapshot.Reviews) != 3 || snapshot.Reviews[2].Body != reviewBody || snapshot.Reviews[2].SubmittedAt != "2026-11-01T10:02:00Z" || len(snapshot.Statuses) != 101 {
 			t.Fatalf("snapshot lost content: body intact %t, %d reviews, %d statuses", snapshot.Body == body, len(snapshot.Reviews), len(snapshot.Statuses))
 		}
 	})
@@ -119,7 +119,7 @@ func TestForgejoAdaptationCarriesPayloadsPastTheArgumentCap(t *testing.T) {
 		state.changePullRequest(func(pullRequest map[string]any) { pullRequest["body"] = body })
 		var reviews []map[string]any
 		for i := range 3 {
-			reviews = append(reviews, map[string]any{"id": float64(i + 1), "state": "COMMENT", "commit_id": state.headSHA(), "body": reviewBody, "user": map[string]any{"login": "Minos"}})
+			reviews = append(reviews, map[string]any{"id": float64(i + 1), "state": "COMMENT", "commit_id": state.headSHA(), "body": reviewBody, "user": map[string]any{"login": "Minos"}, "submitted_at": fmt.Sprintf("2026-11-01T10:0%d:00Z", i)})
 		}
 		state.setReviews(reviews)
 		state.mu.Lock()
@@ -129,7 +129,7 @@ func TestForgejoAdaptationCarriesPayloadsPastTheArgumentCap(t *testing.T) {
 		if err != nil {
 			t.Fatalf("snapshot: %v", err)
 		}
-		if snapshot.Body != body || len(snapshot.Reviews) != 3 || snapshot.Reviews[2].Body != reviewBody {
+		if snapshot.Body != body || len(snapshot.Reviews) != 3 || snapshot.Reviews[2].Body != reviewBody || snapshot.Reviews[2].SubmittedAt != "2026-11-01T10:02:00Z" {
 			t.Fatalf("snapshot lost content: body intact %t, %d reviews", snapshot.Body == body, len(snapshot.Reviews))
 		}
 	})
