@@ -9,6 +9,17 @@ repo = "REPLACE_WITH_FORGEJO_REPOSITORY"
 # Every knob below is optional: an omitted knob takes the service-level value
 # from [repositories] in service.toml, and a knob written here replaces that
 # value whole.
+# This table replaces [repositories.admission] in service.toml. An empty
+# table restores the shipped rules (ready, same-repository pull requests).
+# [admission]
+# labels = ["Ready"]
+# exclude-labels = ["Blocked"]
+# authors = ["trusted-user"]
+# base-branches = ["main"]
+# drafts = "ready"
+# title-pattern = '^Release '
+# paths = ["internal/", "docs/*.md"]
+# allow-forks = false
 # [[guidance-sources]]
 # repository = "REPLACE_WITH_OWNER/REPLACE_WITH_PLANNING_REPOSITORY"
 # path = "README.md"

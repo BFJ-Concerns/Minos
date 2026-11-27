@@ -1,0 +1,40 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+files='[]'
+page=1
+while :; do
+  payload="$(api_read "/api/v1/repos/$1/$2/pulls/$3/files?limit=50&page=${page}")"
+  # Keep only path fields from each page. A server may cap the requested
+  # page size, so only an empty page ends the walk.
+  current="$(printf '%s\n' "$payload" | jq -ces '
+    if length != 1 or (.[0] | type) != "array" then error("expected a changed-file array")
+    else .[0] | map(
+      if (.filename | type) != "string" or .filename == "" then error("missing filename")
+      elif .status == "renamed" and ((.previous_filename | type) != "string" or .previous_filename == "")
+        then error("missing previous filename")
+      else {filename, previous_filename}
+      end)
+    end')"
+  [ "$current" != '[]' ] || break
+  files="$(json_concat "$files" "$current")"
+  printf '%s\n' "$files" | jq -e '
+    length == ([.[].filename] | unique | length) or error("duplicate changed-file records")
+  ' >/dev/null
+  page=$((page + 1))
+done
+
+guard_open_pull_request "$1" "$2" "$3" "$4" "$5" "$6" || {
+  echo "changed-paths: ${guard_reason:-pull request unavailable}" >&2
+  exit 1
+}
+branch="$(api_read "/api/v1/repos/$1/$2/branches/$(urlencode "$7")")"
+printf '%s\n' "$files" "$guard_pr_json" "$branch" | jq -ces \
+  --arg target "$5" --arg ref "$7" '
+  . as [$files, $pr, $branch] |
+  if $pr.base.ref != $ref or ($branch.commit.id // $branch.commit.sha) != $target
+    then error("target moved")
+  else [$files[] | .filename, (.previous_filename // empty)] | unique
+  end'

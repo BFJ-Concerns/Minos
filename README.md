@@ -205,6 +205,7 @@ Per-repository settings take their defaults from `[repositories]` in
 
 | Setting | Default | Effect |
 |---------|---------|--------|
+| `admission` | Ready pull requests from the same repository | Filters by labels, author, base branch, draft state, title, touched paths and fork source. [Admission settings](docs/deployment.md#pull-request-admission) |
 | `review.threshold` | `High` | Severity threshold the lead weighs when classifying: `Critical`, `High`, `Medium` or `Low` |
 | `filing-destination.kind` | `pull-request-comment` | Where findings that do not block go: committed to a `file` in a repository, filed as an `issue`, posted as a `pull-request-comment`, or `none` |
 | `markers` | `eyes` in flight, `+1` clean | The reactions or labels Minos puts on a pull request |

@@ -69,6 +69,7 @@ type githubFixtureState struct {
 	forkCloneURL       string
 	pullRequest        map[string]any
 	baseTip            string
+	changedFiles       []map[string]any
 	statuses           []map[string]any
 	reviews            []map[string]any
 	reviewComments     map[int64][]map[string]any
@@ -366,6 +367,8 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.forkCloneURL, "default_branch": "topic"})
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets":
 		writeFixtureJSON(s.t, w, map[string]any{"full_name": "acme/widgets", "clone_url": s.cloneURL, "default_branch": "trunk"})
+	case r.Method == http.MethodGet && path == "/repos/acme/widgets/pulls/7/files":
+		writeFixtureArray(s.t, w, s.pagedCollection(r, s.changedFiles))
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets/pulls/7":
 		writeFixtureJSON(s.t, w, s.pullRequest)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/branches/"):

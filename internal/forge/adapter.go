@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -48,6 +49,27 @@ func (a *Adapter) Snapshot(ctx context.Context, repository Repository, pullReque
 		return Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+// ChangedPaths reads both sides of renamed files from the forge's pull
+// request diff. The adaptation checks that the diff still binds to the
+// observed head and target before returning any paths.
+func (a *Adapter) ChangedPaths(ctx context.Context, guard Guard, targetBranch string) ([]string, error) {
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "changed-paths",
+		Arguments: append(a.guardArguments(guard), targetBranch),
+	})
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	if err := json.Unmarshal(out, &paths); err != nil {
+		return nil, fmt.Errorf("decode changed paths: %w", err)
+	}
+	if paths == nil || slices.Contains(paths, "") {
+		return nil, fmt.Errorf("changed paths must be an array of non-empty paths")
+	}
+	return paths, nil
 }
 
 // PullRequestRetired checks the pull request itself, independently of the
