@@ -238,14 +238,17 @@ export function fitted(record) {
 // The walkthrough kept for this pull request, or null: where the
 // repository has it off, where the service keeps none, and where the
 // record cannot be read or is not whole, since a cache that cannot be read
-// is a cache lost. This never throws. Every write of the summary comment
+// is a cache lost. Where the repository has diagrams off, it comes without
+// the diagrams it was drawn with. This never throws. Every write of the summary comment
 // calls it, the write that records a verdict among them, and what a
 // comment shows beside the verdict must never cost the verdict's write.
 export function keptWalkthrough(env = process.env) {
   try {
-    if (!walkthroughSettings(env).enabled || !env[RECORD_VARIABLE]) return null;
+    const settings = walkthroughSettings(env);
+    if (!settings.enabled || !env[RECORD_VARIABLE]) return null;
     const record = JSON.parse(readFileSync(env[RECORD_VARIABLE], "utf8"));
-    return walkthroughProblem(record) ? null : record;
+    if (walkthroughProblem(record)) return null;
+    return settings.diagrams ? record : { ...record, diagrams: [] };
   } catch {
     return null;
   }

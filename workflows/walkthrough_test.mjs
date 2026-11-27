@@ -153,6 +153,16 @@ test("a kept walkthrough is read back whole, and is none where the setting is of
   assert.equal(keptWalkthrough(enabled()), null);
 });
 
+test("a kept walkthrough comes without its diagrams where the repository has diagrams off", (t) => {
+  const path = join(operationRoot(t, "minos-walkthrough-"), "pr.json");
+  keepWalkthrough({ [RECORD_VARIABLE]: path }, record({ diagrams: [diagram] }));
+  const off = keptWalkthrough(enabled({ [RECORD_VARIABLE]: path }));
+  assert.deepEqual(off.diagrams, []);
+  assert.doesNotMatch(renderWalkthrough(off, "4".repeat(40)), /mermaid|diagrams traced/);
+  const on = keptWalkthrough({ [SETTINGS_VARIABLE]: '{"enabled":true,"diagrams":true}', [RECORD_VARIABLE]: path });
+  assert.deepEqual(on.diagrams, [diagram]);
+});
+
 test("a kept walkthrough that cannot be read or is not whole is none, and reading it never throws", (t) => {
   const root = operationRoot(t, "minos-walkthrough-");
   const path = join(root, "pr.json");

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { CHANGES_REQUESTED, CLEAN, HeadMoved, INCOMPLETE, SUPERSEDED } from "./run-endings.mjs";
+import { writeSummary } from "./run-steps/forge-writes.mjs";
 import { writeWalkthrough } from "./run-steps/write-walkthrough.mjs";
 import { operationRoot } from "./temporary-directory-fixture.mjs";
 import { RECORD_KIND } from "./walkthrough.mjs";
@@ -258,4 +259,22 @@ test("settings the duty cannot read are an anomaly, never a failure of the run",
   assert.equal(problems.length, 1);
   assert.match(problems[0], /^The walkthrough was not written\. MINOS_WALKTHROUGH is not valid JSON/);
   assert.deepEqual(fake.forgeCalls, []);
+});
+
+test("a summary write for a head with no new walkthrough shows the kept one without diagrams where they are off", async (t) => {
+  const fake = fakeRun(t, { diagrams: false });
+  const { run } = fake;
+  execFileSync("mkdir", ["-p", join(fake.recordPath, "..")]);
+  writeFileSync(fake.recordPath, JSON.stringify({
+    kind: RECORD_KIND, head: "4".repeat(40), target: run.target, reviewBase: run.target,
+    overview: "The parser gains its first file.",
+    groups: [{ title: "Parser", summary: "A package.", files: ["parser.go"] }],
+    diagrams: [{ title: drawn.diagrams[0].flow, participants: drawn.diagrams[0].participants, steps: drawn.diagrams[0].steps }],
+    models: { walkthrough: "claude-opus-5-5", diagrams: "gpt-6.1-sol" },
+  }));
+
+  await writeSummary(run, CLEAN, { sections: [], outstanding: [] });
+
+  assert.match(fake.summaries[0].body, /### Walkthrough of `4444444`/);
+  assert.doesNotMatch(fake.summaries[0].body, /mermaid/);
 });
