@@ -26,7 +26,7 @@ An entry that carries `brief` was made under one of the project's own review bri
 
 ## Whether the change introduced it
 
-A finding is about this change. Refute one as predating the change only when the lines at fault are lines the change left untouched. Check the lines, not the behaviour: `git diff {{target}}...{{head}} -- <path>` shows what the change wrote, and `git show {{target}}:<path>` shows the file as it stood before.
+A finding is about this change. Refute one as predating the change only when the lines at fault are lines the change left untouched. Check the lines, not the behaviour: `git diff {{target}}...{{head}} -- <path>` shows what the change wrote, and `git show $(git merge-base {{target}} {{head}}):<path>` shows the file as it stood before, on the commit that diff is taken from.
 
 Where the change wrote or altered the lines at fault, the fault is the change's, even if the software misbehaved in the same way before: the author rewrote that code, and the fault is in what they wrote. The same holds for a new instance of a mistake that older code elsewhere also makes. And where the fault is in old lines that only this change reaches, because it adds the caller, the input or the state that makes them fail, the lines at fault are the ones the change added.
 
