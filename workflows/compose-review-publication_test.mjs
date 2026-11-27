@@ -521,6 +521,79 @@ for (const order of ["raised first", "gating first"])
       assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
     });
 
+// The composer's answer never depends on the order a verdict lists its
+// findings in. Each case below holds one of the tie-breaks that make it so.
+for (const order of ["listed", "reversed"]) {
+  const listed = (items) => (order === "listed" ? items : [...items].reverse());
+
+  test(`a brief twin merges into the lowest-keyed of the main findings at its site and title (${order})`, (t) => {
+    const mainFindings = [finding("m1", { title: "Lost update" }), finding("m2", { title: "Lost update" })];
+    const { result, plan, readJson } = compose(t, {
+      main: verdict(listed(mainFindings)),
+      mainDecision: decision("request-changes", listed([{ key: "m1", gating: true }, { key: "m2", gating: true }])),
+      brief: verdict([finding("b", { severity: "Critical", title: "Lost update", source: "Money safety" })]),
+      briefDecision: decision("request-changes", [{ key: "b", gating: true }]),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const comments = readJson(plan.posts[0].comments);
+    const merged = comments.find((comment) => comment.body.includes("Explanation for m1."));
+    const other = comments.find((comment) => comment.body.includes("Explanation for m2."));
+    assert.match(merged.body, /Blocking · Critical: Lost update/);
+    assert.match(merged.body, /Also raised by: Money safety\./);
+    assert.match(other.body, /Blocking · High: Lost update/);
+    assert.doesNotMatch(other.body, /Also raised by/);
+  });
+
+  test(`a labelled defect's canonical member at one site is the first title, not the first listed (${order})`, (t) => {
+    const members = [finding("z", { title: "Alpha: lost update" }), finding("a", { title: "Beta: update dropped", source: "Conservation" })];
+    const { result, plan, readJson } = compose(t, {
+      main: verdict(listed(members)),
+      mainDecision: decision("request-changes", listed([{ key: "z", gating: true, defect: "lost-update" }, { key: "a", gating: true, defect: "lost-update" }])),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const comments = readJson(plan.posts[0].comments);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0].body, /Blocking · High: Alpha: lost update/);
+    assert.match(comments[0].body, /Also raised by: Conservation\./);
+  });
+
+  test(`a labelled defect's canonical member under one title is the lowest key, not the first listed (${order})`, (t) => {
+    const members = [finding("k1", { title: "Lost update", source: "Alpha" }), finding("k2", { title: "Lost update", source: "Beta" })];
+    const { result, plan, readJson } = compose(t, {
+      main: verdict(listed(members)),
+      mainDecision: decision("request-changes", listed([{ key: "k1", gating: true, defect: "lost-update" }, { key: "k2", gating: true, defect: "lost-update" }])),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const comments = readJson(plan.posts[0].comments);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0].body, /Explanation for k1\./);
+    assert.match(comments[0].body, /Also raised by: Beta\./);
+  });
+
+  test(`a refusal names the brief twins' calls in one order however they are listed (${order})`, (t) => {
+    const twins = [
+      finding("b", { severity: "Medium", title: "Lost update", source: "Money safety" }),
+      finding("c", { severity: "Medium", title: "Lost update", source: "Conservation" }),
+    ];
+    const classed = compose(t, {
+      main: verdict([finding("a", { severity: "Medium", title: "Lost update" })]),
+      mainDecision: decision("clean", [{ key: "a", gating: false, class: "speculative-hardening" }]),
+      brief: verdict(listed(twins)),
+      briefDecision: decision("clean", listed([{ key: "b", gating: false }, { key: "c", gating: false, class: "declared-out-of-scope" }])),
+    });
+    assert.equal(classed.result.status, 1);
+    assert.equal(classed.result.stderr, "one finding at internal/review.go:42 is classed differently across the decisions: speculative-hardening and declared-out-of-scope and unclassed\n");
+    const labelled = compose(t, {
+      main: verdict([finding("a", { title: "Lost update" })]),
+      mainDecision: decision("request-changes", [{ key: "a", gating: true, defect: "one" }]),
+      brief: verdict(listed(twins.map((twin) => ({ ...twin, severity: "High" })))),
+      briefDecision: decision("request-changes", listed([{ key: "b", gating: true, defect: "two" }, { key: "c", gating: true, defect: "three" }])),
+    });
+    assert.equal(labelled.result.status, 1);
+    assert.equal(labelled.result.stderr, "one finding at internal/review.go:42 carries two defect labels across the decisions: one and three and two\n");
+  });
+}
+
 test("advisory twins sharing a class keep it", (t) => {
   const { result, plan, readJson } = compose(t, {
     main: verdict([finding("a", { title: "Lost update" })]),
