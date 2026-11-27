@@ -57,8 +57,30 @@ if [ "$outcome" = unknown ] && { [ -n "$ledger_failure" ] || [ "$salvaged" = tru
   fi
 fi
 
-skip_reason="$(jq -er '.answer | select(.outcome == "no-review") | .reason | strings' \
-  "$run_dir/judgements/push-inspection.json" 2>/dev/null | head -c 2048 || true)"
+# A successor's push inspection is a later attempt (push-inspection@N) and
+# decides what this run did, so the newest attempt's record is read. An
+# attempt that left no record answered nothing, and no earlier answer
+# stands in for it.
+inspection_attempt=""
+if [ -f "$run_dir/push-inspection-args.json" ]; then
+  inspection_attempt=push-inspection
+fi
+inspection_number=1
+for inspection_args in "$run_dir"/push-inspection@*-args.json; do
+  [ -f "$inspection_args" ] || continue
+  number="${inspection_args##*/push-inspection@}"
+  number="${number%-args.json}"
+  case "$number" in ''|*[!0-9]*) continue ;; esac
+  if [ "$number" -gt "$inspection_number" ]; then
+    inspection_number="$number"
+    inspection_attempt="push-inspection@$number"
+  fi
+done
+skip_reason=""
+if [ -n "$inspection_attempt" ]; then
+  skip_reason="$(jq -er '.answer | select(.outcome == "no-review") | .reason | strings' \
+    "$run_dir/judgements/$inspection_attempt.json" 2>/dev/null | head -c 2048 || true)"
+fi
 skipped=false
 if [ -n "$skip_reason" ] ||
    { [ "$marker" = clean ] && [ ! -f "$run_dir/carried-review-result.json" ] &&
