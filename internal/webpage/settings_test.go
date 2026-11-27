@@ -297,6 +297,29 @@ func TestSwitchSetOnThePageIsWrittenAsABoolean(t *testing.T) {
 	}
 }
 
+// The walkthrough's two switches are listed for a repository, each off at
+// its default, and either set on the page is written to the repository's
+// [walkthrough] table.
+func TestWalkthroughSwitchesAreListedAndSaved(t *testing.T) {
+	root, read, write := configurationRoot(t)
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	page := "/repositories/forgejo/bfj/estate/settings"
+	body := visit(site, page, session).Body.String()
+	for _, name := range []string{"walkthrough.enabled", "walkthrough.diagrams"} {
+		if row := settingRowHTML(t, body, name); !strings.Contains(row, "<option selected>false</option>") {
+			t.Errorf("%s at its default does not open on false:\n%s", name, row)
+		}
+		response := submit(site, page, url.Values{"setting": {name}, "value": {"true"}, "action": {"set"}}, session)
+		if response.Code != http.StatusSeeOther {
+			t.Fatalf("turning %s on answered %d:\n%s", name, response.Code, response.Body)
+		}
+	}
+	if got := fileText(t, filepath.Join(root, "repos", "estate.toml")); !strings.Contains(got, "[walkthrough]\n") || !strings.Contains(got, "enabled = true\n") || !strings.Contains(got, "diagrams = true\n") {
+		t.Errorf("the repository file does not hold both walkthrough switches:\n%s", got)
+	}
+}
+
 func TestOneEngineConcurrencySetFromTheDefaultsIsSaved(t *testing.T) {
 	for _, engine := range []string{"claude", "codex"} {
 		t.Run(engine, func(t *testing.T) {

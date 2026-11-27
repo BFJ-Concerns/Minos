@@ -1433,6 +1433,7 @@ func TestSpawnRunExportsTheShippedReviewDefaults(t *testing.T) {
 		"MINOS_REVIEW_THRESHOLD":        "High",
 		"MINOS_FILE_SAFEGUARD_REQUESTS": "false",
 		"MINOS_REVIEW_DEPTH":            "standard",
+		"MINOS_WALKTHROUGH":             `{"enabled":false,"diagrams":false}`,
 	} {
 		if got, present := environment[name]; !present || got != want {
 			t.Fatalf("run environment %s = %q, present = %t; want %q", name, got, present, want)
@@ -1484,5 +1485,60 @@ func TestSpawnRunHandsTheKeptRepositoryDescriptionToTheRun(t *testing.T) {
 	repo.Description.Enabled = false
 	if value, present := spawn(repo); present {
 		t.Fatalf("a repository with its description off handed its run %q", value)
+	}
+}
+
+// A run of a repository with its walkthrough on is handed the settings and
+// the path of the record kept for its pull request, which it reads and
+// replaces; one with the walkthrough off is handed no path, and a record
+// kept from when it was on is removed.
+func TestSpawnRunHandsTheWalkthroughSettingsAndRecordToTheRun(t *testing.T) {
+	original := commandCombinedOutput
+	t.Cleanup(func() { commandCombinedOutput = original })
+	var systemdArgs []string
+	commandCombinedOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemd-run" {
+			systemdArgs = append([]string(nil), args...)
+		}
+		return nil, nil
+	}
+	root := t.TempDir()
+	cfg := loadServiceConfigWith(t, root, "")
+	cfg.Runs.Dir = t.TempDir()
+	cfg.Forges = map[string]ForgeConfig{"local": {APIBase: "http://forge.local"}}
+	facts := Facts{Forge: "local", Owner: "owner", Repo: "repo", PR: "7", HeadSHA: "head", BaseSHA: "target", BaseRef: "main", HeadRef: "feature"}
+	spawn := func(repo RepoConfig) map[string]string {
+		t.Helper()
+		systemdArgs = nil
+		if _, err := SpawnRun(t.Context(), cfg, repo, facts); err != nil {
+			t.Fatal(err)
+		}
+		return systemdEnvironment(t, systemdArgs)
+	}
+	repo := RepoConfig{Forge: "local", Owner: "owner", Repo: "repo"}
+	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
+	record := walkthroughRecordPath(cfg, "local", forge.Guard{Repository: forge.Repository{Owner: "owner", Name: "repo"}, PullRequest: 7})
+
+	repo.Walkthrough.Enabled = true
+	repo.Walkthrough.Diagrams = true
+	environment := spawn(repo)
+	if got := environment["MINOS_WALKTHROUGH"]; got != `{"enabled":true,"diagrams":true}` {
+		t.Fatalf("run environment MINOS_WALKTHROUGH = %q", got)
+	}
+	if got, present := environment["MINOS_WALKTHROUGH_RECORD"]; !present || got != record {
+		t.Fatalf("run environment MINOS_WALKTHROUGH_RECORD = %q, present = %t; want %s", got, present, record)
+	}
+
+	writeTestFile(t, record, "{}\n")
+	repo.Walkthrough.Enabled = false
+	environment = spawn(repo)
+	if got, present := environment["MINOS_WALKTHROUGH_RECORD"]; present {
+		t.Fatalf("a repository with its walkthrough off handed its run %q", got)
+	}
+	if got := environment["MINOS_WALKTHROUGH"]; got != `{"enabled":false,"diagrams":true}` {
+		t.Fatalf("run environment MINOS_WALKTHROUGH = %q", got)
+	}
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Fatalf("the walkthrough kept while it was on survived it being turned off: %v", err)
 	}
 }
