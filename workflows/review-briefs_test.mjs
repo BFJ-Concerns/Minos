@@ -41,6 +41,12 @@ function finding(overrides = {}) {
   };
 }
 
+// A finding a fake verifier raises, naming the first finding of its batch
+// as the one it was checking, as the verifier schema requires.
+function raisedFinding(prompt, overrides = {}) {
+  return finding({ foundWhileChecking: findingsFromVerifierPrompt(prompt)[0].id, ...overrides });
+}
+
 function observation(overrides = {}) {
   return {
     title: "pre-existing repository defect",
@@ -1105,7 +1111,7 @@ test("a finding a brief verifier raises is verified by a later leg, and one the 
   const { result, calls } = await run(args(), responder({
     verify: (label, prompt) => ({
       verdicts: findingsFromVerifierPrompt(prompt).map((entry) => verdictFor(entry.id, { confidence: 92, reason: "confirmed" })),
-      newFindings: [finding({ title: `raised by ${label}`, line: 40 + (raisedCount += 1) })],
+      newFindings: [raisedFinding(prompt, { title: `raised by ${label}`, line: 40 + (raisedCount += 1) })],
       outOfScopeObservations: [],
     }),
   }));
@@ -1138,8 +1144,8 @@ test("findings brief verifiers raise in one round are merged under the brief's m
     verify: (label, prompt) => ({
       verdicts: findingsFromVerifierPrompt(prompt).map((entry) => verdictFor(entry.id, { confidence: 92, reason: "confirmed" })),
       newFindings: label.startsWith("verify-brief-round-") ? [] : [
-        finding({ title: "first raised defect", line: 50 }),
-        finding({ title: "second raised defect", line: 60 }),
+        raisedFinding(prompt, { title: "first raised defect", line: 50 }),
+        raisedFinding(prompt, { title: "second raised defect", line: 60 }),
       ],
       outOfScopeObservations: [],
     }),

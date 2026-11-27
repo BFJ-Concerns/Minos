@@ -115,6 +115,12 @@ function finding(overrides = {}) {
   };
 }
 
+// A finding a fake verifier raises, naming the first finding of its batch
+// as the one it was checking, as the verifier schema requires.
+function raisedFinding(prompt, overrides = {}) {
+  return finding({ foundWhileChecking: findingsFromVerifierPrompt(prompt)[0].id, ...overrides });
+}
+
 function observation(overrides = {}) {
   return {
     title: "pre-existing defect",
@@ -515,7 +521,7 @@ test("a single-engine deployment verifies a verifier's own findings on the one e
   const { calls } = await runScript(args, responder({
     verify: (label, prompt) => ({
       ...verifierResult(prompt),
-      newFindings: raised ? [] : [finding({ title: "raised once", line: 70 }), (raised = true)].slice(0, 1),
+      newFindings: raised ? [] : [raisedFinding(prompt, { title: "raised once", line: 70 }), (raised = true)].slice(0, 1),
     }),
   }));
   assert.deepEqual(calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => call.opts.label),
@@ -1156,7 +1162,7 @@ test("a finding a verifier raises is verified by a later leg, and one the last r
   const { result, calls } = await runScript(ARGS, responder({
     verify: (label, prompt) => ({
       ...verifierResult(prompt),
-      newFindings: [finding({ title: `raised by ${label}`, line: 40 + (raisedCount += 1) })],
+      newFindings: [raisedFinding(prompt, { title: `raised by ${label}`, line: 40 + (raisedCount += 1) })],
     }),
   }));
   const verifierLabels = calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => call.opts.label);
@@ -1201,7 +1207,7 @@ test("findings verifiers raise in one round are merged before the next round ver
     },
     verify: (label, prompt) => ({
       ...verifierResult(prompt),
-      newFindings: label.startsWith("verify-round-") ? [] : [finding({ title: "same defect both batches traced", line: 90 })],
+      newFindings: label.startsWith("verify-round-") ? [] : [raisedFinding(prompt, { title: "same defect both batches traced", line: 90 })],
     }),
   }));
   assert.deepEqual(merges, ["merge", "merge-round-2"]);
