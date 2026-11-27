@@ -2509,9 +2509,12 @@ type forgejoFixtureState struct {
 	// dropReviewWrites counts the review posts still to be answered with a
 	// server error and not stored, so a script's read-back finds no review.
 	dropReviewWrites int
-	server           *httptest.Server
-	tokenPath        string
-	adaptationPath   string
+	// summaryWrites is how the fixture answers a conversation comment's
+	// post or edit (summaryWriteMode).
+	summaryWrites  summaryWriteMode
+	server         *httptest.Server
+	tokenPath      string
+	adaptationPath string
 
 	mu                       sync.Mutex
 	requestedReviewers       []string
@@ -3005,7 +3008,13 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			"id": float64(len(s.issueComments) + 1), "body": payload["body"],
 			"user": map[string]any{"login": "Minos"},
 		}
-		s.issueComments = append(s.issueComments, comment)
+		if s.summaryWrites != summaryWriteDropped {
+			s.issueComments = append(s.issueComments, comment)
+		}
+		if s.summaryWrites == summaryWriteAnswerLost {
+			http.Error(w, `{"message":"gateway timeout"}`, http.StatusGatewayTimeout)
+			return
+		}
 		writeFixtureJSON(s.t, w, comment)
 	case r.Method == http.MethodPatch && strings.HasPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/issues/comments/"):
 		var payload map[string]any
@@ -3015,7 +3024,13 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(path, "/api/v1/repos/minos-e2e-owner/subject/issues/comments/")
 		for _, comment := range s.issueComments {
 			if fmt.Sprint(comment["id"]) == id {
-				comment["body"] = payload["body"]
+				if s.summaryWrites != summaryWriteDropped {
+					comment["body"] = payload["body"]
+				}
+				if s.summaryWrites == summaryWriteAnswerLost {
+					http.Error(w, `{"message":"gateway timeout"}`, http.StatusGatewayTimeout)
+					return
+				}
 				writeFixtureJSON(s.t, w, comment)
 				return
 			}

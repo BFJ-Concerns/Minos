@@ -635,6 +635,45 @@ func TestForgeEarlierIsNotAnsweredByARecordThatFailedToMoveOn(t *testing.T) {
 	}
 }
 
+// A closing summary write the forge did not keep reads as uncertain, and
+// the reviewed change stays the one the forge last confirmed: the next
+// head is compared with that, not with a head nothing records as finished.
+func TestForgeSummaryKeepsTheReviewedChangeOnlyForAWriteItConfirmed(t *testing.T) {
+	f := newEarlierHeadFixture(t)
+	first := f.commit("feature.txt", "one\n", "feature")
+	f.summary(first, "clean")
+	second := f.commit("feature.txt", "one\ntwo\n", "extend the feature")
+	var cfg ServiceConfig
+	cfg.Runs.Dir = f.runsDir
+	number, err := strconv.ParseInt(os.Getenv("MINOS_PR"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := reviewedChangePath(cfg, os.Getenv("MINOS_FORGE"), forge.Guard{
+		Repository: forge.Repository{Owner: os.Getenv("MINOS_OWNER"), Name: os.Getenv("MINOS_REPO_NAME")}, PullRequest: number,
+	})
+	f.state.summaryWrites = summaryWriteDropped
+	text := filepath.Join(t.TempDir(), "summary.md")
+	if err := os.WriteFile(text, []byte("Summary.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout strings.Builder
+	if err := ForgeCommand(t.Context(), []string{"summary", second, f.target(), "changes-requested", text}, &stdout); err == nil || !strings.Contains(stdout.String(), `"uncertain"`) {
+		t.Fatalf("closing write the forge did not keep = %v\n%s, want uncertain", err, stdout.String())
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept reviewedChange
+	if err := json.Unmarshal(raw, &kept); err != nil {
+		t.Fatal(err)
+	}
+	if kept.Head != first || kept.Outcome != "clean" {
+		t.Fatalf("after an uncertain closing write the reviewed change is %s %s, want %s clean", kept.Head, kept.Outcome, first)
+	}
+}
+
 func TestForgeStatusSkipsOnlyAnIdenticalDesiredStatus(t *testing.T) {
 	state := newForgejoFixtureState(t)
 	cfg, _, facts := state.service(t)
