@@ -52,8 +52,14 @@ func ReceiveCommand(ctx context.Context, args []string) error {
 // has not been given one serves the webhook route alone.
 func receiverRoutes(ctx context.Context, cfg ServiceConfig) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/hooks/", func(w http.ResponseWriter, r *http.Request) {
-		if err := handleHook(ctx, cfg, w, r); err != nil {
+	mux.HandleFunc("POST /hooks/", func(w http.ResponseWriter, r *http.Request) {
+		deliveryConfig, err := LoadServiceConfig(cfg.Root)
+		if err != nil {
+			http.Error(w, "service configuration unavailable", http.StatusInternalServerError)
+			log.Printf("load webhook configuration: %v", err)
+			return
+		}
+		if err := handleHook(ctx, deliveryConfig, w, r); err != nil {
 			log.Printf("hook failed: %v", err)
 		}
 	})
@@ -76,10 +82,6 @@ func receiverRoutes(ctx context.Context, cfg ServiceConfig) *http.ServeMux {
 }
 
 func handleHook(ctx context.Context, cfg ServiceConfig, w http.ResponseWriter, r *http.Request) error {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return nil
-	}
 	forgeName := strings.TrimPrefix(r.URL.Path, "/hooks/")
 	forgeConfig, ok := cfg.Forges[forgeName]
 	if !ok {

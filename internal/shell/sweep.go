@@ -99,13 +99,15 @@ func SweepCommand(ctx context.Context, args []string) error {
 		result, err := reconcilePullRequest(ctx, cfg, candidate.repo, candidate.facts)
 		if err != nil {
 			log.Printf("%s#%s: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
-			continue
 		}
 		if result.DeferralReason != "" {
 			document.Deferrals = append(document.Deferrals, sweepDeferral{
 				Forge: candidate.facts.Forge, Owner: candidate.facts.Owner, Repo: candidate.facts.Repo,
 				PR: candidate.facts.PR, Reason: result.DeferralReason, Reasons: result.DeferralReasons,
 			})
+		}
+		if err != nil {
+			continue
 		}
 		row := sweepDecisionRow{Forge: candidate.facts.Forge, Owner: candidate.facts.Owner, Repo: candidate.facts.Repo, PR: candidate.facts.PR, Decision: result.Decision}
 		if result.TerminalOutcome != "" {

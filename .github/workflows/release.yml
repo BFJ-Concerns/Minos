@@ -114,10 +114,14 @@ jobs:
           echo "Created draft release $release_id for $TAG"
 
           upload_url=$(jq -er '.upload_url' <<< "$draft")
-          curl --fail-with-body --silent --show-error \
+          upload_response=$(curl --fail-with-body --silent --show-error \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'Content-Type: application/octet-stream' \
-            --data-binary "@$asset" "${upload_url%%\{*}?name=$name" > /dev/null
+            --data-binary "@$asset" "${upload_url%%\{*}?name=$name") || {
+            upload_status=$?
+            printf '%s\n' "$upload_response" >&2
+            exit "$upload_status"
+          }
 
           release="$repo/releases/$release_id"
           uploaded=$(gh api "$release" \
