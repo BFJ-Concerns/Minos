@@ -1,5 +1,5 @@
 [Unit]
-Description=Minos Forgejo webhook receiver
+Description=Minos webhook receiver for Forgejo and GitHub
 Documentation=file:/opt/minos/docs/deployment.md
 Wants=network-online.target
 After=network-online.target

@@ -643,15 +643,23 @@ write, matching the target rule above.)
    gating or not, and share it between them as a label's findings do, so
    the author hears of the defect where it is new.
 
+   Whether the author already has a defect at a site is one fact, so
+   findings of one defect at one site take one answer on it. Two findings
+   at one line under one title, and a label's findings at one line
+   whatever their titles, all take `already-raised` or none of them
+   does. Called both ways, the decision would count the defect as said
+   and post it again at the same line.
+
    One defect gets one call across the two decisions as much as within
    one, so write the brief decision with the main decision beside it.
    That covers a brief finding at the same line and under the same title
    as a main-review finding even where you gave them no label, because
-   the composer merges the two as one finding. Those twins sit at one
-   site, so whether the author already has the finding is one fact about
-   both: settle it first and give both twins the same answer. Both take
-   `already-raised` and neither gates, or neither takes the class. A
-   gate on one twin would post again what the author already has.
+   the composer merges the two as one finding. A site's one answer on
+   `already-raised` holds across the two decisions as well, for those
+   twins and for a label's findings at one line where the decisions each
+   hold one: settle it first and give them the same answer. All take
+   `already-raised` and none gates, or none takes the class. A gate on
+   one would post again what the author already has.
 
    The composer publishes a labelled defect once, at its highest-severity
    site, naming the other sites and the groups that also raised it; an
@@ -661,8 +669,10 @@ write, matching the target rule above.)
    it refuses, with nothing written, a label whose findings gate
    differently across the two decisions, and a non-gating defect the two
    decisions class differently. It
-   refuses as well twins that one decision classes `already-raised` and
-   the other calls new, even where the other gates them. Distinct
+   refuses as well findings of one defect at one site, twins under one
+   title or a label's findings at one line, that are already raised in
+   one decision and new in the other, even where the other gates them.
+   Distinct
    defects at one line take no label — the composer cross-references
    them. The label is this run's vocabulary only; a later run over a new
    head names its own.
@@ -676,9 +686,10 @@ write, matching the target rule above.)
 
    A decision that fails validation — a missing basis, an unnamed
    declassification, an unnamed undergrade, a finding with no
-   disposition, a `class` on a gating finding, a blank `defect` label or
+   disposition, a `class` on a gating finding, a blank `defect` label,
    one whose findings, those already raised aside, gate or are classed
-   differently — is corrected and
+   differently, or findings of one defect at one site that are already
+   raised in one disposition and new in another — is corrected and
    re-validated rather than worked around; nothing has touched the forge
    yet. The run's overall verdict is
    `request-changes` when either validated decision is; `clean` only when
@@ -824,7 +835,10 @@ write, matching the target rule above.)
    latest verdict review on the pull request requested changes, it posts
    an approving review, so the forge stops showing a block Minos no
    longer holds. Otherwise it prints `{"outcome":"not-needed"}` and
-   writes nothing, which is the usual answer and not a failure. An
+   writes nothing, which is the usual answer and not a failure. The
+   command already tries again an approval whose write came back
+   uncertain or retryable, so a last answer that is not `applied` is an
+   approval the forge will not take. An
    approval the forge will not take, for any reason but a moved head,
    would leave that block standing under a clean marker, so the outcome
    is not clean: set `"$MINOS_BIN" forge status HEAD TARGET incomplete`,

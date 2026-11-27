@@ -2418,9 +2418,12 @@ type forgejoFixtureState struct {
 	// answers every review listing with, so a script's read-back sees an
 	// unreadable forge rather than an empty one.
 	refuseReviewReads int
-	server            *httptest.Server
-	tokenPath         string
-	adaptationPath    string
+	// dropReviewWrites counts the review posts still to be answered with a
+	// server error and not stored, so a script's read-back finds no review.
+	dropReviewWrites int
+	server           *httptest.Server
+	tokenPath        string
+	adaptationPath   string
 
 	mu                       sync.Mutex
 	requestedReviewers       []string
@@ -2437,6 +2440,7 @@ type forgejoFixtureState struct {
 	stackedChildren          []map[string]any
 	statusWrites             int
 	statusPostRequests       []statusPostRequest
+	reviewPosts              int
 	reviewWrites             int
 	reviewPayloads           []map[string]any
 	reviewComments           map[int64][]map[string]any
@@ -2615,6 +2619,12 @@ func (s *forgejoFixtureState) setPositionRewrite(path string, requested, stored 
 	s.positionRewrites[path][requested] = stored
 }
 
+func (s *forgejoFixtureState) reviewPostCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reviewPosts
+}
+
 func (s *forgejoFixtureState) reviewWriteFacts() (int, map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2651,6 +2661,12 @@ func (s *forgejoFixtureState) setDependenciesFailure(status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dependencyCode = status
+}
+
+func (s *forgejoFixtureState) dropNextReviewWrites(count int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropReviewWrites = count
 }
 
 func (s *forgejoFixtureState) setReviewReadsFailure(status int) {
@@ -2963,6 +2979,12 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		writeFixtureArray(s.t, w, s.reviews)
 	case r.Method == http.MethodPost && path == pullPath+"/reviews":
+		s.reviewPosts++
+		if s.dropReviewWrites > 0 {
+			s.dropReviewWrites--
+			http.Error(w, "review write fixture failure", http.StatusBadGateway)
+			return
+		}
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			s.t.Error(err)

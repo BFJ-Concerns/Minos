@@ -27,9 +27,11 @@ author, and the forge's own CI remains the build evidence.
    the pull request's title and description.
 3. The lead decides how much review this head needs. A pull request's
    first head is reviewed in full, unless nothing in it gives a reviewer
-   anything to judge. A later head is reviewed only for what the author
-   changed since the head Minos last finished on, or not at all when that
-   is nothing. The comparison is of the pull request's files, not its
+   anything to judge. A later head is usually reviewed only for what the
+   author changed since the head Minos last finished on, or not at all when
+   that is nothing. It is reviewed in full when that change cannot be
+   isolated, or reworks so much of the pull request that reading it alone
+   would mislead. The comparison is of the pull request's files, not its
    commits, so a rebase, squash or reworded history that leaves the files
    as they were is not reviewed again; rewritten history that also changes
    files gets a full review.
@@ -38,7 +40,8 @@ author, and the forge's own CI remains the build evidence.
    with the project. Findings that one fix would resolve are merged, and a
    verifier checks each of the rest against the code and finds it confirmed,
    refuted or unsettled. Only a confirmed finding is treated as a defect; an
-   unsettled one is filed as an open question. The repository's own
+   unsettled one is filed as an open question where the filing destination
+   is a file or an issue, and goes nowhere otherwise. The repository's own
    [review briefs](#review-briefs) then run the same way.
 5. The lead classifies the verdict, guided by the repository's severity
    threshold, and publishes the result. A finding Minos has already posted
@@ -59,9 +62,12 @@ status, and the sweep picks the pull request up again on a later pass.
 With both engines available, specialists propose findings on Codex
 (`gpt-6.2-astra`) and the verifier checks them on Claude (`claude-opus-5-5`),
 both at medium effort, so every finding is checked by the family that did
-not propose it; the planning roles run on Codex (`gpt-6.1-sol`). `[routing]` in
-`service.toml` moves any role to another engine, model or effort, and a box
-with only one engine runs every role on it.
+not propose it: a verifier from the proposer's own family measurably favours
+that family's findings. The planning roles run on Codex (`gpt-6.1-sol`).
+`[routing]` in `service.toml` moves any role to another engine, model or
+effort, and a box with only one engine runs every role on it. Such a box
+gives up the cross-family check: no finding there is checked by a family
+other than the one that proposed it.
 
 ## What the author sees
 
@@ -73,23 +79,25 @@ label on the pull request, and, where there are findings, a review.
 | Under review | `pending` — Reviewing changes | The in-flight marker (an `eyes` reaction by default) |
 | Continuing | `pending` — Review continuing in a fresh run | The in-flight marker stays while a fresh run carries on the review |
 | Changes needed | `failure` — Changes need attention | A request-changes review carrying the blocking findings, inline where they can be anchored to the diff and in the review body otherwise, plus the attention marker if one is configured |
-| Clean | `success` — Changes approved | The clean marker (a `+1` reaction by default), and an approving review where Minos's latest review had requested changes |
+| Clean | `success` — Changes approved | The clean marker (a `+1` reaction by default), and an approving review where Minos's latest verdict on the pull request had requested changes |
 | Incomplete | `error` — Review incomplete | No review; the head is retried on a later sweep pass. A run that fails before the lead starts writes no status |
 
 Each finding comment opens with **Blocking** and its severity, and closes
 with the models that proposed and verified it (for example, *Proposed by
-`gpt-6.1-sol`; verified by `claude-opus-5-5`.*). The review body names the
+`gpt-6.2-astra`; verified by `claude-opus-5-5`.*). The review body names the
 briefs it applied and the lead model that signed it.
 
 On either outcome, confirmed findings that do not block go to the
 [filing destination](#configuration) instead of the review, by default a
-separate comment review. So do defects reviewers noticed outside the
-change, marked as unverified; those never go onto the pull request.
+separate comment review. Defects reviewers noticed outside the change are
+filed marked as unverified, but only to a file or issue destination: with the
+default comment-review destination they are not posted anywhere.
 
 Reviewers treat the pull request's description as the author's account of
 the change. Where it explicitly puts something out of scope and the project
-guidance doesn't contradict it, the missing piece is not reported as a
-defect; incorrect behaviour in the code the change does carry still is.
+guidance doesn't contradict it, a finding about the missing piece is neither
+posted nor filed; it stays in the run's own record. Incorrect behaviour in
+the code the change does carry can still block.
 
 ## Requirements
 
@@ -107,9 +115,8 @@ defect; incorrect behaviour in the code the change does carry still is.
 - Model access: a Claude Code subscription or gateway credential, a Codex
   (ChatGPT) account, or both. One engine is enough.
 - Memory: concurrent runs share an 8 GiB envelope by default
-  (`runs.memory-envelope-gib`). A review typically holds about 1 GiB and
-  rarely more than 5 GiB; the [deployment guide](docs/deployment.md) covers
-  sizing.
+  (`runs.memory-envelope-gib`); the [deployment guide](docs/deployment.md)
+  covers sizing.
 - On GitHub, a GitHub App installed on each reviewed repository. On Forgejo,
   a bot account and an access token.
 - Project guidance in each reviewed repository: a configured source, or a
@@ -125,6 +132,18 @@ isolated — a dedicated container (Docker, for example) or VM — rather than o
 a machine whose other data and access you would not want a pull request's
 author to reach. This is a recommendation, not a requirement: Minos runs
 anywhere the requirements above hold.
+
+Every model provider the deployment provisions receives the source of the
+enrolled repositories. The lead and the review agents read the pull request's
+diff and the repository's files through their engine, so Anthropic (for
+Claude Code), OpenAI (for Codex) or the gateway in between sees that source.
+With an archive host configured, each run's archive carries it too: the
+agents' transcripts and run records hold the source they read. So does the
+failure record: the digest of a crashed run holds the tails of its
+transcripts, and the sweep appends it to `runs.failure-log` or, with
+`runs.failures-repo` set, commits it to that repository and pushes it, which
+may sit on another forge or be more widely readable than the repository
+reviewed. Enrol a private repository only where its owner accepts all three.
 
 ## Installation
 
@@ -255,7 +274,7 @@ just verify
 |------|----------|
 | [`cmd/minos`](cmd/minos) | The service binary |
 | [`internal/`](internal) | Webhook receiver, sweep, run lifecycle and forge bridge |
-| [`workflows/`](workflows) | The Ensemble review workflows and reviewer briefs |
+| [`workflows/`](workflows) | The Ensemble review workflows and the prompts their agents receive |
 | [`runtime/`](runtime) | The vendored Ensemble runtime |
 | [`scripts/`](scripts) | Forge adaptations, per-run scripts and installers |
 | [`lifecycle/`](lifecycle) | The lead's run prompt |

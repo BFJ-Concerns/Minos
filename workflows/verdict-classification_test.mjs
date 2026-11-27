@@ -186,6 +186,61 @@ test("a defect label's already-raised members stand apart from the call its othe
   assert.match(validateVerdictDecision(split, digest).reason, /labelled one defect gate differently: retry-bound/);
 });
 
+// Whether the author already has a defect is a fact about its site: two
+// findings of one defect at one line cannot be both already raised and new.
+for (const order of ["raised first", "new first"]) {
+  const listed = (pair) => (order === "raised first" ? pair : [...pair].reverse());
+
+  test(`findings at one site under one title take one answer on already raised (${order})`, () => {
+    const digest = completeDigest([finding(), finding({ id: "specialist-2:1", title: "  off-by-one IN retry bound " })]);
+    const [first, second] = digest.findings;
+    const refused = validateVerdictDecision(decision(digest, {
+      findings: listed([{ key: first.key, gating: false, class: "already-raised" }, { key: second.key, gating: true }]),
+    }), digest);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, "findings at internal/retry.go:42 under one title are already raised in one disposition and new in another");
+    const advisory = validateVerdictDecision(decision(digest, { verdict: "clean",
+      findings: listed([{ key: first.key, gating: false, class: "already-raised" }, { key: second.key, gating: false, class: "declared-out-of-scope" }]),
+    }), digest);
+    assert.equal(advisory.ok, false);
+    const alike = validateVerdictDecision(decision(digest, { verdict: "clean",
+      findings: [{ key: first.key, gating: false, class: "already-raised" }, { key: second.key, gating: false, class: "already-raised" }],
+    }), digest);
+    assert.deepEqual(alike, { ok: true });
+  });
+
+  test(`a label's findings at one site under two titles take one answer on already raised (${order})`, () => {
+    const digest = completeDigest([finding(), finding({ id: "specialist-2:1", title: "Retry loop stops one attempt early" })]);
+    const [first, second] = digest.findings;
+    const refused = validateVerdictDecision(decision(digest, {
+      findings: listed([{ key: first.key, gating: false, class: "already-raised", defect: "retry-bound" }, { key: second.key, gating: true, defect: "retry-bound" }]),
+    }), digest);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, "findings labelled retry-bound at internal/retry.go:42 are already raised in one disposition and new in another");
+    // Distinct defects at one line are separate facts.
+    const distinct = validateVerdictDecision(decision(digest, {
+      findings: [{ key: first.key, gating: false, class: "already-raised" }, { key: second.key, gating: true }],
+    }), digest);
+    assert.deepEqual(distinct, { ok: true });
+  });
+}
+
+test("a defect label spelled like another finding's title is a separate identity", () => {
+  const digest = completeDigest([
+    finding({ id: "a", title: "Cache leak" }),
+    finding({ id: "b", title: "Wrong result" }),
+    finding({ id: "c", title: "Wrong result again", line: 43 }),
+  ]);
+  const checked = validateVerdictDecision(decision(digest, {
+    findings: [
+      { key: "a", gating: false, class: "already-raised" },
+      { key: "b", gating: true, defect: "cache leak" },
+      { key: "c", gating: true, defect: "cache leak" },
+    ],
+  }), digest);
+  assert.deepEqual(checked, { ok: true });
+});
+
 test("a coherent decision validates", () => {
   const digest = completeDigest([finding()]);
   assert.deepEqual(validateVerdictDecision(decision(digest), digest), { ok: true });

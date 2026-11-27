@@ -474,21 +474,125 @@ for (const order of ["listed", "reversed"])
     assert.match(result.stderr, /classed differently across the decisions: unclassed and declared-out-of-scope/);
   });
 
+// Two main findings at one site and title describe one defect at one site,
+// so whether the author already has it is one answer: a main decision that
+// calls one already raised and the other new is refused, with or without a
+// brief twin beside them, and the refusal says the main decision is the
+// one to correct.
 for (const order of ["raised first", "gating first"])
-  test(`a brief twin of main findings that disagree on whether the finding is new stops the composer (${order})`, (t) => {
-    const mainFindings = [finding("a", { title: "Lost update" }), finding("b", { title: "Lost update" })];
-    const mainDispositions = [{ key: "a", gating: false, class: "already-raised" }, { key: "b", gating: true }];
-    const reversed = order === "gating first";
-    const { result, scratch } = compose(t, {
-      main: verdict(reversed ? [...mainFindings].reverse() : mainFindings),
-      mainDecision: decision("request-changes", reversed ? [...mainDispositions].reverse() : mainDispositions),
-      brief: verdict([finding("c", { title: "Lost update", source: "Money safety" })]),
-      briefDecision: decision("clean", [{ key: "c", gating: false, class: "already-raised" }]),
+  for (const briefTwin of [false, true])
+    test(`main findings at one site and title that disagree on whether the finding is new stop the composer (${order}, ${briefTwin ? "with" : "without"} a brief twin)`, (t) => {
+      const mainFindings = [finding("a", { title: "Lost update" }), finding("b", { title: "Lost update" })];
+      const mainDispositions = [{ key: "a", gating: false, class: "already-raised" }, { key: "b", gating: true }];
+      const reversed = order === "gating first";
+      const { result, scratch } = compose(t, {
+        main: verdict(reversed ? [...mainFindings].reverse() : mainFindings),
+        mainDecision: decision("request-changes", reversed ? [...mainDispositions].reverse() : mainDispositions),
+        ...(briefTwin ? {
+          brief: verdict([finding("c", { title: "Lost update", source: "Money safety" })]),
+          briefDecision: decision("clean", [{ key: "c", gating: false, class: "already-raised" }]),
+        } : {}),
+      });
+      assert.equal(result.status, 1);
+      assert.equal(result.stderr, "main decision does not validate: findings at internal/review.go:42 under one title are already raised in one disposition and new in another\n");
+      assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
     });
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /one finding at internal\/review\.go:42 is already raised in one decision and new in the other/);
-    assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
+
+// A label's findings at one line under two titles are one defect at one
+// site too: one already raised beside one that gates would post the defect
+// again where the author already has it.
+for (const order of ["raised first", "gating first"])
+  for (const placement of ["one decision", "across the decisions"])
+    test(`a label's findings at one line that disagree on whether the defect is new stop the composer (${placement}, ${order})`, (t) => {
+      const raised = { found: finding("old", { title: "MinInt64 overflows Split", line: 83 }), disposition: { key: "old", gating: false, class: "already-raised", defect: "minint-overflow" } };
+      const fresh = { found: finding("new", { title: "Split rejects the minimum value", line: 83, source: "Conservation" }), disposition: { key: "new", gating: true, defect: "minint-overflow" } };
+      const [first, second] = order === "raised first" ? [raised, fresh] : [fresh, raised];
+      const groups = placement === "one decision"
+        ? { main: verdict([first.found, second.found]), mainDecision: decision("request-changes", [first.disposition, second.disposition]) }
+        : {
+          main: verdict([first.found]), mainDecision: decision(first === fresh ? "request-changes" : "clean", [first.disposition]),
+          brief: verdict([second.found]), briefDecision: decision(second === fresh ? "request-changes" : "clean", [second.disposition]),
+        };
+      const { result, scratch } = compose(t, groups);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, placement === "one decision"
+        ? /^main decision does not validate: findings labelled minint-overflow at internal\/review\.go:83 are already raised in one disposition and new in another$/m
+        : /^findings labelled minint-overflow at internal\/review\.go:83 are already raised in one decision and new in the other$/m);
+      assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
+    });
+
+// The composer's answer never depends on the order a verdict lists its
+// findings in. Each case below holds one of the tie-breaks that make it so.
+for (const order of ["listed", "reversed"]) {
+  const listed = (items) => (order === "listed" ? items : [...items].reverse());
+
+  test(`a brief twin merges into the lowest-keyed of the main findings at its site and title (${order})`, (t) => {
+    const mainFindings = [finding("m1", { title: "Lost update" }), finding("m2", { title: "Lost update" })];
+    const { result, plan, readJson } = compose(t, {
+      main: verdict(listed(mainFindings)),
+      mainDecision: decision("request-changes", listed([{ key: "m1", gating: true }, { key: "m2", gating: true }])),
+      brief: verdict([finding("b", { severity: "Critical", title: "Lost update", source: "Money safety" })]),
+      briefDecision: decision("request-changes", [{ key: "b", gating: true }]),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const comments = readJson(plan.posts[0].comments);
+    const merged = comments.find((comment) => comment.body.includes("Explanation for m1."));
+    const other = comments.find((comment) => comment.body.includes("Explanation for m2."));
+    assert.match(merged.body, /Blocking · Critical: Lost update/);
+    assert.match(merged.body, /Also raised by: Money safety\./);
+    assert.match(other.body, /Blocking · High: Lost update/);
+    assert.doesNotMatch(other.body, /Also raised by/);
   });
+
+  test(`a labelled defect's canonical member at one site is the first title, not the first listed (${order})`, (t) => {
+    const members = [finding("z", { title: "Alpha: lost update" }), finding("a", { title: "Beta: update dropped", source: "Conservation" })];
+    const { result, plan, readJson } = compose(t, {
+      main: verdict(listed(members)),
+      mainDecision: decision("request-changes", listed([{ key: "z", gating: true, defect: "lost-update" }, { key: "a", gating: true, defect: "lost-update" }])),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const comments = readJson(plan.posts[0].comments);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0].body, /Blocking · High: Alpha: lost update/);
+    assert.match(comments[0].body, /Also raised by: Conservation\./);
+  });
+
+  test(`a labelled defect's canonical member under one title is the lowest key, not the first listed (${order})`, (t) => {
+    const members = [finding("k1", { title: "Lost update", source: "Alpha" }), finding("k2", { title: "Lost update", source: "Beta" })];
+    const { result, plan, readJson } = compose(t, {
+      main: verdict(listed(members)),
+      mainDecision: decision("request-changes", listed([{ key: "k1", gating: true, defect: "lost-update" }, { key: "k2", gating: true, defect: "lost-update" }])),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const comments = readJson(plan.posts[0].comments);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0].body, /Explanation for k1\./);
+    assert.match(comments[0].body, /Also raised by: Beta\./);
+  });
+
+  test(`a refusal names the brief twins' calls in one order however they are listed (${order})`, (t) => {
+    const twins = [
+      finding("b", { severity: "Medium", title: "Lost update", source: "Money safety" }),
+      finding("c", { severity: "Medium", title: "Lost update", source: "Conservation" }),
+    ];
+    const classed = compose(t, {
+      main: verdict([finding("a", { severity: "Medium", title: "Lost update" })]),
+      mainDecision: decision("clean", [{ key: "a", gating: false, class: "speculative-hardening" }]),
+      brief: verdict(listed(twins)),
+      briefDecision: decision("clean", listed([{ key: "b", gating: false }, { key: "c", gating: false, class: "declared-out-of-scope" }])),
+    });
+    assert.equal(classed.result.status, 1);
+    assert.equal(classed.result.stderr, "one finding at internal/review.go:42 is classed differently across the decisions: speculative-hardening and declared-out-of-scope and unclassed\n");
+    const labelled = compose(t, {
+      main: verdict([finding("a", { title: "Lost update" })]),
+      mainDecision: decision("request-changes", [{ key: "a", gating: true, defect: "one" }]),
+      brief: verdict(listed(twins.map((twin) => ({ ...twin, severity: "High" })))),
+      briefDecision: decision("request-changes", listed([{ key: "b", gating: true, defect: "two" }, { key: "c", gating: true, defect: "three" }])),
+    });
+    assert.equal(labelled.result.status, 1);
+    assert.equal(labelled.result.stderr, "one finding at internal/review.go:42 carries two defect labels across the decisions: one and three and two\n");
+  });
+}
 
 test("advisory twins sharing a class keep it", (t) => {
   const { result, plan, readJson } = compose(t, {

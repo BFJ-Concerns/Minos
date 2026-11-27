@@ -86,7 +86,7 @@ type githubFixtureState struct {
 	diffLines    map[string][]int64
 	reviewWrites []map[string]any
 	// refuseReviewPosts, when non-zero, is the HTTP status the fixture
-	// answers every review submission with, recording nothing.
+	// answers every review submission with, storing no review.
 	refuseReviewPosts int
 	// refuseReviewReads, when non-zero, is the HTTP status the fixture
 	// answers every review listing with, so a script's read-back sees an
@@ -385,10 +385,6 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets/issues/7/comments":
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.issueComments))
 	case r.Method == http.MethodPost && path == "/repos/acme/widgets/pulls/7/reviews":
-		if s.refuseReviewPosts != 0 {
-			http.Error(w, `{"message":"API rate limit exceeded"}`, s.refuseReviewPosts)
-			return
-		}
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			s.t.Error(err)
@@ -396,6 +392,10 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.reviewWrites = append(s.reviewWrites, payload)
+		if s.refuseReviewPosts != 0 {
+			http.Error(w, `{"message":"review submission refused"}`, s.refuseReviewPosts)
+			return
+		}
 		comments, _ := payload["comments"].([]any)
 		for _, raw := range comments {
 			comment := raw.(map[string]any)

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BFJ-Concerns/Minos/internal/forge"
 	"github.com/BFJ-Concerns/Minos/internal/product"
@@ -191,7 +192,11 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 				fmt.Fprintf(os.Stderr, "forge review: %s\n", diagnostic)
 			}
 		}
-		return postReview(ctx, stdout, adapter, guard, verdict, strings.TrimRight(string(body), "\r\n")+addendum, comments)
+		result, err := postReview(ctx, adapter, guard, verdict, strings.TrimRight(string(body), "\r\n")+addendum, comments)
+		if err != nil {
+			return err
+		}
+		return emitForgeResult(stdout, "review", result)
 	case "approve":
 		if len(args) != 3 || args[1] == "" || args[2] == "" {
 			return fmt.Errorf("usage: minos forge approve HEAD TARGET")
@@ -204,7 +209,11 @@ func ForgeCommand(ctx context.Context, args []string, stdout io.Writer) error {
 		if !ownChangesRequested(snapshot) {
 			return json.NewEncoder(stdout).Encode(map[string]string{"outcome": "not-needed", "reason": "Minos's latest verdict on this pull request does not request changes"})
 		}
-		return postReview(ctx, stdout, adapter, guard, forge.ReviewApprove, cleanApprovalBody, nil)
+		result, err := postApproval(ctx, adapter, guard)
+		if err != nil {
+			return err
+		}
+		return emitForgeResult(stdout, "review", result)
 	case "marker":
 		if len(args) != 5 || (args[4] != "add" && args[4] != "remove") {
 			return fmt.Errorf("usage: minos forge marker HEAD TARGET in-flight|clean|attention add|remove")
@@ -364,15 +373,50 @@ func namedProductState(name string) (product.State, bool) {
 // The lead signs the review it authors; each comment already carries its
 // proposing and verifying models from the publication composer, so the
 // lead's identity goes on the body alone.
-func postReview(ctx context.Context, stdout io.Writer, adapter *forge.Adapter, guard forge.Guard, verdict forge.ReviewVerdict, text string, comments []forge.ReviewComment) error {
+func postReview(ctx context.Context, adapter *forge.Adapter, guard forge.Guard, verdict forge.ReviewVerdict, text string, comments []forge.ReviewComment) (forge.WriteResult, error) {
 	record, err := product.FormatRecord(map[string]string{"head": guard.HeadSHA, product.RecordTargetKey: guard.TargetSHA})
 	if err != nil {
-		return err
+		return forge.WriteResult{}, err
 	}
 	if leadModel := os.Getenv("MINOS_LEAD_MODEL"); leadModel != "" {
 		text += "\n\nReviewed by: `" + leadModel + "`."
 	}
-	return emitForgeResult(stdout, "review", adapter.PostReview(ctx, guard, verdict, text+"\n\n"+record, comments))
+	return adapter.PostReview(ctx, guard, verdict, text+"\n\n"+record, comments), nil
+}
+
+// approvalAttempts and approvalRetryDelay bound how often, and how far
+// apart, an approval whose write came back uncertain or retryable is
+// tried again.
+var (
+	approvalAttempts   = 3
+	approvalRetryDelay = 2 * time.Second
+)
+
+// postApproval posts the clean approval, trying again while the forge's
+// answer leaves it uncertain or retryable. Such an approval may already
+// have reached the forge, and an approving Minos review of the current
+// head is a clean marker to the sweep, so giving up at the first such
+// answer can leave the head showing approved under an incomplete status
+// that no later run revisits. Trying again is safe: the guarded review
+// write finds an identical review already posted and reports it applied
+// without writing another. A rejection, a moved head among them, is final.
+func postApproval(ctx context.Context, adapter *forge.Adapter, guard forge.Guard) (forge.WriteResult, error) {
+	var result forge.WriteResult
+	for attempt := 1; ; attempt++ {
+		var err error
+		result, err = postReview(ctx, adapter, guard, forge.ReviewApprove, cleanApprovalBody, nil)
+		if err != nil {
+			return result, err
+		}
+		if (result.Outcome != forge.WriteUncertain && result.Outcome != forge.WriteRetryable) || attempt >= approvalAttempts {
+			return result, nil
+		}
+		select {
+		case <-ctx.Done():
+			return result, nil
+		case <-time.After(approvalRetryDelay):
+		}
+	}
 }
 
 // cleanApprovalBody is the approving review's whole message: it answers an

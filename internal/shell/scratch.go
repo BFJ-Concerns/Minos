@@ -23,6 +23,7 @@ import (
 )
 
 const salvageTailBytes = 64 * 1024
+const salvageRecordedFile = ".salvage-recorded"
 
 const (
 	salvageDigestBytes     = 256 * 1024
@@ -89,9 +90,9 @@ func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[str
 	return errors.Join(sweepErrors...)
 }
 
-// The driver leaves an archive request after a terminal run. Salvage also
-// leaves one after recording crash evidence, so archive retries do not
-// append another copy to the ledger.
+// An archive request means terminal evidence is ready to archive. For a
+// deployment without archiving, a separate marker records that crash
+// salvage is complete, so a failed deletion does not duplicate the digest.
 func prepareResidueArchive(cfg ServiceConfig, runDir, name string) (string, bool, error) {
 	// The periodic and post-run sweeps can see the same dead directory.
 	// Hold its lock until the retry marker follows the durable append.
@@ -103,8 +104,15 @@ func prepareResidueArchive(cfg ServiceConfig, runDir, name string) (string, bool
 	if err := syscall.Flock(int(dir.Fd()), syscall.LOCK_EX); err != nil {
 		return "", false, fmt.Errorf("lock crash salvage: %w", err)
 	}
-	path := filepath.Join(runDir, archivePendingFile)
-	if data, err := os.ReadFile(path); err == nil {
+	pending := filepath.Join(runDir, archivePendingFile)
+	if _, err := os.Lstat(pending); err == nil {
+		if cfg.Runs.ArchiveCommand == "" {
+			return "", false, errors.New("archive pending but runs.archive-command is unset")
+		}
+		data, err := os.ReadFile(pending)
+		if err != nil {
+			return "", false, err
+		}
 		if label := strings.TrimSpace(string(data)); label != "" {
 			return label, false, nil
 		}
@@ -112,15 +120,28 @@ func prepareResidueArchive(cfg ServiceConfig, runDir, name string) (string, bool
 	} else if !os.IsNotExist(err) {
 		return "", false, err
 	}
-	appended, err := appendFailureDigest(runDir, cfg)
-	if err != nil {
+
+	recorded := filepath.Join(runDir, salvageRecordedFile)
+	var appended bool
+	if _, err := os.Lstat(recorded); os.IsNotExist(err) {
+		appended, err = appendFailureDigest(runDir, cfg)
+		if err != nil {
+			return "", false, err
+		}
+		if !appended {
+			log.Printf("run %s: no salvage evidence found; no failure digest appended", name)
+		}
+	} else if err != nil {
 		return "", false, err
+	} else if cfg.Runs.ArchiveCommand == "" {
+		return name, false, nil
 	}
-	if err := os.WriteFile(path, []byte(name+"\n"), 0o600); err != nil {
+	marker := recorded
+	if cfg.Runs.ArchiveCommand != "" {
+		marker = pending
+	}
+	if err := os.WriteFile(marker, []byte(name+"\n"), 0o600); err != nil {
 		return "", false, err
-	}
-	if !appended {
-		log.Printf("run %s: no salvage evidence found; no failure digest appended", name)
 	}
 	return name, appended, nil
 }
