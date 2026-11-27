@@ -199,6 +199,38 @@ func (a *Adapter) PullRequestComments(ctx context.Context, repository Repository
 	return comments, nil
 }
 
+// MayCommand reports whether the forge shows the user with write access to
+// the repository, which is what lets a comment of theirs command the
+// service.
+func (a *Adapter) MayCommand(ctx context.Context, repository Repository, user string) (bool, error) {
+	out, err := a.runner.Run(ctx, RunRequest{Operation: "commenter-may-command", Arguments: []string{repository.Owner, repository.Name, user}})
+	if err != nil {
+		return false, err
+	}
+	var may bool
+	if err := json.Unmarshal(out, &may); err != nil {
+		return false, fmt.Errorf("decode commenter permission: %w", err)
+	}
+	return may, nil
+}
+
+// AcknowledgeComment writes the reaction on one of the pull request's
+// conversation comments under the guard. A reaction the service already
+// left there counts as written.
+func (a *Adapter) AcknowledgeComment(ctx context.Context, guard Guard, commentID int64, reaction string) WriteResult {
+	if commentID <= 0 {
+		return WriteResult{Outcome: WriteRejected, Reason: "comment id must be positive"}
+	}
+	if err := (Marker{Reaction: reaction}).Validate(); err != nil {
+		return WriteResult{Outcome: WriteRejected, Reason: err.Error()}
+	}
+	out, err := a.runner.Run(ctx, RunRequest{
+		Operation: "guarded-acknowledge-comment",
+		Arguments: append(a.guardArguments(guard), strconv.FormatInt(commentID, 10), reaction),
+	})
+	return decodeWriteResult(out, err)
+}
+
 func (a *Adapter) Claim(ctx context.Context, repository Repository, pullRequest int64) WriteResult {
 	out, err := a.runner.Run(ctx, RunRequest{
 		Operation: "claim",

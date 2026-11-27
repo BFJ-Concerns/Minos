@@ -22,7 +22,10 @@ case "$event:$action" in
     ;;
   pull_request_approved:*|pull_request_review_approved:*) occasion="review-approved" ;;
   pull_request_rejected:*|pull_request_review_rejected:*) occasion="review-rejected" ;;
-  issue_comment:created) occasion="comment-created" ;;
+  issue_comment:created)
+    # Forgejo sends a comment on a plain issue under the same event.
+    [ "$(printf '%s' "$payload" | jq -r '.is_pull // (.issue.pull_request != null)')" != "true" ] || occasion="comment-created"
+    ;;
 esac
 
 printf 'OCCASION=%s\n' "$occasion"
