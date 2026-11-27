@@ -1,3 +1,6 @@
+---
+description: Install, configure and operate a Minos deployment, from host prerequisites and forge credentials to run liveness, status serving and review briefs
+---
 # Deployment
 
 Minos runs on Linux under a functioning systemd user manager (systemd 250 or
@@ -8,10 +11,11 @@ client utilities, ssh-keygen, tar, zstd, sha256sum and GNU find installed
 (openssl signs the GitHub App token), plus Go wherever the service binary is
 built. `scripts/expected-tool-versions` records recommended minimum version
 ranges. Newer stable versions satisfy those ranges without a warning. The
-default routing uses both `claude-opus-5-5` and
-`gpt-6.1-sol`: a Claude Code subscription or gateway credential for the Claude
-engine, and a Codex (ChatGPT) account for the Codex engine. A host with only
-one engine provisioned runs every role on it. Reviews never build or test the
+default routing uses both engines: `claude-opus-5-5` on Claude Code, and
+`gpt-6.2-astra` and `gpt-6.1-sol` on Codex. That takes a Claude Code
+subscription or gateway credential for the Claude engine, and a Codex
+(ChatGPT) account for the Codex engine. A host with only one engine
+provisioned runs every role on it. Reviews never build or test the
 reviewed repository, so no repository toolchains are needed.
 
 Minos adds no sandbox of its own: the lead holds the engine and forge
@@ -69,6 +73,10 @@ needs; it is not required.
    the shipped `owner--repository.toml.example` is a template, not a loaded
    file — copy and rename it to end in `.toml`. The filename itself carries
    no identity; `forge`, `owner` and `repo` inside the file do.
+
+   `service.toml` and every repository file are read strictly: a key Minos
+   does not know stops the load with `unknown TOML keys:` and the file and
+   keys it found.
 
    The `.env` files (`run-body.env`, `archive.env`) are sourced as shell
    programs with `set -a` (automatic export), not parsed as generic dotenv
@@ -149,10 +157,12 @@ needs; it is not required.
    that context only. A status's Details link lands on the review Minos
    posted for the reviewed head, or on the pull request itself when it
    posted none. On either forge, `[forges.<key>] web-base` sets the link's
-   host and optional path prefix as an absolute HTTP(S) URL. When unset,
-   Forgejo strips a trailing `/api/v1` from `api-base`. GitHub uses
-   `https://github.com` for the public API and the Enterprise web host
-   for Enterprise Server.
+   host and optional path prefix as an absolute HTTP(S) URL; set it on a
+   GitHub forge whose web host is not the one Minos derives. When unset,
+   the link's host comes from `api-base`: Forgejo strips a trailing
+   `/api/v1`, and GitHub uses `https://github.com` for
+   `https://api.github.com` and strips a trailing `/api/v3` from any other
+   API base, which gives the web host of a GitHub Enterprise Server.
 
    The status is review information, not a merge gate: do not make this
    context a required status check in branch protection. It can be missing
@@ -174,7 +184,9 @@ needs; it is not required.
    and cores. `minos install-units` (step 5) renders the installed slice
    from this knob — `MemoryMax` at the envelope, `MemoryHigh` two GiB below
    it — so after changing the envelope re-run it and reload the user
-   manager. `runs.duration-ceiling` sets each run's hard
+   manager. At startup the receiver logs a warning when the installed
+   slice's `MemoryMax` differs from the configured envelope.
+   `runs.duration-ceiling` sets each run's hard
    duration limit (a Go duration of at least `1us`, default `12h`).
    `runs.pressure-threshold-percent` sets the continuation threshold as a
    percentage of the run ceiling (1–100, default 85); the watch signals after
@@ -285,8 +297,8 @@ needs; it is not required.
    beside the downloaded private key. The adaptation asks GitHub which
    installation serves each repository and caches its token until it nears
    expiry. One forge entry can serve repositories under several installation
-   owners. Existing credential files may still carry `installation-id`.
-   The box needs `openssl` to sign the App JWT. GitHub shows the App's
+   owners. The adaptation reads only `app-id` and `private-key-file`, and
+   ignores any other field, such as an `installation-id`. The box needs `openssl` to sign the App JWT. GitHub shows the App's
    slug with the `[bot]` suffix (`minos-review[bot]`) on every write the
    App makes. Minos checks writes against that login. Set it as
    `service.bot-login` when GitHub is the only forge; when another forge's
@@ -304,11 +316,6 @@ needs; it is not required.
    memory envelope, so runs share that envelope rather than a copied
    default. It installs the timer, sweep request path and
    `minos-sweep-after-run@.service` template verbatim.
-
-   Before upgrading an installation that filed operator alerts, remove
-   `alert-forge`, `alert-owner` and `alert-repo` from the `[service]` table
-   in `service.toml`. Reinstall the user units and reload systemd to remove
-   the failure hook from `minos-sweep.service`.
 6. Optionally, configure a forge webhook so a review starts as soon as a
    pull request changes rather than on the sweep's next pass; the sweep
    finds every pull request needing review without one. Point it at `/hooks/<forge key>` —
@@ -322,7 +329,6 @@ forge key in their names (for example `minos-run-forgejo-owner-repo-pr1`), so
 the same owner and repository on different forges have separate run
 names. Long repository prefixes keep a digest of the full identity so the
 run unit, its exit hook and its archive have room for their suffixes.
-Deploy with no live runs or preserved handoffs that use older names.
 
 A run that exits cleanly requests a sweep pass so the freed slot can refill
 before the periodic timer fires. Its `OnSuccess=` hook starts an instance of
@@ -357,7 +363,9 @@ A run that fails before the lead launches — workspace setup, configuration
 loading, lifecycle instruction — writes no status to the forge. The run body
 attempts to append the failure to `runs.failure-log`; when the log path is
 unset or unwritable, stderr carries the evidence instead. The run exits after
-recording the failure. When workspace
+recording the failure. A run whose lead ends with a failing exit and no
+terminal marker is appended to the same log as a `lead-supervision` failure.
+When workspace
 setup cannot fetch the admitted target SHA because the forge no longer
 advertises it (typically because the base branch moved), the failure cause
 carries that refusal; the next sweep pass re-derives from current forge state.
@@ -376,14 +384,19 @@ dispatched worker's timings from the Ensemble records — and after the tarball
 is promoted it delivers that record a second time as a sidecar beside it —
 the tarball's name with `.tar.zst` replaced by `.timings.json` — readable
 without extracting anything. This presentation archive and its sidecar are
-best-effort and cannot change the run result. Before each reconciliation pass,
+best-effort and cannot change the run result. Until the archive command
+succeeds, the run directory carries a `.archive-pending` file and is kept for
+the sweep to archive again; a run that cannot write that file exits with
+status 74 and keeps its directory. Before each reconciliation pass,
 the sweep records a digest for each dead run with crash evidence, archives its
 transcripts, and removes its scratch directory after the archive is accepted.
+A dead run already marked `.archive-pending` is archived again without a
+second digest.
 With `runs.failures-repo` configured, the sweep appends to the checkout's
 existing regular `FAILURES.md` and attempts to commit and push it.
 `provision-failure-checkout` clones the repository and configures Git, so
-`FAILURES.md` must already exist in the repository. Without a checkout, the
-sweep appends to `runs.failure-log` and limits access to the file's owner
+`FAILURES.md` must already exist in the repository. Without
+`runs.failures-repo`, the sweep appends to `runs.failure-log` and limits access to the file's owner
 because a digest can contain transcript excerpts. Both destinations must be outside
 `runs.dir`. A failed append or archive leaves the run directory for retry.
 `runs.failures-forge` selects the forge whose credential authenticates
@@ -409,6 +422,14 @@ SHA-bound evidence, but the PR-wide marker is not, so it is removed before
 another reconciliation decision is made. A label marker must already be
 defined on the repository or its organisation; a missing one refuses the
 marker write with a reason naming the label and repository.
+
+When a run sets a `clean` or `attention` status on a head, Minos records
+which files the pull request changed and how, in `.reviewed/` under
+`runs.dir`, one file per pull request. A later run compares the new head with
+that record to decide how much to review again. The record is a cache:
+deleting it costs that pull request one full review. The sweep deletes the
+record of a pull request that has closed, merged or gone from the forge, and
+the records of a repository that no longer has a file under `repos/`.
 
 ## Reading run liveness
 
