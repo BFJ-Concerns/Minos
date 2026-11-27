@@ -298,8 +298,8 @@ needs; it is not required.
    writes every service whose Exec line runs the binary with the
    configuration root it was given, `minos-runs.slice` with the configured
    memory envelope, so runs share that envelope rather than a copied
-   default, and the timer and the `minos-sweep-after-run@.service` template
-   verbatim.
+   default. It installs the timer, sweep request path and
+   `minos-sweep-after-run@.service` template verbatim.
 
    Before upgrading an installation that filed operator alerts, remove
    `alert-forge`, `alert-owner` and `alert-repo` from the `[service]` table
@@ -319,27 +319,19 @@ two forges reviewing the same owner/repository namespace cannot collide. Deploy
 with no live run units and no preserved handoff directories carrying the
 older names without the forge key.
 
-A run that exits cleanly triggers one sweep pass, so the freed slot is filled
-without waiting for the next periodic cycle: each run unit carries
-`OnSuccess=minos-sweep-after-run@minos-run-<forge>-<owner>-<repo>-pr<n>.service`,
-and that instance enqueues `minos-sweep.service` and
-exits. The indirection is what lets the user manager collect the exited run
-unit — a unit stays loaded while an exit hook it fired names a unit that
-stays loaded, so a hook on the sweep service itself kept every exited run
-unit loaded and refused the pull request's next run as already loaded — and
-the template must be installed (step 5) on any box that spawns runs. A failed
-exit does not trigger a sweep; an operator's `systemctl --user stop` of a run
-unit ends it cleanly and does. The unit's exit status says whether the head is
-spent: run-body exits successfully after a `clean` marker (the lead writes it
-only once the clean status landed), after a continuation, or when the last
-status the run applied — `minos forge status` records it in the run
-directory — is `clean` or `attention`. An incomplete outcome, or a lead that
-failed or stopped with neither status applied, exits 75 and triggers no pass
-— that head waits for the timer, so one that keeps ending incomplete re-runs
-at timer pace, never at run pace. A clean exit that
-lands while a pass is already running joins that pass rather than starting
-another, so a pull request the running pass has already walked waits for the
-timer.
+A run that exits cleanly requests a sweep pass so the freed slot can refill
+before the periodic timer fires. Its `OnSuccess=` hook starts an instance of
+`minos-sweep-after-run@.service`. The instance leaves a request file under
+the user's runtime directory, starts the path watcher and exits so the user
+manager can collect the run unit. The watcher starts `minos-sweep.service`
+when the file exists. The sweep clears the file before reading the forge.
+If a run exits while a sweep is already active, the request stays pending
+and the watcher starts a fresh pass once the active sweep exits.
+
+A successful run exits after a `clean` marker, a continuation, or a recorded
+`clean` or `attention` forge status. A run that leaves its head eligible
+exits with status 75 and waits for the timer. An operator's
+`systemctl --user stop` of a run unit also requests a sweep.
 
 Each run launches the lead on the configured engine and model. `run-body`
 keeps resumable `done` and `blocked` turns alive after useful run activity has

@@ -999,8 +999,27 @@ func TestSpawnRunExitHookNamesTheShippedSweepTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the exit hook names a template the binary does not ship: %v", err)
 	}
-	if !strings.Contains(string(content), "\nExecStart=/usr/bin/systemctl --user start --no-block minos-sweep.service\n") {
-		t.Fatalf("the shipped template does not enqueue the canonical sweep and return:\n%s", content)
+	for _, line := range []string{
+		"ExecStart=/usr/bin/touch %t/minos-sweep.request",
+		"ExecStart=/usr/bin/systemctl --user start --no-block minos-sweep-request.path",
+	} {
+		if !strings.Contains(string(content), "\n"+line+"\n") {
+			t.Fatalf("the shipped exit hook lacks %q:\n%s", line, content)
+		}
+	}
+	path, err := fs.ReadFile(deploy.Units, "systemd/user/minos-sweep-request.path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(path), "\nPathExists=%t/minos-sweep.request\nUnit=minos-sweep.service\n") {
+		t.Fatalf("the path unit does not trigger a sweep for a pending request:\n%s", path)
+	}
+	sweep, err := fs.ReadFile(deploy.Units, "systemd/user/minos-sweep.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sweep), "\nExecStartPre=/usr/bin/rm -f %t/minos-sweep.request\n") {
+		t.Fatalf("the sweep does not consume its request on startup:\n%s", sweep)
 	}
 	if !strings.Contains(string(content), "\nCollectMode=inactive-or-failed\n") {
 		t.Fatalf("the shipped template keeps a failed instance loaded, and the exited run unit with it:\n%s", content)

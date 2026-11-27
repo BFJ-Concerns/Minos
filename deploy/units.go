@@ -6,8 +6,8 @@ package deploy
 
 import "embed"
 
-// Units holds deploy/systemd/user: the receiver, sweep, sweep timer,
-// sweep-after-run template and runs slice.
+// Units holds deploy/systemd/user: the receiver, sweep, sweep timer and
+// request path, sweep-after-run template and runs slice.
 //
 //go:embed systemd/user/*
 var Units embed.FS
