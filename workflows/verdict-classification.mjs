@@ -42,9 +42,10 @@ export function alreadyRaised(disposition) {
 }
 
 // A request for a safeguard against a failure nothing in the change causes
-// is likewise published and filed nowhere. A filed entry is read later as
-// work to do, and work done from these adds guards, checks and tests the
-// project never needed; the run record keeps the finding.
+// is likewise never published, and filed only where the repository asks for
+// safeguard requests, marked apart from the defects: one filed among them is
+// read later as work to do, and work done from these adds guards, checks
+// and tests the project never needed. The run record keeps the finding.
 export function speculativeHardening(disposition) {
   return Boolean(disposition) && disposition.gating === false && disposition.class === SPECULATIVE_HARDENING_CLASS;
 }

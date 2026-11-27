@@ -17,7 +17,6 @@ import (
 // is exactly when the retries would be most frequent and least useful, so the
 // TTL bounds them too, at the cost of recovering a window late.
 type recentRunsCache struct {
-	ttl     time.Duration
 	mu      sync.Mutex
 	entries map[recentRunsWindow]*recentRunsEntry
 }
@@ -34,6 +33,7 @@ type recentRunsWindow struct {
 // moment the archive host answered rather than the moment a request was served.
 type recentRunsReading struct {
 	takenAt time.Time
+	command string
 	runs    []recentRun
 	err     error
 }
@@ -46,13 +46,27 @@ type recentRunsEntry struct {
 	reading recentRunsReading
 }
 
-func newRecentRunsCache(ttl time.Duration) *recentRunsCache {
-	return &recentRunsCache{ttl: ttl, entries: map[recentRunsWindow]*recentRunsEntry{}}
+func newRecentRunsCache() *recentRunsCache {
+	return &recentRunsCache{entries: map[recentRunsWindow]*recentRunsEntry{}}
 }
 
-// read returns the window's reading, listing the archive host only when the
-// held one has aged past the TTL. A zero TTL lists on every call, which is the
-// behaviour a test wants when the cache is not what it is exercising.
+func (cache *recentRunsCache) recentRuns(ctx context.Context, cfg ServiceConfig, hours, limit int) ([]RecentRun, time.Time, error) {
+	if cfg.Runs.RecentTimingsCommand == "" {
+		return nil, time.Time{}, nil
+	}
+	if hours < 1 {
+		hours = defaultRecentWindowHours
+	}
+	if limit < 1 {
+		limit = defaultRecentRecords
+	}
+	hours, limit = min(hours, maximumRecentWindowHours), min(limit, maximumRecentRecords)
+	reading, err := cache.read(ctx, cfg, hours, limit)
+	return reading.runs, reading.takenAt, err
+}
+
+// read shares a listing only while its command still matches and its age
+// is within the current TTL. A cancelled caller leaves the cache alone.
 func (cache *recentRunsCache) read(ctx context.Context, cfg ServiceConfig, hours, limit int) (recentRunsReading, error) {
 	window := recentRunsWindow{hours: hours, limit: limit}
 	cache.mu.Lock()
@@ -65,10 +79,17 @@ func (cache *recentRunsCache) read(ctx context.Context, cfg ServiceConfig, hours
 
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
-	if !entry.reading.takenAt.IsZero() && time.Since(entry.reading.takenAt) < cache.ttl {
+	if err := ctx.Err(); err != nil {
+		return recentRunsReading{}, err
+	}
+	command := cfg.Runs.RecentTimingsCommand
+	if entry.reading.command == command && time.Since(entry.reading.takenAt) < cfg.RecentTimingsCacheTTL() {
 		return entry.reading, entry.reading.err
 	}
 	runs, err := archivedRuns(ctx, cfg, hours, limit)
-	entry.reading = recentRunsReading{takenAt: time.Now(), runs: runs, err: err}
+	if ctx.Err() != nil && err != nil {
+		return recentRunsReading{}, ctx.Err()
+	}
+	entry.reading = recentRunsReading{takenAt: time.Now(), command: command, runs: runs, err: err}
 	return entry.reading, err
 }

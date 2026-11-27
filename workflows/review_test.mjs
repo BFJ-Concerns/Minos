@@ -1,7 +1,7 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +32,7 @@ function enumeratedArgs(
     provisioned = "claude codex",
     routing,
     concernRouting,
+    fileSafeguardRequests = "",
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "minos-review-inputs-"));
@@ -71,6 +72,7 @@ function enumeratedArgs(
         MINOS_PROVISIONED_ENGINES: provisioned,
         ...(routing === undefined ? { MINOS_ROUTING: "" } : { MINOS_ROUTING: JSON.stringify(routing) }),
         MINOS_CONCERN_ROUTING: concernRouting === undefined ? "" : JSON.stringify(concernRouting),
+        MINOS_FILE_SAFEGUARD_REQUESTS: fileSafeguardRequests,
       },
       stdio: ["ignore", "pipe", "pipe"],
     }));
@@ -394,7 +396,63 @@ test("a finding from a concern routed to the verifier's engine is verified by th
     "verify-1-claude": ["claude", "claude-opus-5-5", ["specialist-1-logic-codex:1"]],
     "verify-1-codex": ["codex", "gpt-6.2-astra", ["specialist-2-security-claude:1"]],
   });
-  assert.ok(result.proposedFindings.every((entry) => entry.rawVerifier !== null));
+});
+
+test("both routes' verdicts reach the result when findings from two engines are verified apart", async (t) => {
+  const args = enumeratedArgs("aaa111", "bbb222", { concernRouting: { security: { engine: "claude" } } });
+  const plan = [unit("correct", "logic"), unit("secure", "security")];
+  const { result } = await runScript(args, responder({
+    exploration: explorationFixture({ plan }),
+    verify: (label, prompt) => verifierResult(prompt, () => ({ reason: `checked by ${label}` })),
+  }));
+  assert.deepEqual(
+    result.proposedFindings.map((entry) => [entry.id, entry.verifyLabel, entry.rawVerifier?.reason]).sort(),
+    [
+      ["specialist-1-logic-codex:1", "verify-1-claude", "checked by verify-1-claude"],
+      ["specialist-2-security-claude:1", "verify-1-codex", "checked by verify-1-codex"],
+    ],
+  );
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.equal(verdict.confirmedFindings.length, 2);
+});
+
+test("a merged group is verified by the family that did not propose its primary, wherever the primary is listed", async () => {
+  const args = enumeratedArgs("aaa111", "bbb222", { concernRouting: { security: { engine: "claude" } } });
+  const plan = [unit("secure", "security"), unit("correct", "logic")];
+  const { calls } = await runScript(args, responder({
+    exploration: explorationFixture({ plan }),
+    merge: (_label, prompt) => {
+      const ids = findingsFromVerifierPrompt(prompt).map((entry) => entry.id);
+      assert.deepEqual(ids, ["specialist-1-security-claude:1", "specialist-2-logic-codex:1"]);
+      return { groups: [{ findingIds: ids, primary: ids[1], sharedCause: "One guard covers both." }] };
+    },
+  }));
+  const verified = calls
+    .filter((call) => call.opts.label?.startsWith("verify-"))
+    .map((call) => [call.opts.label, call.opts.engine, findingsFromVerifierPrompt(call.prompt).map((entry) => entry.id)]);
+  assert.deepEqual(verified, [["verify-1-claude", "claude", ["specialist-2-logic-codex:1"]]]);
+});
+
+test("the input builder hands the specialists and verifiers the safeguard-request passages the repository's setting chooses", async () => {
+  const passage = (value) => readFileSync(new URL(`./review-briefs/safeguard-requests/${value}.md`, import.meta.url), "utf8").trim();
+  const verifierText = (on) => readFileSync(new URL(`./review-briefs/verifier-safeguard-requests/${on}.md`, import.meta.url), "utf8").trim();
+  for (const [setting, chosen, other] of [["", "false", "true"], ["false", "false", "true"], ["true", "true", "false"]]) {
+    const args = enumeratedArgs("aaa111", "bbb222", { fileSafeguardRequests: setting });
+    for (const [concern, text] of Object.entries(args.prompts.specialist)) {
+      assert.ok(text.includes(passage(chosen)), `${concern} under ${JSON.stringify(setting)} carries ${chosen}.md`);
+      assert.ok(!text.includes(passage(other)), `${concern} under ${JSON.stringify(setting)} leaves out ${other}.md`);
+    }
+    const { calls } = await runScript(args, responder({ exploration: explorationFixture({ plan: [unit("correct", "logic")] }) }));
+    const specialist = calls.find((call) => call.opts.label?.startsWith("specialist-"));
+    assert.ok(specialist.prompt.includes(passage(chosen)), `the dispatched specialist reads ${chosen}.md`);
+    const verifierPassage = verifierText(true);
+    const verifier = calls.find((call) => call.opts.label?.startsWith("verify-"));
+    assert.equal(verifier.prompt.includes(verifierPassage), chosen === "true",
+      `the dispatched verifier under ${JSON.stringify(setting)} carries the request section only when filing is on`);
+  }
+  assert.throws(() => enumeratedArgs("aaa111", "bbb222", { fileSafeguardRequests: "yes" }),
+    /MINOS_FILE_SAFEGUARD_REQUESTS must be one of false, true/);
 });
 
 test("the input builder refuses concern routing it cannot honour, and the workflow refuses input without it", async () => {
@@ -810,7 +868,7 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /compose-review-publication\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication" "\$MINOS_ORIENTATION" "\$MINOS_REVIEW_THRESHOLD"/);
   assert.match(lifecycle, /A request-changes plan contains one review with the blocking findings\s+from both review stages and nothing else[\s\S]*A clean plan has no posts/);
   assert.match(lifecycle, /A finding that neither gates nor takes a class is advisory\. It goes to\s+the repository's configured filing destination on either outcome and\s+is never posted on the pull request/);
-  assert.match(lifecycle, /A finding that fits a class takes it at any severity[\s\S]*?such a finding is published and filed nowhere[\s\S]*?A classed finding stays in\s+the run record/);
+  assert.match(lifecycle, /A finding that fits a class takes it at any severity[\s\S]*?A classed finding is never\s+published on the pull request, and with one exception it is filed\s+nowhere either[\s\S]*?`\$MINOS_FILE_SAFEGUARD_REQUESTS` is `true`: there the composer in step\s+6 sets each `speculative-hardening` finding aside for the filing\s+destination as a safeguard request[\s\S]*?A classed finding stays in the run record/);
   assert.match(lifecycle, /file-triage\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication\/triage-entries\.json" \\\s+"\$MINOS_ORIENTATION" \\\s+>/);
   assert.match(lifecycle, /`unfiled` means delivery\s+failed or the destination kind is unavailable[\s\S]*Filing failure never generates a pull-request comment,\s+never falls back to another surface, and changes no verdict/);
 });
@@ -835,7 +893,7 @@ test("the lifecycle keeps an answered finding from being raised again", () => {
   assert.match(lifecycle, /Ask the forge on every run,\s+whatever step 2's `earlier` printed/);
   assert.match(lifecycle, /"\$MINOS_BIN" forge snapshot` prints every review with its `body`:\s+Minos's are the ones whose `user` is the snapshot's\s+`authenticated_user`/);
   assert.match(lifecycle, /\(`already-raised`\)[\s\S]*restates an earlier finding, in a thread or in a review\s+body alike, and the code it cites has not changed[\s\S]*a finding at or above\s+the threshold never takes it on that ground/);
-  assert.match(lifecycle, /\(`speculative-hardening`\)[\s\S]*such a finding is published and filed nowhere/);
+  assert.match(lifecycle, /\(`speculative-hardening`\)[\s\S]*The setting decides where such a finding goes and nothing\s+about its class/);
   assert.match(lifecycle, /One is settled when the pull request's author answered it, or when you\s+read the code it cites at this head and the defect it describes is no\s+longer there/);
   assert.match(lifecycle, /A finding in a review\s+body has no thread to resolve or reply in, so the author answers it in\s+a comment on the pull request that rejects it[\s\S]*?`"\$MINOS_BIN" forge comments` prints the pull request's comments/);
   assert.match(lifecycle, /"gating": false, "class": "already-raised"/);

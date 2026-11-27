@@ -100,12 +100,15 @@ setting is absent or either companion judgement module is missing,
   a request for a safeguard against something the project is not shown to
   face (`speculative-hardening`), and a restatement of a finding the
   author already has (`already-raised`) (`lifecycle/lifecycle.md`, step 5;
-  `workflows/compose-review-publication.mjs`).
+  `workflows/compose-review-publication.mjs`). The one exception is a
+  repository that sets `review.file-safeguard-requests`, off by default:
+  its `speculative-hardening` findings go to the filing destination as
+  safeguard requests, each marked as no defect.
 - Classification determines the verdict. The scripted driver calls the
   verdict-classification judgement stage and the resident lead follows
   step 5 of `lifecycle/lifecycle.md`. The configured severity threshold
-  informs the judgement. Both modes use the digest and decision validation
-  in `workflows/verdict-classification.mjs`.
+  informs the judgement. Both modes use the digest and fail-closed
+  decision validation in `workflows/verdict-classification.mjs`.
 - The forge carries the durable result through the current head's review,
   reactions and `Minos` status. The status is a best-effort write,
   informational only — it never serves as a required check. Scratch data

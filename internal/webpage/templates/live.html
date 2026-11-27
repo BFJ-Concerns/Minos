@@ -18,7 +18,9 @@
 </ul>
 {{end}}
 <h3>Dispatched workers</h3>
-{{if .TimingsError}}
+{{if not $.Status.TimingsConfigured}}
+<p class="empty">Worker timings are disabled.</p>
+{{else if .TimingsError}}
 <p class="refusal">Worker timing records could not be read.</p>
 {{else if .Workers}}
 <ul class="activity">

@@ -29,9 +29,9 @@ type findingsView struct {
 
 type pullFindings struct {
 	shell.FindingHistoryPullRequest
-	Fixed       int
+	Resolved    int
 	Rejected    int
-	Outstanding int
+	Open        int
 	Unavailable bool
 }
 
@@ -86,9 +86,9 @@ func countFindingResponses(pull shell.FindingHistoryPullRequest, threads []forge
 		case authorRejected(pull.Author, thread.Comments):
 			counts.Rejected++
 		case thread.Resolved:
-			counts.Fixed++
+			counts.Resolved++
 		default:
-			counts.Outstanding++
+			counts.Open++
 		}
 	}
 	return counts

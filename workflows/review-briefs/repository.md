@@ -26,7 +26,9 @@ Where it covers a whole part of the repository as it stands, a finding is anythi
 
 When your reading puts in front of you a real problem that is not a finding under the brief, do not drop it. If the change introduced it, report it in `outsideConcernFindings`, written up like any finding from as much of its path as you have already followed, and it is checked like any other. If the change did not introduce it, give it one entry in `outOfScopeObservations`. An assignment of a whole part widens your reading for the brief's concern alone: a problem outside that concern which the change did not introduce is an observation there too. Either way, go back to the brief without looking for more of its kind.
 
-Leave out matters of taste, and requests for a new safeguard against a situation that nothing in the repository or its documents suggests will arise.
+Leave out matters of taste.
+
+{{safeguard-requests}}
 
 {{writing-a-finding}}
 

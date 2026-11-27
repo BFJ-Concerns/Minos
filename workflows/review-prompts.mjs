@@ -1,14 +1,17 @@
 // The shipped review prompts and their slots, for both sides of a run. An
 // input builder reads each prompt through reviewPrompts: its Markdown file
-// under workflows/review-briefs with every file slot filled, the shared
-// sections and for a specialist its concern's body. A workflow checks what
-// it was handed with promptFits and fills the run slots with fillPrompt,
-// in one pass, once the values it alone knows exist, so that a value is
-// never itself read for slots. workflows/review-briefs/README.md is the
-// slot contract, and STAGE_RUN_SLOTS here is its one list.
+// under workflows/review-briefs with every file slot filled, from the shared
+// sections, the passages the repository's settings choose
+// (prompt-settings.mjs) and for a specialist its concern's body. A workflow
+// checks what it was handed with promptFits and fills the run slots with
+// fillPrompt, in one pass, once the values it alone knows exist, so that a
+// value is never itself read for slots. workflows/review-briefs/README.md
+// is the slot contract, and STAGE_RUN_SLOTS here is its one list.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+
+import { settingSections } from "./prompt-settings.mjs";
 
 export const PROMPT_DIRECTORY = "workflows/review-briefs";
 
@@ -89,19 +92,21 @@ function checkedPrompt(stage, label, text) {
 }
 
 // The concerns, in name order, and every stage's prompt with its file slots
-// filled. Any slot a stage does not fill is refused here, before a run
+// filled, as they read under `settings`, the run's value for every prompt
+// setting. Any slot a stage does not fill is refused here, before a run
 // receives the prompt.
-export function reviewPrompts(repositoryRoot) {
+export function reviewPrompts(repositoryRoot, settings) {
   const directory = join(repositoryRoot, PROMPT_DIRECTORY);
   const read = (name) => readFileSync(join(directory, name), "utf8").trim();
   const shared = sharedSections(repositoryRoot);
+  const chosen = settingSections(read, settings);
   const concerns = readdirSync(join(directory, "concerns"))
     .filter((entry) => entry.endsWith(".md"))
     .sort()
     .map((entry) => parseConcern(entry.slice(0, -".md".length), read(`concerns/${entry}`)));
   if (concerns.length === 0) throw new Error("no review concerns are shipped");
   const prompt = (stage, file, extra = {}) =>
-    checkedPrompt(stage, file, fillFileSlots(read(file), { ...shared, ...extra }));
+    checkedPrompt(stage, file, fillFileSlots(read(file), { ...shared, ...chosen, ...extra }));
   return {
     concerns: concerns.map(({ name, summary }) => ({ name, summary })),
     prompts: {

@@ -243,8 +243,9 @@ var routingEngines = []string{"claude", "codex"}
 
 // routingEfforts is the Ensemble runtime's canonical effort domain
 // (CANONICAL_EFFORT_DOMAIN in runtime/ensemble.mjs); the run-time resolver
-// in workflows/role-routing.mjs carries the same list.
-var routingEfforts = []string{"minimal", "low", "medium", "high", "xhigh"}
+// in workflows/role-routing.mjs carries the same list, and a test holds
+// both to the vendored runtime's.
+var routingEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 func validateRouting(where string, routing Routing) error {
 	entries := map[string]RoleRouting{}
@@ -304,6 +305,11 @@ type RepositoryKnobs struct {
 	WorkInProgressBranchPrefixes []string       `toml:"work-in-progress-branch-prefixes"`
 	Review                       struct {
 		Threshold string `toml:"threshold"`
+		// FileSafeguardRequests sends the confirmed findings the lead classes
+		// as requests for a safeguard against a failure nobody has observed
+		// to the filing destination, each marked as such. Off, they are
+		// published and filed nowhere.
+		FileSafeguardRequests bool `toml:"file-safeguard-requests"`
 	} `toml:"review"`
 	PushInspection struct {
 		// Outcomes are the push-inspection outcomes a run may choose
@@ -546,6 +552,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if defined("review", "threshold") {
 		knobs.Review.Threshold = own.Review.Threshold
+	}
+	if defined("review", "file-safeguard-requests") {
+		knobs.Review.FileSafeguardRequests = own.Review.FileSafeguardRequests
 	}
 	if defined("push-inspection", "outcomes") {
 		knobs.PushInspection.Outcomes = own.PushInspection.Outcomes

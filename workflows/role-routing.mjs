@@ -13,8 +13,8 @@ export const ROLES = ["exploration", "proposer", "verifier", "brief-planner", "j
 export const ENGINES = ["claude", "codex"];
 // The Ensemble runtime's canonical effort domain; the Go loader validates the
 // configured value against the same list, so nothing the run receives can be
-// refused at dispatch.
-export const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
+// refused at dispatch, and a test holds both to the vendored runtime's.
+export const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 const DEFAULT_MODEL = { claude: "claude-opus-5-5", codex: "gpt-6.1-sol" };
 // The shipped pairing proposes findings on GPT Astra and verifies them on

@@ -139,7 +139,9 @@ function sentence(text) {
 // observation says that it was never verified, so triage does not read it
 // as a confirmed defect.
 export function issueLogEntry(entry, attribution) {
-  if (entry.kind === "advisory-finding") {
+  // A confirmed finding that does not block: advice on a defect, or a
+  // safeguard request, which says it is no defect.
+  if (entry.kind === "advisory-finding" || entry.kind === "safeguard-request") {
     const attributionLine = provenance(entry);
     const alsoAt = Array.isArray(entry.alsoAt) && entry.alsoAt.length > 0
       ? `, also at ${entry.alsoAt.map((site) => `\`${site}\``).join(", ")}`
@@ -147,9 +149,12 @@ export function issueLogEntry(entry, attribution) {
     const alsoRaised = Array.isArray(entry.alsoRaisedBy) && entry.alsoRaisedBy.length > 0
       ? `; also raised by ${entry.alsoRaisedBy.map((source) => normaliseProse(source, entry)).join(", ")}`
       : "";
+    const [label, note] = entry.kind === "safeguard-request"
+      ? ["Safeguard request", " This asks for a safeguard against a failure nobody has observed: a hardening suggestion, not a defect."]
+      : ["Advisory", ""];
     return (
-      `- **Advisory · ${entry.severity}: ${normaliseProse(entry.title, entry)}** (\`${entry.path}:${entry.line}\`${alsoAt}${alsoRaised}) — ${sentence(normaliseProse(entry.explanation, entry))}` +
-      `${attributionLine === "" ? "" : ` ${attributionLine}`} ${attribution}.`
+      `- **${label} · ${entry.severity}: ${normaliseProse(entry.title, entry)}** (\`${entry.path}:${entry.line}\`${alsoAt}${alsoRaised}) — ${sentence(normaliseProse(entry.explanation, entry))}` +
+      `${note}${attributionLine === "" ? "" : ` ${attributionLine}`} ${attribution}.`
     );
   }
   if (entry.kind === "out-of-scope-observation") {

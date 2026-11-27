@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -211,6 +212,7 @@ const testRepositoryDefaults = `[repositories]
 work-in-progress-branch-prefixes = ["structural/"]
 [repositories.review]
 threshold = "Medium"
+file-safeguard-requests = true
 [repositories.push-inspection]
 outcomes = ["increment", "full"]
 [[repositories.guidance-sources]]
@@ -257,7 +259,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	writeRepoConfig(t, root, "inherits.toml", repoConfig(""))
 	writeRepoConfig(t, root, "overrides.toml", repoConfig(
 		"work-in-progress-branch-prefixes = []\n"+
-			"[review]\nthreshold = \"Low\"\n"+
+			"[review]\nthreshold = \"Low\"\nfile-safeguard-requests = false\n"+
 			"[push-inspection]\noutcomes = [\"no-review\", \"full\"]\n"+
 			"[[guidance-sources]]\nrepository = \"owner/repo-plans\"\npath = \"README.md\"\n"+
 			"[[guidance-sources]]\npath = \"AGENTS.md\"\n"+
@@ -273,7 +275,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	}
 
 	inherits := byPath["inherits.toml"]
-	if inherits.Review.Threshold != "Medium" ||
+	if inherits.Review.Threshold != "Medium" || !inherits.Review.FileSafeguardRequests ||
 		!slices.Equal(inherits.PushInspection.Outcomes, []string{"increment", "full"}) ||
 		!slices.Equal(inherits.WorkInProgressBranchPrefixes, []string{"structural/"}) ||
 		!slices.Equal(inherits.GuidanceSources, []GuidanceSource{{Path: "docs/intent.md"}}) ||
@@ -285,7 +287,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	}
 
 	overrides := byPath["overrides.toml"]
-	if overrides.Review.Threshold != "Low" ||
+	if overrides.Review.Threshold != "Low" || overrides.Review.FileSafeguardRequests ||
 		!slices.Equal(overrides.PushInspection.Outcomes, []string{"no-review", "full"}) ||
 		len(overrides.WorkInProgressBranchPrefixes) != 0 ||
 		!slices.Equal(overrides.GuidanceSources, []GuidanceSource{{Repository: "owner/repo-plans", Path: "README.md"}, {Path: "AGENTS.md"}}) ||
@@ -308,13 +310,13 @@ func TestRepositoryKnobsUnsetAtBothLevelsTakeTheShippedDefaults(t *testing.T) {
 		t.Fatalf("repos = %+v, error = %v", repos, err)
 	}
 	knobs := repos[0].RepositoryKnobs
-	if knobs.Review.Threshold != "High" || !slices.Equal(knobs.PushInspection.Outcomes, []string{"no-review", "increment", "full"}) ||
+	if knobs.Review.Threshold != "High" || knobs.Review.FileSafeguardRequests || !slices.Equal(knobs.PushInspection.Outcomes, []string{"no-review", "increment", "full"}) ||
 		len(knobs.GuidanceSources) != 0 || len(knobs.WorkInProgressBranchPrefixes) != 0 ||
 		knobs.FilingDestination != (FilingDestination{Kind: FilingKindPullRequestComment}) ||
 		knobs.Markers.InFlight == nil || *knobs.Markers.InFlight != (forge.Marker{Reaction: "eyes"}) ||
 		knobs.Markers.Clean == nil || *knobs.Markers.Clean != (forge.Marker{Reaction: "+1"}) ||
 		knobs.Markers.Attention != nil {
-		t.Fatalf("knobs = %+v, want High threshold, every push-inspection outcome, checked-in guidance, no prefixes, pull-request-comment filing, eyes and +1 markers and no attention marker", knobs)
+		t.Fatalf("knobs = %+v, want High threshold, no safeguard-request filing, every push-inspection outcome, checked-in guidance, no prefixes, pull-request-comment filing, eyes and +1 markers and no attention marker", knobs)
 	}
 }
 
@@ -438,7 +440,7 @@ func TestLoadServiceConfigDecodesAndValidatesRouting(t *testing.T) {
 	for _, test := range []struct{ name, toml, want string }{
 		{name: "unknown engine", toml: "[routing.proposer]\nengine = \"opencode\"\n", want: "routing.proposer.engine must be one of claude, codex"},
 		{name: "model without engine", toml: "[routing.proposer]\nmodel = \"gpt-6-astra\"\n", want: "routing.proposer.model needs routing.proposer.engine"},
-		{name: "unknown effort", toml: "[routing.exploration]\neffort = \"maximal\"\n", want: "routing.exploration.effort must be one of minimal, low, medium, high, xhigh"},
+		{name: "unknown effort", toml: "[routing.exploration]\neffort = \"maximal\"\n", want: "routing.exploration.effort must be one of none, minimal, low, medium, high, xhigh, max"},
 		{name: "unknown role", toml: "[routing.judge]\nengine = \"claude\"\n", want: "unknown TOML keys: routing.judge"},
 		{name: "unknown concern", toml: "[routing.concerns.style]\nengine = \"claude\"\n", want: "routing.concerns.style is not a specialist concern; the concerns are failure, fit, logic, security, tests"},
 		{name: "concern model without engine", toml: "[routing.concerns.security]\nmodel = \"claude-opus-5-5\"\n", want: "routing.concerns.security.model needs routing.concerns.security.engine"},
@@ -677,5 +679,26 @@ model = "claude-opus-5-5"
 	writeRepoConfig(t, root, "overrides.toml", repoConfig("[routing.concerns.style]\neffort = \"low\"\n"))
 	if _, err := LoadRepoConfigs(cfg); err == nil || !strings.Contains(err.Error(), "overrides.toml: routing.concerns.style is not a specialist concern") {
 		t.Fatalf("error = %v, want the repository file named with the unknown concern", err)
+	}
+}
+
+// The loader refuses any effort outside routingEfforts, so a level the
+// vendored runtime dispatches and this list lacks is one no operator can
+// set; the two lists are held equal here.
+func TestRoutingEffortsAreTheVendoredRuntimesDomain(t *testing.T) {
+	bundle, err := os.ReadFile(filepath.Join("..", "..", "runtime", "ensemble.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`var CANONICAL_EFFORT_DOMAIN = \[([^\]]*)\];`).FindSubmatch(bundle)
+	if match == nil {
+		t.Fatal("runtime/ensemble.mjs declares no CANONICAL_EFFORT_DOMAIN")
+	}
+	var domain []string
+	for _, level := range strings.Split(string(match[1]), ",") {
+		domain = append(domain, strings.Trim(strings.TrimSpace(level), `"`))
+	}
+	if !slices.Equal(domain, routingEfforts) {
+		t.Fatalf("runtime effort domain = %v, routingEfforts = %v", domain, routingEfforts)
 	}
 }

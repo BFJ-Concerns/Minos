@@ -1,8 +1,8 @@
 # Verdict classification
 
-A review of this pull request has finished. Reviewers read the change and proposed findings, and verifiers checked each one against the code. The findings below are the ones that were confirmed. You decide what becomes of each: whether it blocks the pull request, is filed as advice, or is said nowhere. That settles the verdict, which is `request-changes` when any finding blocks and `clean` when none does.
+A review of this pull request has finished. Reviewers read the change and proposed findings, and verifiers checked each one against the code. The findings below are the ones that were confirmed. You decide what becomes of each: whether it blocks the pull request, is filed as advice on a defect, or takes a class that makes it neither. That settles the verdict, which is `request-changes` when any finding blocks and `clean` when none does.
 
-Your answer is acted on as you give it, by a script that makes no judgement of its own. A finding you mark as gating is posted on the pull request in a review that requests changes, and the author is expected to deal with it before merging. A finding that neither gates nor takes a class is advisory: it is filed where the project keeps such advice and is never posted on the pull request, which carries only what blocks it. A finding you give a class is posted and filed nowhere, and stays only in this run's record.
+Your answer is acted on as you give it, by a script that makes no judgement of its own. A finding you mark as gating is posted on the pull request in a review that requests changes, and the author is expected to deal with it before merging. A finding that neither gates nor takes a class is advisory: it is filed where the project keeps such advice and is never posted on the pull request, which carries only what blocks it. A finding you give a class neither blocks the pull request nor is filed as that advice. What else becomes of it follows from its class, as the classes below say, and this run's record keeps it whichever it takes.
 
 {{reviewed-change}}
 
@@ -27,14 +27,14 @@ The facts of these findings are settled. A verifier followed each one through th
 
 ## The default
 
-The threshold gives each finding its default: one at or above it gates, and one below it is advisory. You depart from a default only on a ground this prompt names. There are two kinds. A class takes a finding off every surface, and there are three classes. An undergrade makes a finding below the threshold gate. A finding that has neither keeps its default, however you weigh it otherwise.
+The threshold gives each finding its default: one at or above it gates, and one below it is advisory. You depart from a default only on a ground this prompt names. There are two kinds. A class sets a finding aside, so that it neither gates nor is filed as advice, and there are three classes. An undergrade makes a finding below the threshold gate. A finding that has neither keeps its default, however you weigh it otherwise.
 
 ## The classes
 
 Two classes object to the kind of finding. Severity does not catch either, because a verifier confirms that what a finding says is true, and these findings are true: the objection is to what they ask for.
 
 - `declared-out-of-scope`: a gap the pull request's description explicitly declares as known or out of scope, where the project's documents do not contradict the declaration. The author has said they know of it, so no surface tells them again.
-- `speculative-hardening`: a request for a new safeguard (a guard, a check, a test or a script) against an input, an environment or a later edit that nothing in the repository or the project's documents shows the project to have, where the change's own logic does nothing wrong. Such a request is kept off the filing destination as well as the pull request, because a filed entry is read later as work to do, and work done from these is how a project fills with guards it never needed. A test that cannot fail, behaviour the change adds and leaves unproved, and a document the code contradicts are real gaps, not hardening.
+- `speculative-hardening`: a request for a new safeguard (a guard, a check, a test or a script) against an input, an environment or a later edit that nothing in the repository or the project's documents shows the project to have, where the change's own logic does nothing wrong. Such a request is never filed among the defects, because an entry there is read later as work to do, and work done from these is how a project fills with guards it never needed. What happens to it instead is the repository's choice. By default it is filed nowhere. A repository that has asked for its safeguard requests has each filed apart from the defects, marked as a suggestion. You are not shown which, because the class is the same under either: a finding takes it for what it asks for, and never for where it would then go. A test that cannot fail, behaviour the change adds and leaves unproved, and a document the code contradicts are real gaps, not hardening.
 
 The third objects to saying a thing again.
 
@@ -43,6 +43,8 @@ The third objects to saying a thing again.
 A finding that fits a class takes it whatever its severity: one below the threshold is classed, not left advisory.
 
 A verifier's reason may say that the delivered behaviour is correct and the finding describes a gap. That bears on how much the finding matters. It is never grounds for a class.
+
+Whether a finding is `speculative-hardening` turns on what the repository shows. A finding may be written as a request for a safeguard while its `verification` cites the place where the situation it guards against does arise. The verifier then found a fault, and the finding does not take the class.
 
 ## What the author already has
 

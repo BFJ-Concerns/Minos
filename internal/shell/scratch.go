@@ -77,7 +77,7 @@ func sweepRunResidue(ctx context.Context, cfg ServiceConfig, factsByUnit map[str
 			}
 		}
 		if cfg.Runs.ArchiveCommand != "" {
-			if err := archiveRunEvidence(ctx, cfg.Root, cfg.Runs.ArchiveCommand, runDir, label); err != nil {
+			if err := archiveRunEvidence(ctx, cfg, runDir, label); err != nil {
 				sweepErrors = append(sweepErrors, fmt.Errorf("preserve %s for archive retry: %w", entry.Name(), err))
 				continue
 			}
@@ -503,16 +503,32 @@ func readTail(path string, maximum int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(file, maximum))
 }
 
-func archiveRunEvidence(ctx context.Context, configRoot, command, runDir, label string) error {
-	if command == "" {
+// archivePullRequest reads the run's own identity, falling back to the
+// enrolled repository matching its unit if it died before orientation.
+func archivePullRequest(cfg ServiceConfig, runDir string) (owner, repo, pr string) {
+	if orientation, err := readRunOrientation(runDir); err == nil {
+		source := orientation.Source
+		if validPullRequestIdentity(source.Owner, source.Repo, source.PR) {
+			return source.Owner, source.Repo, source.PR
+		}
+	}
+	repos, _ := LoadRepoConfigs(cfg)
+	_, owner, repo, pr = identityFromUnit(repos, unitFromRunDirectory(filepath.Base(runDir)))
+	return owner, repo, pr
+}
+
+func archiveRunEvidence(ctx context.Context, cfg ServiceConfig, runDir, label string) error {
+	if cfg.Runs.ArchiveCommand == "" {
 		return fmt.Errorf("archive command is not configured")
 	}
 	archiveCtx, cancel := context.WithTimeout(ctx, archiveRunTimeout)
 	defer cancel()
-	cmd := processGroupCommandContext(archiveCtx, command, runDir, label)
-	cmd.Env = os.Environ()
-	if configRoot != "" && os.Getenv("MINOS_ARCHIVE_CONFIG") == "" {
-		cmd.Env = append(cmd.Env, "MINOS_ARCHIVE_CONFIG="+filepath.Join(configRoot, "archive.env"))
+	cmd := processGroupCommandContext(archiveCtx, cfg.Runs.ArchiveCommand, runDir, label)
+	owner, repo, pr := archivePullRequest(cfg, runDir)
+	cmd.Env = append(os.Environ(),
+		"MINOS_RUN_STARTED_AT=", "MINOS_OWNER="+owner, "MINOS_REPO_NAME="+repo, "MINOS_PR="+pr)
+	if cfg.Root != "" && os.Getenv("MINOS_ARCHIVE_CONFIG") == "" {
+		cmd.Env = append(cmd.Env, "MINOS_ARCHIVE_CONFIG="+filepath.Join(cfg.Root, "archive.env"))
 	}
 	cmd.Stdout = io.Discard
 	var stderr bytes.Buffer
