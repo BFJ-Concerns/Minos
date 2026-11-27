@@ -47,6 +47,7 @@ Run slots take a value from the run:
 | `{{other-concerns}}` | a list line for every other concern: its name and summary |
 | `{{concerns}}` | the same line for every concern |
 | `{{planned-focus}}` | the planned unit's `concern` sentence and its `scope` paths |
+| `{{same-concern-units}}` | every other planned unit of the same concern, each in the form `{{planned-focus}}` takes, or nothing when the unit is its concern's only one |
 | `{{brief-path}}`, `{{brief}}` | a `.review/` brief's path and text |
 | `{{assignment}}` | the scope and extent a `.review/` brief's reviewer was given |
 | `{{findings}}` | the findings as a JSON array, with the fields `review-contracts.mjs` lists for that stage |
@@ -68,8 +69,11 @@ A review proposes, merges, then verifies.
    group's other write-ups beside it.
 3. A verifier leg gives each finding one verdict, which stands for every
    write-up in its group. A finding a verifier raises itself, in
-   `newFindings`, is a proposed finding too, and is verified by a leg other
-   than the one that raised it.
+   `newFindings`, is a proposed finding too: it is merged with whatever else
+   its round raised and verified in the next round, by a leg other than the
+   one that raised it. A workflow runs `VERIFICATION_ROUNDS` rounds
+   (`review-contracts.mjs`), and what the last of them raises has no
+   verdict, which leaves the run incomplete.
 
 `workflows/finding-disposition.mjs` says what each verdict makes of its
 finding, and what becomes of one left unsettled.
