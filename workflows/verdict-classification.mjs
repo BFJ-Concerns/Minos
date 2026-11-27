@@ -131,8 +131,9 @@ export function verdictDigest(input) {
 // classes (named per finding), puts no such class on a gating finding, gates a below-threshold finding only with an
 // undergrade basis naming it, labels restatements of one defect with one
 // non-empty `defect` label whose members gate and are classed alike, save
-// those already raised, and earns request-changes exactly when a gating
-// finding exists.
+// those already raised, gives findings of one defect at one site one answer
+// on whether they are already raised, and earns request-changes exactly
+// when a gating finding exists.
 export function validateVerdictDecision(decision, digest) {
   if (!digest || digest.kind !== DIGEST_KIND || digest.status !== "complete")
     return { ok: false, reason: "verdict decision validation needs a complete verdict digest" };
@@ -202,6 +203,25 @@ export function validateVerdictDecision(decision, digest) {
     if (seen !== undefined && seen.class !== disposition.class)
       return { ok: false, reason: `findings labelled one defect are classed differently: ${disposition.defect}` };
     callByDefect.set(disposition.defect, disposition);
+  }
+  // Whether the author already has a defect is a fact about its site, so
+  // findings describing one defect at one site take one answer: those
+  // sharing a site and title, and those sharing a site and a label. Where
+  // one is already raised and the other is not, the decision would count
+  // the defect as said and post it again at the same line.
+  const raisedBySite = new Map();
+  for (const disposition of decision.findings) {
+    const { path, line, title } = digestByKey.get(disposition.key);
+    const at = `${path}:${line}`;
+    const identities = [{ id: JSON.stringify([path, line, normalisedTitle({ title })]), what: `findings at ${at} under one title` }];
+    if (typeof disposition.defect === "string")
+      identities.push({ id: JSON.stringify([path, line, disposition.defect]), what: `findings labelled ${disposition.defect} at ${at}` });
+    for (const { id, what } of identities) {
+      const seen = raisedBySite.get(id);
+      if (seen !== undefined && seen !== alreadyRaised(disposition))
+        return { ok: false, reason: `${what} are already raised in one disposition and new in another` };
+      raisedBySite.set(id, alreadyRaised(disposition));
+    }
   }
   const anyGating = decision.findings.some((disposition) => disposition.gating === true);
   if (anyGating && decision.verdict !== "request-changes")

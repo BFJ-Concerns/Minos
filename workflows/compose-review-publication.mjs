@@ -140,8 +140,9 @@ function nameSource(finding, source) {
 if (brief) {
   // The main review may confirm more than one finding at a site and title.
   // Brief twins merge into the first by key, so the main listing order
-  // picks nothing, and every main finding there counts when the composer
-  // asks whether the author already has the defect.
+  // picks nothing. The validated main decision has already given those
+  // findings one answer on whether the author has the defect, so the first
+  // speaks for them all.
   const mainBySiteAndTitle = new Map();
   for (const finding of main.findings)
     mainBySiteAndTitle.set(siteAndTitle(finding), [...(mainBySiteAndTitle.get(siteAndTitle(finding)) || []), finding]);
@@ -159,8 +160,6 @@ if (brief) {
     const twinDisposition = main.dispositionOf(twin) || {};
     const briefDispositions = briefTwins.map((finding) => brief.dispositionOf(finding) || {});
     const members = [twinDisposition, ...briefDispositions];
-    const mainSiblings = mainBySiteAndTitle.get(siteAndTitle(twin)).slice(1)
-      .map((finding) => main.dispositionOf(finding) || {});
     // Main's call is named first, then the brief's distinct calls in a
     // fixed order, so a refusal reads the same in any listing order.
     const calls = (read) => {
@@ -176,7 +175,7 @@ if (brief) {
     const classes = calls((disposition) => disposition.class);
     if (!gating && classes.length > 1)
       refuse(`one finding at ${at} is classed differently across the decisions: ${classes.map((name) => name ?? "unclassed").join(" and ")}`);
-    if (new Set([...members, ...mainSiblings].map(alreadyRaised)).size > 1)
+    if (new Set(members.map(alreadyRaised)).size > 1)
       refuse(`one finding at ${at} is already raised in one decision and new in the other`);
     for (const finding of briefTwins) {
       if (SEVERITY[finding.severity] > SEVERITY[twin.severity]) twin.severity = finding.severity;
@@ -204,6 +203,23 @@ const groups = [main, brief].filter(Boolean);
 // nothing: the author has the defect at that site, so it is counted and
 // not said again, while the label's other members carry the defect's call
 // at the sites the author has not been told of.
+//
+// Whether the author already has the defect is a fact about a site, so a
+// label's findings at one line take one answer on it across the decisions,
+// as the validator holds within one: an already-raised member set aside
+// beside a gating one at the same line would post again what the author
+// has.
+const raisedAtLabelledSite = new Map();
+for (const group of groups)
+  for (const finding of group.findings) {
+    const disposition = group.dispositionOf(finding);
+    if (typeof disposition?.defect !== "string") continue;
+    const id = JSON.stringify([finding.path, finding.line, disposition.defect]);
+    const seen = raisedAtLabelledSite.get(id);
+    if (seen !== undefined && seen !== alreadyRaised(disposition))
+      refuse(`findings labelled ${disposition.defect} at ${finding.path}:${finding.line} are already raised in one decision and new in the other`);
+    raisedAtLabelledSite.set(id, alreadyRaised(disposition));
+  }
 const byDefect = new Map();
 for (const group of groups)
   for (const finding of group.findings) {
