@@ -15,6 +15,7 @@ import { changedPaths } from "../changed-paths.mjs";
 import { FULL, INCREMENT, NO_REVIEW, OUTCOMES, stage as pushInspection } from "../judgements/push-inspection.mjs";
 import { guidanceFromOrientation } from "../orientation-guidance.mjs";
 import { pullRequestFromOrientation } from "../pull-request-description.mjs";
+import { descriptionFromOrientation } from "../repository-description.mjs";
 import { reviewBriefsFromWorkspace } from "../review-brief-files.mjs";
 
 // The outcomes the stage may choose among: those the repository's
@@ -66,11 +67,13 @@ export async function inspectPush(run) {
   const { briefsEngage } = briefEngagement(briefs, null, authorChangedPaths(run, earlier));
   const orientation = JSON.parse(readFileSync(run.orientation, "utf8"));
   const pullRequest = pullRequestFromOrientation(orientation);
+  const repositoryDescription = descriptionFromOrientation(orientation);
   const input = {
     target: run.target,
     head: run.head,
     guidance: guidanceFromOrientation(orientation),
     ...(pullRequest === undefined ? {} : { pullRequest }),
+    ...(repositoryDescription === undefined ? {} : { repositoryDescription }),
     earlier,
     outcomes: availableOutcomes(earlier, briefsEngage, allowed),
   };

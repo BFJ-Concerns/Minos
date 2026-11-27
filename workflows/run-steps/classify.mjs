@@ -18,6 +18,7 @@ import { filedReviewBodies, readDefaultBranchFile } from "../filing-destination.
 import { decisionFrom, stage as verdictClassification } from "../judgements/verdict-classification.mjs";
 import { guidanceFromOrientation } from "../orientation-guidance.mjs";
 import { pullRequestFromOrientation } from "../pull-request-description.mjs";
+import { descriptionFromOrientation } from "../repository-description.mjs";
 import { DECISION_KIND, findingKey, verdictDigest } from "../verdict-classification.mjs";
 import { currentSnapshot } from "./forge-writes.mjs";
 
@@ -92,11 +93,13 @@ export async function classify(run, settled) {
   const threads = await run.forge("threads");
   const orientation = JSON.parse(readFileSync(run.orientation, "utf8"));
   const pullRequest = pullRequestFromOrientation(orientation);
+  const repositoryDescription = descriptionFromOrientation(orientation);
   const input = {
     target: run.target,
     head: run.head,
     guidance: guidanceFromOrientation(orientation),
     ...(pullRequest === undefined ? {} : { pullRequest }),
+    ...(repositoryDescription === undefined ? {} : { repositoryDescription }),
     threshold,
     findings,
     earlierFindings: earlierMinosFindings(snapshot, threads).map(({ path, line, head, finding }) => ({ path, line, head, finding })),

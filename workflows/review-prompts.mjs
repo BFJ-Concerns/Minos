@@ -18,7 +18,7 @@ export const PROMPT_DIRECTORY = "workflows/review-briefs";
 const SHARED_SECTIONS = ["reviewed-change", "writing-a-finding", "severity-scale"];
 // The run slots the `reviewed-change` section carries into any prompt that
 // includes it.
-export const REVIEWED_CHANGE_SLOTS = ["target", "head", "project-documents", "pull-request"];
+export const REVIEWED_CHANGE_SLOTS = ["target", "head", "project-documents", "repository-description", "pull-request"];
 
 // The run slots each stage's prompt may carry, after its file slots are
 // filled. The workflows fill exactly these.
