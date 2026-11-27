@@ -1,6 +1,6 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -122,6 +122,12 @@ test("a group's files are listed where they are few and folded under their count
   assert.doesNotMatch(renderWalkthrough(record(), head), /<details>/);
 });
 
+test("changed paths use a single code span even when they contain backticks or a newline", () => {
+  const files = ["`[link](https://example.test) @reader``.go", "first\n- @reader", " name with spaces "];
+  const rendered = renderWalkthrough(record({ groups: [{ title: "Paths", summary: "Changed files.", files }] }), head);
+  assert.ok(rendered.includes("- ``` `[link](https://example.test) @reader``.go ```\n- `first - @reader`\n- `  name with spaces  `"));
+});
+
 test("fitting leaves out a diagram its check refuses and says so", () => {
   const broken = { ...diagram, title: "Broken", participants: ["Only"] };
   const { record: kept, omitted, problem } = fitted(record({ diagrams: [diagram, broken] }));
@@ -151,6 +157,24 @@ test("a kept walkthrough is read back whole, and is none where the setting is of
   assert.deepEqual(keptWalkthrough(enabled({ [RECORD_VARIABLE]: path })), record());
   assert.equal(keptWalkthrough({ [RECORD_VARIABLE]: path }), null);
   assert.equal(keptWalkthrough(enabled()), null);
+});
+
+test("the walkthrough directory and record are private, including after a partial write", (t) => {
+  const directory = join(operationRoot(t, "minos-walkthrough-"), "records");
+  const path = join(directory, "pr.json");
+  const env = { [RECORD_VARIABLE]: path };
+
+  keepWalkthrough(env, record());
+  assert.equal(statSync(directory).mode & 0o777, 0o700);
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+
+  chmodSync(directory, 0o755);
+  writeFileSync(`${path}.partial`, "interrupted write");
+  chmodSync(`${path}.partial`, 0o644);
+  keepWalkthrough(env, record());
+  assert.equal(statSync(directory).mode & 0o777, 0o700);
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  assert.equal(existsSync(`${path}.partial`), false);
 });
 
 test("a kept walkthrough comes without its diagrams where the repository has diagrams off", (t) => {

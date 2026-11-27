@@ -24,7 +24,8 @@ set -eu
 # announces the attempt by copying it to <NAME>-args.json — the status
 # projection derives stages from exactly these files. The result lands whole
 # at <NAME>-result.json only on a clean exit, the flag <NAME>-result.done
-# appears after any exit, and diagnostics go to <NAME>.log.
+# appears after any exit, and diagnostics go to <NAME>.log. The judgement
+# runner also writes its failure reason to <NAME>-failure when it fails.
 
 usage() {
   echo "usage: dispatch-stage NAME WORKFLOW_SCRIPT [RUNNER] | dispatch-stage await NAME" >&2
@@ -102,7 +103,9 @@ fi
 
 # A stale flag from an earlier attempt of the same name would wake a watcher
 # on old news; the wrapper clears it too, but only once it is running.
-rm -f "$MINOS_RUN_DIR/$name-result.done"
+MINOS_STAGE_FAILURE="$MINOS_RUN_DIR/$name-failure"
+rm -f "$MINOS_RUN_DIR/$name-result.done" "$MINOS_STAGE_FAILURE"
+export MINOS_STAGE_FAILURE
 
 ENSEMBLE_STATUS_DIR="$MINOS_RUN_DIR"
 ENSEMBLE_RUN_RECORD=on

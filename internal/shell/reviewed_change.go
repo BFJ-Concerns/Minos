@@ -81,7 +81,7 @@ func removePullRequestRecords(cfg ServiceConfig, forgeName string, guard forge.G
 	return errors.Join(
 		removeReviewedChange(cfg, forgeName, guard),
 		removeCommandRecord(cfg, forgeName, guard),
-		removeRecordFile(walkthroughRecordPath(cfg, forgeName, guard)),
+		removeWalkthroughRecord(walkthroughRecordPath(cfg, forgeName, guard)),
 	)
 }
 
@@ -93,6 +93,12 @@ func removePullRequestRecords(cfg ServiceConfig, forgeName string, guard forge.G
 // next reviewed head, and nothing else.
 func walkthroughRecordPath(cfg ServiceConfig, forgeName string, guard forge.Guard) string {
 	return filepath.Join(walkthroughRecordDir(cfg), reviewedChangePrefix(forgeName, guard.Repository)+strconv.FormatInt(guard.PullRequest, 10)+".json")
+}
+
+func removeWalkthroughRecord(path string) error {
+	// Remove the partial first so an in-progress rename cannot recreate
+	// the finished record between the two removals.
+	return errors.Join(removeRecordFile(path+".partial"), removeRecordFile(path))
 }
 
 func walkthroughRecordDir(cfg ServiceConfig) string {
@@ -115,10 +121,14 @@ func pruneUnenrolledRecords(cfg ServiceConfig, repos []RepoConfig) map[string][]
 			log.Printf("read pull-request records: %v", err)
 		}
 		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			name := entry.Name()
+			if dir == walkthroughRecordDir(cfg) {
+				name = strings.TrimSuffix(name, ".partial")
+			}
+			if entry.IsDir() || !strings.HasSuffix(name, ".json") {
 				continue
 			}
-			stem := strings.TrimSuffix(entry.Name(), ".json")
+			stem := strings.TrimSuffix(name, ".json")
 			split := strings.LastIndexByte(stem, '-') + 1
 			if !strings.Contains(stem[:split], "%2F") {
 				continue

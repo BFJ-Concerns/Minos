@@ -102,20 +102,29 @@ export async function driveRun(run, { course = COURSE, closing = CLOSING, report
   }
   const closingProblems = [];
   let terminalWorkComplete = true;
+  let completionPending = complete;
+  const recordCompletion = () => {
+    // A judged head already has its verdict on the forge. A failed
+    // withdrawal or report cannot undo it.
+    if (completionPending && (terminalWorkComplete || spendsHead(ending))) {
+      const marker = ending.outcome === CLEAN || ending.outcome === CONTINUATION ? ending.outcome : "non-clean";
+      writeFileSync(join(run.runDir, "lead-complete"), `${marker}\n`);
+    }
+    completionPending = false;
+  };
   for (const duty of closing) {
+    const presentation = duty === writeWalkthrough || duty === writeReport;
+    if (presentation) recordCompletion();
     try {
       await duty(run, settled, ending, closingProblems);
     } catch (error) {
       const problem = `closing duty ${duty.name} failed: ${error.message}`;
       report(problem);
       closingProblems.push(problem);
-      if (duty !== writeReport) terminalWorkComplete = false;
+      if (!presentation) terminalWorkComplete = false;
     }
   }
-  if (complete && terminalWorkComplete) {
-    const marker = ending.outcome === CLEAN || ending.outcome === CONTINUATION ? ending.outcome : "non-clean";
-    writeFileSync(join(run.runDir, "lead-complete"), `${marker}\n`);
-  }
+  recordCompletion();
   return ending;
 }
 
@@ -174,7 +183,17 @@ function dispatch(run, name, workflow, runner) {
       if (code !== 0 || !existsSync(result)) {
         const stopped = supervisorStop(run);
         const reason = stopped ? `stopped by the run supervisor: ${stopped}` : signal ? `signal ${signal}` : `exit ${code}`;
-        const failure = new Error(`stage ${name} ended without a result; ${name}.log has its diagnostics (${reason})`);
+        let detail = "";
+        if (!stopped && runner === JUDGEMENT_RUNNER) {
+          try {
+            detail = readFileSync(join(run.runDir, `${name}-failure`), "utf8").trim();
+          } catch (error) {
+            if (error.code !== "ENOENT") reportToStderr(error.message);
+          }
+        }
+        const failure = new Error(detail
+          ? `${detail}; ${name}.log has its diagnostics`
+          : `stage ${name} ended without a result; ${name}.log has its diagnostics (${reason})`);
         // A stage the supervisor stopped for silence ends the run; only an
         // interruption from elsewhere is worth the review's one retry.
         failure.killed = !stopped && (signal !== null || [130, 137, 143].includes(code));

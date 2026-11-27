@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { driveRun } from "./run-driver.mjs";
 import { CHANGES_REQUESTED, CLEAN, HeadMoved, INCOMPLETE, SUPERSEDED } from "./run-endings.mjs";
 import { writeSummary } from "./run-steps/forge-writes.mjs";
 import { writeWalkthrough } from "./run-steps/write-walkthrough.mjs";
@@ -109,7 +111,20 @@ test("a reviewed head's walkthrough goes into the summary in the state the run e
   const { run } = fake;
   const problems = [];
 
-  await writeWalkthrough(run, settledFor(run), { outcome: CHANGES_REQUESTED }, problems);
+  const sections = [
+    { kind: "concern", name: "Correctness", findings: 2 },
+    { kind: "brief", name: "Parser", findings: 1 },
+  ];
+  const outstanding = [{ path: "lexer.go", line: 18, head: "4".repeat(40), title: "Lexer skips tokens" }];
+  const settled = {
+    ...settledFor(run),
+    review: { summarySections: sections.slice(0, 1) },
+    briefReview: { summarySections: sections.slice(1) },
+    outstanding,
+  };
+
+  await writeSummary(run, CHANGES_REQUESTED, { sections, outstanding });
+  await writeWalkthrough(run, settled, { outcome: CHANGES_REQUESTED }, problems);
 
   assert.deepEqual(problems, []);
   assert.deepEqual(fake.asked.map(({ stage }) => stage), ["walkthrough", "walkthrough-diagrams"]);
@@ -117,9 +132,13 @@ test("a reviewed head's walkthrough goes into the summary in the state the run e
     target: run.target, head: run.head, files: ["parser.go", "parser_test.go"], earlier: null, diagrams: true,
   });
   assert.deepEqual(fake.asked[1].input, { target: run.target, head: run.head, flows });
-  assert.equal(fake.summaries.length, 1);
-  assert.equal(fake.summaries[0].state, CHANGES_REQUESTED);
-  const { body } = fake.summaries[0];
+  assert.equal(fake.summaries.length, 2);
+  assert.equal(fake.summaries[1].state, CHANGES_REQUESTED);
+  const { body } = fake.summaries[1];
+  assert.ok(fake.summaries[0].body.includes("| Correctness | 2 |"));
+  assert.ok(fake.summaries[0].body.includes("| Brief `Parser` | 1 |"));
+  assert.ok(fake.summaries[0].body.includes("- `Lexer skips tokens` at `lexer.go:18`, raised at `4444444`"));
+  assert.equal(body.split("### Walkthrough")[0].trimEnd(), fake.summaries[0].body.trimEnd());
   assert.match(body, /### Walkthrough\n\nThe parser gains its first file and a test\./);
   assert.match(body, /```mermaid\nsequenceDiagram\n    participant p1 as Client\n/);
   assert.match(body, /The review read the whole change against `.{7}`\. Written by `claude-opus-5-5-served`; diagrams traced by `claude-opus-5-5-fallback`\./);
@@ -235,18 +254,63 @@ test("a head that moved before or during the writing gets no walkthrough and no 
   assert.deepEqual(problems, []);
 });
 
-test("a summary write the forge did not confirm is an anomaly and keeps no record", async (t) => {
+test("the report distinguishes an unconfirmed summary edit from a rejected edit", async (t) => {
+  for (const { outcome, reason, report } of [
+    { outcome: "uncertain", reason: "summary write could not be discovered", report: "could not be confirmed" },
+    { outcome: "rejected", reason: "permission refused", report: "was not written" },
+  ]) {
+    let editedBody = "";
+    const fake = fakeRun(t, {
+      diagrams: false,
+      answers: { walkthrough: written({ flows: undefined }) },
+      forge: {
+        summary: (_head, _target, _state, text) => {
+          if (outcome === "uncertain") editedBody = readFileSync(text, "utf8");
+          return { outcome, reason };
+        },
+      },
+    });
+    const problems = [];
+
+    await writeWalkthrough(fake.run, settledFor(fake.run), { outcome: CLEAN }, problems);
+
+    assert.deepEqual(problems, [`The walkthrough ${report}. forge summary: ${reason}`]);
+    assert.equal(existsSync(fake.recordPath), false);
+    assert.equal(editedBody.includes("### Walkthrough"), outcome === "uncertain");
+  }
+});
+
+test("the shipped duties withdraw, record completion, then generate the walkthrough before reporting", async (t) => {
+  const trace = [];
   const fake = fakeRun(t, {
-    diagrams: false,
-    answers: { walkthrough: written({ flows: undefined }) },
-    forge: { summary: () => ({ outcome: "uncertain", reason: "summary write could not be discovered" }) },
+    answers: { walkthrough: written(), "walkthrough-diagrams": drawn },
+    forge: { marker: (_head, _target, name, action) => {
+      trace.push([name, action]);
+      return { outcome: "applied" };
+    } },
   });
-  const problems = [];
+  const { run } = fake;
+  run.pullRequest = { owner: "owner", repository: "repo", number: "1" };
+  run.env.MINOS_SETUP_WORKSPACE = fileURLToPath(new URL("../scripts/run-body/setup-workspace", import.meta.url));
+  const judge = run.judge;
+  run.judge = (stage, input) => {
+    trace.push([stage.name, readFileSync(join(run.runDir, "lead-complete"), "utf8"), existsSync(join(run.runDir, "report.md"))]);
+    return judge(stage, input);
+  };
 
-  await writeWalkthrough(fake.run, settledFor(fake.run), { outcome: CLEAN }, problems);
+  const ending = await driveRun(run, {
+    complete: true,
+    course: [async () => ({ ...settledFor(run), outcome: CLEAN, terminalStatusProblem: "The status write was refused." })],
+  });
 
-  assert.deepEqual(problems, ["The walkthrough was not written. forge summary: summary write could not be discovered"]);
-  assert.equal(existsSync(fake.recordPath), false);
+  assert.equal(ending.outcome, CLEAN);
+  assert.deepEqual(trace, [
+    ["in-flight", "remove"],
+    ["walkthrough", "clean\n", false],
+    ["walkthrough-diagrams", "clean\n", false],
+  ]);
+  assert.equal(fake.summaries.length, 1);
+  assert.match(readFileSync(join(run.runDir, "report.md"), "utf8"), /The status write was refused/);
 });
 
 test("settings the duty cannot read are an anomaly, never a failure of the run", async (t) => {

@@ -1,11 +1,10 @@
 // Writes the walkthrough of a head the run has just finished reviewing,
 // where the repository enables one, and puts it into the summary comment.
 //
-// It is a closing duty, placed after `withdraw`: by then the verdict, the
-// terminal marker and the status are on the forge and the in-flight marker
-// is off, so nothing a reader or admission waits for waits for this. What
-// it costs is the run's own time: the pull request's run stays live while
-// the stages read, and a head pushed meanwhile is claimed when it ends.
+// It follows the verdict in the summary, the in-flight marker withdrawal
+// attempt and the run's completion record. A refused status or marker is
+// reported and the walkthrough still proceeds. The pull request's run
+// stays live while the stages read.
 //
 // A head gets a new walkthrough only when it was reviewed and judged, in
 // full or as an increment. A head that needed no review, one whose run
@@ -15,12 +14,11 @@
 // moved before the walkthrough was asked for, or while it was being made,
 // gets none either, and the run of the new head starts from the kept one.
 //
-// Nothing here can change how the run ended. A stage with no usable
-// answer, a diagram that cannot be drawn, a walkthrough too long for the
-// comment and a write the forge did not confirm are presentation defects:
-// each is pushed onto `problems`, which the report lists as anomalies, and
-// the comment stays as `conclude` left it. Where only the diagrams fail,
-// the walkthrough goes out without them.
+// Nothing here can change how the run ended. A failed stage, a diagram
+// that fails rendering checks, an oversized walkthrough or an unconfirmed
+// write is reported as a presentation anomaly. A flow the diagrams stage
+// leaves undrawn is omitted. If the diagrams stage fails, the walkthrough
+// can still be published without diagrams.
 //
 // Takes `inspection` and `review`. Settles nothing.
 
@@ -92,7 +90,13 @@ export async function writeWalkthrough(run, settled, ending, problems = []) {
 
     // The same state for the same head, with the walkthrough beside what
     // `conclude` wrote. Only a walkthrough the forge holds is kept.
-    await writeSummary(run, ending.outcome, { ...summaryFacts(settled), walkthrough: record });
+    try {
+      await writeSummary(run, ending.outcome, { ...summaryFacts(settled), walkthrough: record });
+    } catch (error) {
+      if (movedHead(error) || !Object.hasOwn(error, "result") || error.result?.outcome === "rejected") throw error;
+      problems.push(`The walkthrough could not be confirmed. ${error.message}`);
+      return;
+    }
     try {
       keepWalkthrough(run.env, record);
     } catch (error) {

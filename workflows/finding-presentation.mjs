@@ -181,3 +181,12 @@ export function issueLogEntry(entry, attribution) {
   }
   throw new Error(`unknown entry kind ${String(entry.kind)}`);
 }
+
+// Literal titles and paths may themselves contain Markdown code spans.
+export function codeSpan(text) {
+  const value = text.replace(/[\r\n]+/g, " ");
+  const longest = Math.max(0, ...[...value.matchAll(/`+/g)].map(([run]) => run.length));
+  const fence = "`".repeat(longest + 1);
+  const pad = longest > 0 || (value.startsWith(" ") && value.endsWith(" ") && value.trim() !== "");
+  return !pad ? `${fence}${value}${fence}` : `${fence} ${value} ${fence}`;
+}

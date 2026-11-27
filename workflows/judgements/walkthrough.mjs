@@ -42,7 +42,7 @@ export const stage = {
     if (!input || typeof input !== "object" || Array.isArray(input)) return "the input must be an object";
     for (const name of ["target", "head"])
       if (blank(input[name])) return `${name} must be a commit`;
-    if (!Array.isArray(input.files) || input.files.length === 0 || input.files.some(blank))
+    if (!Array.isArray(input.files) || input.files.length === 0 || input.files.some((file) => typeof file !== "string" || file === ""))
       return "files must list the paths the change touches";
     if (typeof input.diagrams !== "boolean") return "diagrams must be a boolean";
     if (input.earlier === null) return null;

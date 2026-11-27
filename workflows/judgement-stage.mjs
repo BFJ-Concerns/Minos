@@ -94,6 +94,8 @@ export function judgementArgs(stage, input, { env = process.env } = {}) {
 // checked here. An unusable answer throws: a stage with no answer has
 // judged nothing, and nothing downstream may act as though it had.
 export function answerFrom(stage, input, result) {
+  if (result?.stage === stage.name && typeof result.failure === "string" && result.failure)
+    throw new Error(`stage ${stage.name} failed: ${result.failure}`);
   if (!result || result.stage !== stage.name || !result.answer || typeof result.answer !== "object" || Array.isArray(result.answer))
     throw new Error(`stage ${stage.name} gave no answer`);
   const problem = stage.answerProblem(result.answer, input);

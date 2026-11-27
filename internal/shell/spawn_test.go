@@ -1533,6 +1533,7 @@ func TestSpawnRunHandsTheWalkthroughSettingsAndRecordToTheRun(t *testing.T) {
 	}
 
 	writeTestFile(t, record, "{}\n")
+	writeTestFile(t, record+".partial", "incomplete")
 	repo.Walkthrough.Enabled = false
 	environment = spawn(repo)
 	if got, present := environment["MINOS_WALKTHROUGH_RECORD"]; present {
@@ -1541,7 +1542,9 @@ func TestSpawnRunHandsTheWalkthroughSettingsAndRecordToTheRun(t *testing.T) {
 	if got := environment["MINOS_WALKTHROUGH"]; got != `{"enabled":false,"diagrams":true}` {
 		t.Fatalf("run environment MINOS_WALKTHROUGH = %q", got)
 	}
-	if _, err := os.Stat(record); !os.IsNotExist(err) {
-		t.Fatalf("the walkthrough kept while it was on survived it being turned off: %v", err)
+	for _, path := range []string{record, record + ".partial"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("walkthrough record %s survived turning it off: %v", path, err)
+		}
 	}
 }

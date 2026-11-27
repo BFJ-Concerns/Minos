@@ -1013,26 +1013,28 @@ flows the change touches, drawn by both forges from Mermaid source Minos
 renders. Each is off until enabled, and diagrams apply only where the
 walkthrough is on. The resident lead writes no walkthrough.
 
-The walkthrough is written after the head is finished: the verdict, the
-status and the markers are on the forge before either stage starts, and
-the run holds its place until the walkthrough is written. The
-`walkthrough` stage reads the change, and the `walkthrough-diagrams` stage
-traces the flows it names. A head reviewed as an increment gets a
-walkthrough of the whole pull request that says the review read the
-increment, revised from the one kept for the earlier head. A head that
-needed no review, or whose run stopped short, gets none, and its comment
-shows the last one made under the head it describes. A stage that fails, a
-diagram that cannot be drawn and a walkthrough too long for the comment
-are listed as anomalies in the run's report: they never fail a run or
-change how it ended, and a failure of the diagrams alone leaves a
-walkthrough without them.
+Before either walkthrough stage starts, the summary comment holds the
+verdict and Minos records the run's completion. A refused status or marker
+write is reported and the walkthrough still proceeds. The run holds its
+place while the stages read. The `walkthrough` stage reads the change, and
+`walkthrough-diagrams` traces the flows it names. For an incremental review,
+the walkthrough still covers the whole pull request and says what range
+the review read. Minos revises any walkthrough kept for that pull request.
+A head that needed no review, or whose run stopped short, shows the last
+walkthrough under the head it describes.
 
-The last walkthrough published for a pull request is kept as one record
-under `<runs.dir>/.walkthroughs/`, beside the pull request's other records,
-and goes when the pull request is closed or its repository is no longer
-enrolled. A run of a repository with the walkthrough off removes the
-pull request's record. The record is a cache: removing it costs the
-display of the earlier walkthrough until the next reviewed head.
+The run report lists failed stages, invalid rendered diagrams, oversized
+walkthroughs and unconfirmed writes as presentation anomalies. A flow the
+diagrams stage leaves undrawn is omitted. If the diagrams stage fails, the
+walkthrough can still be published without diagrams. Walkthrough anomalies
+do not change the run's outcome.
+
+Minos keeps the last published walkthrough in a private record under
+`<runs.dir>/.walkthroughs/`. The record and any partial write are removed
+when the pull request is closed or its repository is no longer enrolled.
+Starting a run with the walkthrough off also removes both files. The
+record is a cache. Removing it costs the display of the earlier
+walkthrough until the next reviewed head.
 
 ## Filing deduplication
 

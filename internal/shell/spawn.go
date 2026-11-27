@@ -289,7 +289,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	})
 	if repo.Walkthrough.Enabled {
 		env["MINOS_WALKTHROUGH_RECORD"] = walkthroughRecord
-	} else if removeErr := removeRecordFile(walkthroughRecord); removeErr != nil {
+	} else if removeErr := removeWalkthroughRecord(walkthroughRecord); removeErr != nil {
 		log.Printf("%s: %v", unit, removeErr)
 	}
 	if handoff != nil && handoff.Progress != nil {

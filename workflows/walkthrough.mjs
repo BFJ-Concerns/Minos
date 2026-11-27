@@ -46,10 +46,10 @@
 // One the checks here refuse is left out and the walkthrough goes out
 // without it.
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-import { short } from "./finding-presentation.mjs";
+import { codeSpan, short } from "./finding-presentation.mjs";
 import { isCommit } from "./repository-description.mjs";
 
 export const RECORD_KIND = "minos-walkthrough-v1";
@@ -105,8 +105,8 @@ export function groupsProblem(overview, groups) {
   if (!Array.isArray(groups) || groups.length === 0) return "a walkthrough has at least one group";
   for (const group of groups) {
     if (!group || blank(group.title) || blank(group.summary)) return "a group needs a title and a summary";
-    if (!Array.isArray(group.files) || group.files.length === 0 || group.files.some(blank))
-      return `the group ${JSON.stringify(group.title)} names no files, or a blank one`;
+    if (!Array.isArray(group.files) || group.files.length === 0 || group.files.some((file) => typeof file !== "string" || file === ""))
+      return `the group ${JSON.stringify(group.title)} names no files, or an empty path`;
   }
   return null;
 }
@@ -181,7 +181,7 @@ function diagramSource({ participants, steps }) {
 const LISTED_FILES = 8;
 
 function fileList(files) {
-  const list = files.map((file) => `- \`${file}\``).join("\n");
+  const list = files.map((file) => `- ${codeSpan(file)}`).join("\n");
   return files.length <= LISTED_FILES ? list : `<details>\n<summary>${files.length} files</summary>\n\n${list}\n\n</details>`;
 }
 
@@ -259,7 +259,11 @@ export function keptWalkthrough(env = process.env) {
 export function keepWalkthrough(env, record) {
   const path = env[RECORD_VARIABLE];
   if (!path) return;
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(`${path}.partial`, `${JSON.stringify(record, null, 2)}\n`);
-  renameSync(`${path}.partial`, path);
+  const directory = dirname(path);
+  const partial = `${path}.partial`;
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
+  writeFileSync(partial, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(partial, 0o600);
+  renameSync(partial, path);
 }

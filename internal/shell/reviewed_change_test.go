@@ -30,6 +30,7 @@ func TestReconcilePrunesOnlyRetiredReviewedChanges(t *testing.T) {
 			writeTestFile(t, path, "{}\n")
 			walkthrough := walkthroughRecordPath(cfg, facts.Forge, guard)
 			writeTestFile(t, walkthrough, "{}\n")
+			writeTestFile(t, walkthrough+".partial", "incomplete")
 			guard.PullRequest = 2
 			other := reviewedChangePath(cfg, facts.Forge, guard)
 			writeTestFile(t, other, "{}\n")
@@ -42,8 +43,10 @@ func TestReconcilePrunesOnlyRetiredReviewedChanges(t *testing.T) {
 			if _, err := os.Stat(path); (test.wantPruned && !os.IsNotExist(err)) || (!test.wantPruned && err != nil) {
 				t.Fatalf("stat reviewed record: %v, want pruned = %t", err, test.wantPruned)
 			}
-			if _, err := os.Stat(walkthrough); (test.wantPruned && !os.IsNotExist(err)) || (!test.wantPruned && err != nil) {
-				t.Fatalf("stat walkthrough record: %v, want pruned = %t", err, test.wantPruned)
+			for _, record := range []string{walkthrough, walkthrough + ".partial"} {
+				if _, err := os.Stat(record); (test.wantPruned && !os.IsNotExist(err)) || (!test.wantPruned && err != nil) {
+					t.Fatalf("stat walkthrough record %s: %v, want pruned = %t", record, err, test.wantPruned)
+				}
 			}
 			if _, err := os.Stat(other); err != nil {
 				t.Fatalf("another pull request lost its record: %v", err)
@@ -75,10 +78,14 @@ func TestPruneReviewedChangeChecksTheForgeWhenMissingFromOpenList(t *testing.T) 
 // walkthrough kept alone included.
 func TestSweepPrunesPullRequestRecordsAfterMissedCloseDelivery(t *testing.T) {
 	type recordPath func(ServiceConfig, string, forge.Guard) string
+	partialWalkthrough := func(cfg ServiceConfig, forgeName string, guard forge.Guard) string {
+		return walkthroughRecordPath(cfg, forgeName, guard) + ".partial"
+	}
 	for name, kept := range map[string][]recordPath{
-		"all":         {reviewedChangePath, commandRecordPath, walkthroughRecordPath},
-		"command":     {commandRecordPath},
-		"walkthrough": {walkthroughRecordPath},
+		"all":                 {reviewedChangePath, commandRecordPath, walkthroughRecordPath},
+		"command":             {commandRecordPath},
+		"walkthrough":         {walkthroughRecordPath},
+		"partial walkthrough": {partialWalkthrough},
 	} {
 		t.Run(name, func(t *testing.T) {
 			state := newForgejoFixtureState(t)
@@ -130,6 +137,8 @@ func TestSweepPrunesGoneAndUnenrolledReviewedChanges(t *testing.T) {
 	state.changePullRequest(func(pr map[string]any) { pr["state"] = "closed" })
 	repo := forge.Repository{Owner: "minos-e2e-owner", Name: "subject"}
 	unenrolled := forge.Repository{Owner: repo.Owner, Name: "old-subject"}
+	partial := walkthroughRecordPath(cfg, "forgejo", forge.Guard{Repository: unenrolled, PullRequest: 1}) + ".partial"
+	writeTestFile(t, partial, "incomplete")
 	writeTestFile(t, reviewedChangePath(cfg, "forgejo", forge.Guard{Repository: unenrolled, PullRequest: 1}), "{}\n")
 	writeTestFile(t, reviewedChangePath(cfg, "former-forge", forge.Guard{Repository: repo, PullRequest: 1}), "{}\n")
 	for _, number := range []int64{1, 2, 3, 4} {
@@ -144,6 +153,9 @@ func TestSweepPrunesGoneAndUnenrolledReviewedChanges(t *testing.T) {
 
 	if err := SweepCommand(t.Context(), []string{"--config", cfg.Root}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(partial); !os.IsNotExist(err) {
+		t.Fatalf("partial walkthrough of an unenrolled repository survived: %v", err)
 	}
 	entries, err := os.ReadDir(filepath.Dir(other))
 	if err != nil {

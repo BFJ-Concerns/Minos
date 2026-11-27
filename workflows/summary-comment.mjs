@@ -20,7 +20,7 @@
 
 import { readFileSync } from "node:fs";
 
-import { plural, short } from "./finding-presentation.mjs";
+import { codeSpan, plural, short } from "./finding-presentation.mjs";
 import { fillPrompt, slotNames } from "./review-prompts.mjs";
 import { CHANGES_REQUESTED, CLEAN, INCOMPLETE } from "./run-endings.mjs";
 import { renderWalkthrough } from "./walkthrough.mjs";
@@ -87,14 +87,6 @@ function outstanding({ outstanding = [] }) {
     ...outstanding.map(({ path, line, head, title }) =>
       `- ${title ? codeSpan(title) + " at " : ""}${codeSpan(`${path}:${line}`)}, raised at \`${short(head)}\``),
   ].join("\n");
-}
-
-// Literal titles and paths may themselves contain Markdown code spans.
-function codeSpan(text) {
-  const value = text.replace(/[\r\n]+/g, " ");
-  const longest = Math.max(0, ...[...value.matchAll(/`+/g)].map(([run]) => run.length));
-  const fence = "`".repeat(longest + 1);
-  return longest === 0 ? `${fence}${value}${fence}` : `${fence} ${value} ${fence}`;
 }
 
 // The walkthrough of the pull request's change, where the writer hands one
