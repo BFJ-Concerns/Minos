@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"log"
 	"net/url"
 	"os"
@@ -56,50 +55,75 @@ func reviewedChangePrefix(forgeName string, repo forge.Repository) string {
 }
 
 func removeReviewedChange(cfg ServiceConfig, forgeName string, guard forge.Guard) error {
-	err := os.Remove(reviewedChangePath(cfg, forgeName, guard))
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove reviewed change: %w", err)
+	return removeReviewedChangeFile(reviewedChangePath(cfg, forgeName, guard))
+}
+
+func removeReviewedChangeFile(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove reviewed change %s: %w", filepath.Base(path), err)
 	}
 	return nil
 }
 
-func readReviewedChangeEntries(cfg ServiceConfig) []fs.DirEntry {
-	entries, err := os.ReadDir(filepath.Join(cfg.Runs.Dir, ".reviewed"))
+// Collect the enrolled records for forge checks and discard records with no
+// enrolment. Split off the final numeric suffix so existing file names work
+// even when a forge, owner or repository name contains hyphens.
+func pruneUnenrolledReviewedChanges(cfg ServiceConfig, repos []RepoConfig) map[string][]int64 {
+	dir := filepath.Join(cfg.Runs.Dir, ".reviewed")
+	entries, err := os.ReadDir(dir)
 	if err != nil && !os.IsNotExist(err) {
 		log.Printf("read reviewed changes: %v", err)
 	}
-	return entries
-}
-
-// A pull request missing from the open list is a candidate for cleanup.
-// Confirm closure on the forge so pagination or a concurrent reopen does
-// not spend the record.
-func pruneClosedReviewedChanges(ctx context.Context, cfg ServiceConfig, repo RepoConfig, entries []fs.DirEntry, open []Facts) {
-	openNumbers := make(map[string]bool, len(open))
-	for _, facts := range open {
-		openNumbers[facts.PR] = true
+	enrolled := make(map[string][]int64, len(repos))
+	for _, repo := range repos {
+		enrolled[reviewedChangePrefix(repo.Forge, forge.Repository{Owner: repo.Owner, Name: repo.Repo})] = nil
 	}
-	repository := forge.Repository{Owner: repo.Owner, Name: repo.Repo}
-	prefix := reviewedChangePrefix(repo.Forge, repository)
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !strings.HasSuffix(entry.Name(), ".json") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		pr := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), prefix), ".json")
-		if openNumbers[pr] {
+		stem := strings.TrimSuffix(entry.Name(), ".json")
+		split := strings.LastIndexByte(stem, '-') + 1
+		if !strings.Contains(stem[:split], "%2F") {
 			continue
 		}
+		prefix, pr := stem[:split], stem[split:]
 		number, err := strconv.ParseInt(pr, 10, 64)
 		if err != nil || number <= 0 || strconv.FormatInt(number, 10) != pr {
 			continue
 		}
-		facts := Facts{Forge: repo.Forge, Owner: repo.Owner, Repo: repo.Repo, PR: pr}
-		snapshot, err := currentSnapshot(ctx, cfg, facts)
-		if err == nil && pullRequestClosed(snapshot) {
+		if _, ok := enrolled[prefix]; ok {
+			enrolled[prefix] = append(enrolled[prefix], number)
+		} else if err := removeReviewedChangeFile(filepath.Join(dir, entry.Name())); err != nil {
+			log.Print(err)
+		}
+	}
+	return enrolled
+}
+
+// An open listing can race a reopen or omit a pull request. Only a direct
+// lookup can confirm that a pull request outside the list is closed or gone.
+func pruneRetiredReviewedChanges(ctx context.Context, cfg ServiceConfig, repo RepoConfig, numbers []int64, open []Facts) {
+	openNumbers := make(map[int64]bool, len(open))
+	for _, facts := range open {
+		openNumbers[pullRequestNumber(facts)] = true
+	}
+	repository := forge.Repository{Owner: repo.Owner, Name: repo.Repo}
+	adapter, err := newBehaviouralForge(cfg, repo.Forge)
+	if err != nil {
+		log.Printf("%s/%s: check reviewed changes: %v", repo.Owner, repo.Repo, err)
+		return
+	}
+	for _, number := range numbers {
+		if openNumbers[number] {
+			continue
+		}
+		retired, err := adapter.PullRequestRetired(ctx, repository, number)
+		if err == nil && retired {
 			err = removeReviewedChange(cfg, repo.Forge, forge.Guard{Repository: repository, PullRequest: number})
 		}
 		if err != nil {
-			log.Printf("%s#%s: prune reviewed change: %v", facts.RepoSlug(), pr, err)
+			log.Printf("%s/%s#%d: prune reviewed change: %v", repo.Owner, repo.Repo, number, err)
 		}
 	}
 }

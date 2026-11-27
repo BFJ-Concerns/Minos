@@ -30,6 +30,21 @@ api() {
   forgejo_request "$api_method" "$api_path" -f "$@"
 }
 
+# An HTTP success with no JSON document leaves the forge state unknown.
+# jq 1.6 can exit successfully on blank input without emitting a value.
+has_response_body() {
+  case "$1" in
+    *[![:space:]]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+api_read() {
+  read_body="$(api GET "$@")" || return 1
+  has_response_body "$read_body" || return 1
+  printf '%s' "$read_body"
+}
+
 # api_with_status is for decisions where HTTP absence is materially different
 # from an unreadable forge. It returns non-zero only for transport failure and
 # exposes the confirmed HTTP status and body through global variables.
@@ -111,7 +126,7 @@ pull_request_reviews() {
   reviews_previous=''
   reviews_page=1
   while :; do
-    reviews_current="$(api GET "${reviews_path}?limit=50&page=${reviews_page}")" || return 1
+    reviews_current="$(api_read "${reviews_path}?limit=50&page=${reviews_page}")" || return 1
     reviews_count="$(printf '%s' "$reviews_current" | jq -e 'if type == "array" and all(.[]; type == "object") then length else error("expected reviews array") end')" || return 1
     ! repeats_previous_page "$reviews_current" "$reviews_previous" || break
     [ "$reviews_count" -gt 0 ] || break
@@ -148,7 +163,7 @@ reaction_present() {
   reaction_page=1
   reaction_previous=''
   while :; do
-    reaction_current="$(api GET "${reaction_path}?limit=50&page=${reaction_page}" 2>/dev/null)" || return 2
+    reaction_current="$(api_read "${reaction_path}?limit=50&page=${reaction_page}" 2>/dev/null)" || return 2
     if printf '%s' "$reaction_current" | json_match --arg content "$4" --arg login "$5" '
       (if . == null then [] else . end) |
       if type != "array" or any(.[]; type != "object") then error("expected reactions array") else
@@ -200,14 +215,14 @@ guard_open_pull_request() {
   guard_expected_login="$6"
   guard_reason=""
 
-  guard_user_json="$(api GET "/api/v1/user")" || return 2
+  guard_user_json="$(api_read "/api/v1/user")" || return 2
   guard_actual_login="$(printf '%s' "$guard_user_json" | jq -er 'if type != "object" then error("expected user object") else .login // .username // "" end')" || return 2
   if [ "$guard_actual_login" != "$guard_expected_login" ]; then
     guard_reason="authenticated forge identity is ${guard_actual_login:-missing}, expected ${guard_expected_login}"
     return 1
   fi
 
-  guard_pr_json="$(api GET "/api/v1/repos/${guard_owner}/${guard_repo}/pulls/${guard_pr}")" || return 2
+  guard_pr_json="$(api_read "/api/v1/repos/${guard_owner}/${guard_repo}/pulls/${guard_pr}")" || return 2
 
   if printf '%s' "$guard_pr_json" | json_match \
     --arg repository "${guard_owner}/${guard_repo}" \
@@ -247,14 +262,14 @@ guard_merged_pull_request() {
   guard_expected_login="$5"
   guard_reason=""
 
-  guard_user_json="$(api GET "/api/v1/user")" || return 2
+  guard_user_json="$(api_read "/api/v1/user")" || return 2
   guard_actual_login="$(printf '%s' "$guard_user_json" | jq -er 'if type != "object" then error("expected user object") else .login // .username // "" end')" || return 2
   if [ "$guard_actual_login" != "$guard_expected_login" ]; then
     guard_reason="authenticated forge identity is ${guard_actual_login:-missing}, expected ${guard_expected_login}"
     return 1
   fi
 
-  guard_pr_json="$(api GET "/api/v1/repos/${guard_owner}/${guard_repo}/pulls/${guard_pr}")" || return 2
+  guard_pr_json="$(api_read "/api/v1/repos/${guard_owner}/${guard_repo}/pulls/${guard_pr}")" || return 2
   if printf '%s' "$guard_pr_json" | json_match \
     --arg repository "${guard_owner}/${guard_repo}" \
     --arg head "$guard_expected_head" \
@@ -282,7 +297,7 @@ guard_merged_pull_request() {
 # forge could not be read. A label has no author, so presence is the pull
 # request's, not the writer's.
 issue_label_id() {
-  label_issue_json="$(api GET "/api/v1/repos/${1}/${2}/issues/${3}/labels" 2>/dev/null)" || return 2
+  label_issue_json="$(api_read "/api/v1/repos/${1}/${2}/issues/${3}/labels" 2>/dev/null)" || return 2
   label_found="$(printf '%s' "$label_issue_json" | jq -r --arg name "$4" 'first(.[]? | select(.name == $name) | .id) // ""')" || return 2
   [ -n "$label_found" ] || return 1
   printf '%s\n' "$label_found"
@@ -296,7 +311,7 @@ defined_label_id() {
   label_page=1
   label_previous=''
   while :; do
-    label_current="$(api GET "/api/v1/repos/${1}/${2}/labels?limit=50&page=${label_page}" 2>/dev/null)" || return 2
+    label_current="$(api_read "/api/v1/repos/${1}/${2}/labels?limit=50&page=${label_page}" 2>/dev/null)" || return 2
     if repeats_previous_page "$label_current" "$label_previous"; then
       break
     fi
@@ -318,6 +333,7 @@ defined_label_id() {
       2??) ;;
       *) return 2 ;;
     esac
+    has_response_body "$api_status_body" || return 2
     if repeats_previous_page "$api_status_body" "$label_previous"; then
       return 1
     fi
@@ -346,7 +362,7 @@ commit_statuses() {
   status_previous=''
   status_page=1
   while :; do
-    status_current="$(api GET "${status_path}?limit=50&page=${status_page}")" || return 1
+    status_current="$(api_read "${status_path}?limit=50&page=${status_page}")" || return 1
     status_count="$(printf '%s' "$status_current" | jq -es '
       if length == 1 and (.[0] | type) == "array" then .[0] | length
       else error("expected one status array") end')" || return 1

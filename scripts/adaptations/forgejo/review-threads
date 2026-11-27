@@ -21,7 +21,7 @@ for review_id in $(printf '%s' "$reviews" | jq -r '.[] | select((.comments_count
     else error("expected a review-comment array") end |
     group_by([(.path // ""), site]) | map(sort_by((.created_at // ""), (.id // 0)) | {
       path: (.[0].path // ""),
-      line: (.[0] | site | abs),
+      line: (.[0] | site | if . < 0 then -. else . end),
       resolved: (.[0].resolver != null),
       outdated: false,
       comments: map({

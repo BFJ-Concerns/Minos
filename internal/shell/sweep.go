@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/BFJ-Concerns/Minos/internal/forge"
 )
 
 type sweepCandidate struct {
@@ -37,7 +39,7 @@ func SweepCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	reviewedEntries := readReviewedChangeEntries(cfg)
+	reviewedEntries := pruneUnenrolledReviewedChanges(cfg, repos)
 	var candidates []sweepCandidate
 	// One unreadable repo must not stop the pass: the rest of the fleet is
 	// swept, and only a total outage fails the unit.
@@ -60,14 +62,15 @@ func SweepCommand(ctx context.Context, args []string) error {
 			continue
 		}
 		pullRequests, err := adaptation.ListOpenPRs(ctx, repo.Forge, repo.Owner, repo.Repo)
+		prefix := reviewedChangePrefix(repo.Forge, forge.Repository{Owner: repo.Owner, Name: repo.Repo})
+		if numbers := reviewedEntries[prefix]; len(numbers) > 0 {
+			pruneRetiredReviewedChanges(ctx, cfg, repo, numbers, pullRequests)
+		}
 		if err != nil {
 			unreadable++
 			skipped[slug] = err.Error()
 			log.Printf("attention: repo %s skipped this pass: %v", slug, err)
 			continue
-		}
-		if len(reviewedEntries) > 0 {
-			pruneClosedReviewedChanges(ctx, cfg, repo, reviewedEntries, pullRequests)
 		}
 		for _, facts := range pullRequests {
 			priority := 1

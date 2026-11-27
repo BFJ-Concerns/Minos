@@ -43,6 +43,7 @@ const (
 	githubFixtureAppID          = "4242"
 	githubFixtureInstallationID = 9001
 	githubOtherInstallationID   = 9002
+	githubForkInstallationID    = 9003
 	githubFixtureAppSlug        = "minos-review"
 	githubFixtureBotLogin       = githubFixtureAppSlug + "[bot]"
 )
@@ -65,6 +66,7 @@ type githubFixtureState struct {
 	mintedTokens       []string
 	tokenInstallations map[string]int
 	otherCloneURL      string
+	forkCloneURL       string
 	pullRequest        map[string]any
 	baseTip            string
 	statuses           []map[string]any
@@ -245,14 +247,31 @@ func (s *githubFixtureState) verifyAppJWT(authorization string) bool {
 	return claims.Iss == githubFixtureAppID && claims.Exp > now && claims.Iat <= now && claims.Exp-claims.Iat <= 600
 }
 
-func (s *githubFixtureState) installationAuthorised(authorization string) bool {
-	token := strings.TrimPrefix(authorization, "Bearer ")
-	for _, minted := range s.mintedTokens {
-		if minted == token {
-			return true
-		}
+func githubFixtureInstallation(repository string) int {
+	switch repository {
+	case "acme/widgets":
+		return githubFixtureInstallationID
+	case "other/guidance":
+		return githubOtherInstallationID
+	case "contributor/widgets":
+		return githubForkInstallationID
+	default:
+		return 0
 	}
-	return false
+}
+
+func (s *githubFixtureState) installationAuthorised(w http.ResponseWriter, authorization, repository string) bool {
+	token, hasBearer := strings.CutPrefix(authorization, "Bearer ")
+	installation, minted := s.tokenInstallations[token]
+	if !hasBearer || !minted {
+		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+		return false
+	}
+	if installation != githubFixtureInstallation(repository) {
+		http.Error(w, `{"message":"Resource not accessible by integration"}`, http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
@@ -265,12 +284,18 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message":"missing GitHub API headers"}`, http.StatusBadRequest)
 		return
 	}
-	if r.Method == http.MethodPost && r.URL.Path == s.graphQLPath && s.installationAuthorised(authorization) {
+	if r.Method == http.MethodPost && r.URL.Path == s.graphQLPath {
 		var request struct {
 			Variables map[string]any `json:"variables"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			s.t.Error(err)
+			http.Error(w, "bad JSON", http.StatusBadRequest)
+			return
+		}
+		repository := fmt.Sprint(request.Variables["owner"]) + "/" + fmt.Sprint(request.Variables["repo"])
+		if !s.installationAuthorised(w, authorization, repository) {
+			return
 		}
 		s.graphQLVariables = append(s.graphQLVariables, request.Variables)
 		page := len(s.graphQLVariables) - 1
@@ -281,8 +306,18 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(s.reviewThreadPages[page]))
 		return
 	}
-	if s.installationAuthorised(authorization) && s.handleOperations(w, r, path) {
-		return
+	repoPath := strings.SplitN(path, "/", 5)
+	repository := ""
+	if len(repoPath) >= 4 && repoPath[1] == "repos" {
+		repository = repoPath[2] + "/" + repoPath[3]
+	}
+	if installation := githubFixtureInstallation(repository); installation != 0 && path != "/repos/"+repository+"/installation" {
+		if !s.installationAuthorised(w, authorization, repository) {
+			return
+		}
+		if s.handleOperations(w, r, path) {
+			return
+		}
 	}
 
 	switch {
@@ -297,21 +332,19 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 			return
 		}
-		switch path {
-		case "/repos/acme/widgets/installation":
-			writeFixtureJSON(s.t, w, map[string]any{"id": githubFixtureInstallationID})
-		case "/repos/other/guidance/installation":
-			writeFixtureJSON(s.t, w, map[string]any{"id": githubOtherInstallationID})
-		default:
+		installation := githubFixtureInstallation(repository)
+		if installation == 0 {
 			http.NotFound(w, r)
+			return
 		}
+		writeFixtureJSON(s.t, w, map[string]any{"id": installation})
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/app/installations/") && strings.HasSuffix(path, "/access_tokens"):
 		if !s.verifyAppJWT(authorization) {
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 			return
 		}
 		id, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/app/installations/"), "/access_tokens"))
-		if id != githubFixtureInstallationID && id != githubOtherInstallationID {
+		if id != githubFixtureInstallationID && id != githubOtherInstallationID && id != githubForkInstallationID {
 			http.NotFound(w, r)
 			return
 		}
@@ -328,13 +361,9 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/repos/acme/absent":
 		w.WriteHeader(http.StatusNotFound)
 	case r.Method == http.MethodGet && path == "/repos/other/guidance":
-		if s.tokenInstallations[strings.TrimPrefix(authorization, "Bearer ")] != githubOtherInstallationID {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
 		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.otherCloneURL, "default_branch": "trunk"})
-	case !s.installationAuthorised(authorization):
-		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+	case r.Method == http.MethodGet && path == "/repos/contributor/widgets":
+		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.forkCloneURL, "default_branch": "topic"})
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets":
 		writeFixtureJSON(s.t, w, map[string]any{"full_name": "acme/widgets", "clone_url": s.cloneURL, "default_branch": "trunk"})
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets/pulls/7":
@@ -569,7 +598,7 @@ func TestGitHubSnapshotMintsOneInstallationTokenAndSpeaksTheProtocolVocabulary(t
 		t.Fatalf("labels = %#v", snapshot.Labels)
 	}
 
-	// A fork's branch is still the head's name: the run contract requires it.
+	// A fork's branch name is still the pull request's head branch.
 	state.mu.Lock()
 	state.pullRequest["head"].(map[string]any)["repo"] = map[string]any{"full_name": "forker/widgets"}
 	state.mu.Unlock()
@@ -618,6 +647,29 @@ func TestGitHubRepositoryMetadataAndCloneCredentialServeTheRunsClones(t *testing
 	}
 }
 
+func TestGitHubFixtureRefusesAnotherInstallationsToken(t *testing.T) {
+	state := newGitHubFixtureState(t)
+	credential, err := state.adapter(t).CloneCredential(t.Context(), forge.Repository{Owner: "other", Name: "guidance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, state.server.URL+"/repos/acme/widgets/pulls/7", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+credential.Password)
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	response, err := state.server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("pull request read status = %d, want %d for another installation's token", response.StatusCode, http.StatusForbidden)
+	}
+}
+
 func TestGitHubCloneCredentialAllowsOnlyAConfirmedPublicRepositoryWithoutInstallation(t *testing.T) {
 	state := newGitHubFixtureState(t)
 	adapter := state.adapter(t)
@@ -637,15 +689,18 @@ func TestGitHubCloneCredentialAllowsOnlyAConfirmedPublicRepositoryWithoutInstall
 	}
 }
 
-// A run configured against the GitHub adaptation clones the reviewed
-// repository as the App installation: setup-workspace asks the real minos
-// binary, which runs the GitHub adaptation against the fixture GitHub, and
-// the git server accepts only x-access-token with a token the fixture minted.
-// The service still exports the forge's API base and credential file, as it
-// does for every run.
+// Setup clones the fork, fetches the target object and clones secondary
+// guidance over Git smart HTTP with the installation token for each repository.
 func TestGitHubConfiguredSetupWorkspaceClonesWithEachRepositoryInstallation(t *testing.T) {
 	state := newGitHubFixtureState(t)
-	repository, head := createGitRepository(t, "AGENTS.md", "widget guidance\n")
+	target := createGitRepositoryAtHead(t, "README.md", "target repository\n")
+	fork := filepath.Join(t.TempDir(), "source")
+	runGit(t, ".", "clone", "--quiet", target, fork)
+	runGit(t, fork, "branch", "-m", "topic")
+	runGit(t, fork, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "Fork change")
+	head := gitOutput(t, fork, "rev-parse", "HEAD")
+	runGit(t, target, "commit", "--allow-empty", "-m", "Target moved")
+	targetSHA := gitOutput(t, target, "rev-parse", "HEAD")
 	gitForInstallation := func(installation int, repo string) *authenticatedGitServer {
 		server := newAuthenticatedGitServer(t, func(username, password string) bool {
 			state.mu.Lock()
@@ -655,13 +710,17 @@ func TestGitHubConfiguredSetupWorkspaceClonesWithEachRepositoryInstallation(t *t
 		server.serve(t, repo)
 		return server
 	}
-	reviewGit := gitForInstallation(githubFixtureInstallationID, repository)
-	guidance := createGitRepositoryAtHead(t, "README.md", "# Commission from a second installation\n")
+	forkGit := gitForInstallation(githubForkInstallationID, fork)
+	targetGit := gitForInstallation(githubFixtureInstallationID, target)
+	guidance := createGitRepositoryAtHead(t, "README.md", "# Guidance from another installation\n")
 	guidanceGit := gitForInstallation(githubOtherInstallationID, guidance)
 	state.mu.Lock()
-	state.pullRequest["head"].(map[string]any)["sha"] = head
-	state.baseTip = head
-	state.cloneURL = reviewGit.URL + "/" + filepath.Base(filepath.Dir(repository)) + "/source"
+	state.pullRequest["head"] = map[string]any{
+		"sha": head, "ref": "topic", "repo": map[string]any{"full_name": "contributor/widgets"},
+	}
+	state.baseTip = targetSHA
+	state.forkCloneURL = forkGit.URL + "/" + filepath.Base(filepath.Dir(fork)) + "/source"
+	state.cloneURL = targetGit.URL + "/" + filepath.Base(filepath.Dir(target)) + "/source"
 	state.otherCloneURL = guidanceGit.URL + "/" + filepath.Base(filepath.Dir(guidance)) + "/source"
 	state.mu.Unlock()
 
@@ -689,7 +748,7 @@ dir = %q
 	stand := t.TempDir()
 	argvLog := filepath.Join(stand, "git-argv")
 	writeScript(t, filepath.Join(stand, "git"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'"+argvLog+"'\nexec '"+realGit+"' \"$@\"\n")
-	cmd := setupWorkspaceCommand(t, buildMinos(t), runDir, workspace, filepath.Join(runDir, "orientation.json"), head)
+	cmd := setupWorkspaceCommandWithTarget(t, buildMinos(t), runDir, workspace, filepath.Join(runDir, "orientation.json"), head, targetSHA)
 	cmd.Env = append(cmd.Env,
 		"MINOS_CONFIG="+configRoot, "MINOS_FORGE=github",
 		"MINOS_OWNER=acme", "MINOS_REPO_NAME=widgets", "MINOS_PR=7", "MINOS_HEAD_BRANCH=topic",
@@ -703,13 +762,17 @@ dir = %q
 	if got := gitOutput(t, workspace, "rev-parse", "HEAD"); got != head {
 		t.Fatalf("workspace head = %q, want %q", got, head)
 	}
-	if reviewGit.authorised() == 0 || guidanceGit.authorised() == 0 {
+	if got := gitOutput(t, workspace, "remote", "get-url", "origin"); got != state.forkCloneURL {
+		t.Fatalf("workspace origin = %q, want the fork at %q", got, state.forkCloneURL)
+	}
+	runGit(t, workspace, "cat-file", "-e", targetSHA+"^{commit}")
+	if forkGit.authorised() == 0 || targetGit.authorised() == 0 || guidanceGit.authorised() == 0 {
 		t.Fatal("each Git server must receive the credential for its own installation")
 	}
-	if state.mints() != 2 {
-		t.Fatalf("installation tokens minted = %d, want one cached token per installation", state.mints())
+	if mints := state.mints(); mints != 3 {
+		t.Fatalf("installation tokens minted = %d, want one cached token per installation", mints)
 	}
-	assertContainsFile(t, filepath.Join(runDir, "guidance", "other", "guidance", "README.md"), "# Commission from a second installation")
+	assertContainsFile(t, filepath.Join(runDir, "guidance", "other", "guidance", "README.md"), "# Guidance from another installation")
 	argv, err := os.ReadFile(argvLog)
 	if err != nil {
 		t.Fatal(err)

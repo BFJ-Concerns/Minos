@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+github_authenticate "$1" "$2" public
+api_with_status GET "/repos/$1/$2/pulls/$3"
+
+case "$api_status_code" in
+  200)
+    printf '%s' "$api_status_body" | jq -ec --argjson pr "$3" '
+      if .number != $pr then error("unexpected pull request number")
+      elif .merged == true then "merged"
+      else .state | select(. == "open" or . == "closed" or . == "merged")
+      end'
+    ;;
+  404|410) printf '%s\n' '"missing"' ;;
+  *) echo "pull-request-state: forge returned HTTP ${api_status_code}" >&2; exit 1 ;;
+esac

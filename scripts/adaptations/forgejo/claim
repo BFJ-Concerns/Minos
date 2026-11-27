@@ -8,7 +8,7 @@ repo="$2"
 pr="$3"
 login="$4"
 
-user_json="$(api GET "/api/v1/user")" || {
+user_json="$(api_read "/api/v1/user")" || {
   write_result uncertain "authenticated forge identity could not be read"
   exit 0
 }
@@ -18,7 +18,7 @@ if [ "$actual_login" != "$login" ]; then
   exit 0
 fi
 
-pr_json="$(api GET "/api/v1/repos/${owner}/${repo}/pulls/${pr}")" || {
+pr_json="$(api_read "/api/v1/repos/${owner}/${repo}/pulls/${pr}")" || {
   write_result uncertain "pull request state could not be read"
   exit 0
 }
@@ -99,7 +99,7 @@ else
   fi
 fi
 
-pr_json="$(api GET "$pull_path")" || {
+pr_json="$(api_read "$pull_path")" || {
   write_result uncertain "pull request review request could not be confirmed"
   exit 0
 }

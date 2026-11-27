@@ -94,7 +94,7 @@ fi
 # workflow can weigh explicit out-of-scope declarations.
 pull_request_record="${MINOS_RUN_DIR}/pull-request.json"
 jq '{number: (.pull_request // null), title: (.title // ""), body: (.body // "")}' \
-  "$snapshot_file" >"$pull_request_record"
+  <"$snapshot_file" >"$pull_request_record"
 
 reuse_workspace="$resume"
 if [ "$reuse_workspace" = true ]; then

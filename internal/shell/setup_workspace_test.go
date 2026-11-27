@@ -66,6 +66,48 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 
 }
 
+func TestSetupWorkspacePreservesALongPullRequestDescription(t *testing.T) {
+	repository, head := createGitRepository(t, "README.md", "Repository guidance\n")
+	server := newSetupForge(t, head, repository, "")
+	snapshotPath := filepath.Join(server.dir, "snapshot.json")
+	snapshotData, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal(snapshotData, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	// Exceed Linux's per-argument limit, even on hosts with 64 KiB pages.
+	body := strings.Repeat("Scope and rationale.\n", 128*1024)
+	snapshot["body"], err = json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotData, err = json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.write(t, "snapshot.json", string(snapshotData))
+
+	runDir := t.TempDir()
+	orientation := filepath.Join(runDir, "orientation.json")
+	runSetupWorkspace(t, server.Bin, runDir, filepath.Join(runDir, "workspace"), orientation, head)
+	recordData, err := os.ReadFile(readOrientation(t, orientation).PullRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal(recordData, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Body != body {
+		t.Fatalf("pull-request description did not round-trip (%d bytes, want %d)", len(record.Body), len(body))
+	}
+}
+
 // The forge's clone credential is the only thing that authorises the clones:
 // a git server demanding HTTPS Basic authorisation serves the reviewed and
 // guidance repositories, and the credential the forge reports — GitHub's

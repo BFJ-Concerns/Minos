@@ -377,14 +377,15 @@ is promoted it delivers that record a second time as a sidecar beside it —
 the tarball's name with `.tar.zst` replaced by `.timings.json` — readable
 without extracting anything. This presentation archive and its sidecar are
 best-effort and cannot change the run result. Before each reconciliation pass,
-the sweep also salvages dead run directories into the dedicated checkout
-configured by `runs.failures-repo`, attempts to commit and push the
-digest, archives their transcripts, and removes the scratch tree. The
-checkout must be outside `runs.dir` (the service rejects one inside it)
-and must already contain a regular `FAILURES.md` — the provisioner
-(`provision-failure-checkout`) clones and configures git but does not
-create that file; an empty repository or one without it stops the salvage.
-Residue from a failed salvage is preserved in the run directory.
+the sweep records a digest for each dead run with crash evidence, archives its
+transcripts, and removes its scratch directory after the archive is accepted.
+With `runs.failures-repo` configured, the sweep appends to the checkout's
+existing regular `FAILURES.md` and attempts to commit and push it.
+`provision-failure-checkout` clones the repository and configures Git, so
+`FAILURES.md` must already exist in the repository. Without a checkout, the
+sweep appends to `runs.failure-log` and limits access to the file's owner
+because a digest can contain transcript excerpts. Both destinations must be outside
+`runs.dir`. A failed append or archive leaves the run directory for retry.
 `runs.failures-forge` selects the forge whose credential authenticates
 the ledger push; it defaults to the sole configured forge and is required
 when several forges are configured. Active units

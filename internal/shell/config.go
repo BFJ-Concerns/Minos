@@ -391,12 +391,17 @@ func LoadServiceConfig(root string) (ServiceConfig, error) {
 // root and resolves its knobs against the service-level values, so a
 // returned RepoConfig carries the values a run will honour.
 func LoadRepoConfigs(cfg ServiceConfig) ([]RepoConfig, error) {
-	paths, err := filepath.Glob(filepath.Join(cfg.Root, "repos", "*.toml"))
-	if err != nil {
-		return nil, err
+	dir := filepath.Join(cfg.Root, "repos")
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read repository enrolment: %w", err)
 	}
-	repos := make([]RepoConfig, 0, len(paths))
-	for _, path := range paths {
+	repos := make([]RepoConfig, 0, len(entries))
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".toml") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
 		var repo RepoConfig
 		metadata, err := decodeStrictTOML(path, &repo)
 		if err != nil {
