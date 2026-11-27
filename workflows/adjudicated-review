@@ -138,6 +138,7 @@ function incomplete(reason, envelope = null) {
     incomplete: [reason],
     infrastructureFailure: null,
     confirmedFindings: [],
+    unsettledFindings: [],
     operatorAttention: [],
     ran: [],
     skipped: [],

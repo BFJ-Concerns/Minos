@@ -65,7 +65,7 @@ printf '%s\n' "$user_json" "$repository_json" "$pr_json" "$base_json" "$statuses
     pull_request: $pr.number,
     state: (if ($pr.merged // false) then "merged" else $pr.state end),
     merged: ($pr.merged // false),
-    draft: ($pr.draft // false),
+    draft: (($pr.draft // false) or ($pr.title // "" | ascii_downcase | startswith("wip:"))),
     author: ($pr.user.login // $pr.user.username // ""),
     head_sha: $pr.head.sha,
     head_branch: $head_branch,

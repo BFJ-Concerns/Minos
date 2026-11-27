@@ -1156,6 +1156,27 @@ func TestArchiveRunDeliversTimingSidecarBesideTheTarball(t *testing.T) {
 	if _, err := os.Stat(sidecar + ".partial"); !os.IsNotExist(err) {
 		t.Fatalf("partial sidecar left beside the delivered one: %v", err)
 	}
+
+	longFacts := Facts{Forge: "forgejo", Owner: "example", Repo: strings.Repeat("repo-", 48), PR: "9223372036854775807"}
+	unit := UnitName(longFacts)
+	longRun, err := os.MkdirTemp(root, unit+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	longLabel := longFacts.Owner + "-" + longFacts.Repo + "-pr" + longFacts.PR
+	longArchive := exec.CommandContext(t.Context(), archive, longRun, longLabel)
+	longArchive.Env = cmd.Env
+	if output, err := longArchive.CombinedOutput(); err != nil {
+		t.Fatalf("archive-run with a long unit: %v\n%s", err, output)
+	}
+	base := filepath.Base(longRun)
+	for _, suffix := range []string{".tar.zst", ".timings.json"} {
+		paths, err := filepath.Glob(filepath.Join(destination, "*-"+base+suffix))
+		if err != nil || len(paths) != 1 {
+			t.Fatalf("long run delivery %s = %v, %v", suffix, paths, err)
+		}
+	}
+
 }
 
 func TestArchiveRunKeepsTheArchiveWhenSpanAnalysisFails(t *testing.T) {

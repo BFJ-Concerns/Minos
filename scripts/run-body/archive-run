@@ -20,7 +20,20 @@ safe_label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '-')"
 run_name="$(basename "$run_dir")"
 safe_run_name="$(printf '%s' "$run_name" | tr -c 'A-Za-z0-9_.-' '-')"
 timestamp="$(date -u '+%Y%m%dT%H%M%SZ' 2>/dev/null)" || archive_failed
-archive_name="${timestamp}-${safe_label}-${safe_run_name}.tar.zst"
+# Reserve room for the longer sidecar name and the receiver's staging suffix.
+# For a long label the run directory alone still identifies the run.
+archive_stem="${timestamp}-${safe_label}-${safe_run_name}"
+sidecar_staging_suffix=.timings.json.partial
+stem_limit=$((255 - ${#sidecar_staging_suffix}))
+if [ "${#archive_stem}" -gt "$stem_limit" ]; then
+  archive_stem="${timestamp}-${safe_run_name}"
+fi
+if [ "${#archive_stem}" -gt "$stem_limit" ]; then
+  # A directory created before the unit name was bounded can also be long.
+  digest="$(printf '%s' "$archive_stem" | sha256sum)" || archive_failed
+  archive_stem="${archive_stem:0:$((stem_limit - 17))}-${digest:0:16}"
+fi
+archive_name="${archive_stem}.tar.zst"
 
 
 # Delivering one run costs four calls — the archive stream and its commit,

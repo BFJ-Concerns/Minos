@@ -999,8 +999,27 @@ func TestSpawnRunExitHookNamesTheShippedSweepTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the exit hook names a template the binary does not ship: %v", err)
 	}
-	if !strings.Contains(string(content), "\nExecStart=/usr/bin/systemctl --user start --no-block minos-sweep.service\n") {
-		t.Fatalf("the shipped template does not enqueue the canonical sweep and return:\n%s", content)
+	for _, line := range []string{
+		"ExecStart=/usr/bin/touch %t/minos-sweep.request",
+		"ExecStart=/usr/bin/systemctl --user start --no-block minos-sweep-request.path",
+	} {
+		if !strings.Contains(string(content), "\n"+line+"\n") {
+			t.Fatalf("the shipped exit hook lacks %q:\n%s", line, content)
+		}
+	}
+	path, err := fs.ReadFile(deploy.Units, "systemd/user/minos-sweep-request.path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(path), "\nPathExists=%t/minos-sweep.request\nUnit=minos-sweep.service\n") {
+		t.Fatalf("the path unit does not trigger a sweep for a pending request:\n%s", path)
+	}
+	sweep, err := fs.ReadFile(deploy.Units, "systemd/user/minos-sweep.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sweep), "\nExecStartPre=/usr/bin/rm -f %t/minos-sweep.request\n") {
+		t.Fatalf("the sweep does not consume its request on startup:\n%s", sweep)
 	}
 	if !strings.Contains(string(content), "\nCollectMode=inactive-or-failed\n") {
 		t.Fatalf("the shipped template keeps a failed instance loaded, and the exited run unit with it:\n%s", content)
@@ -1338,5 +1357,37 @@ func TestSpawnRunSeparatesForgeNamespaces(t *testing.T) {
 	result, err := SpawnRun(t.Context(), cfg, RepoConfig{}, facts)
 	if err != nil || result.Outcome != SpawnSuppressed || result.BlockingUnit != active[1] || len(active) != 2 {
 		t.Fatalf("new-name active unit detection = %#v, err=%v, active=%v", result, err, active)
+	}
+}
+
+func TestUnitNameBoundsLongNamesAndKeepsRepositoryPrefix(t *testing.T) {
+	facts := Facts{
+		Forge: "forgejo",
+		Owner: strings.Repeat("owner-", 45),
+		Repo:  strings.Repeat("repo-", 50),
+		PR:    "9223372036854775807",
+	}
+	unit := UnitName(facts)
+	if len(sweepAfterRunUnit(unit)) > 255 || len(unit+".service") > 255 {
+		t.Fatalf("unit or exit hook exceeds systemd's limit: %q", unit)
+	}
+	if unit != UnitName(facts) || !strings.HasPrefix(unit, "minos-run-") || !strings.HasSuffix(unit, "-pr"+facts.PR) {
+		t.Fatalf("unexpected bounded unit: %q", unit)
+	}
+	otherRepo := facts
+	otherRepo.Repo += "-elsewhere"
+	if unit == UnitName(otherRepo) {
+		t.Fatalf("two long repository identities share unit %q", unit)
+	}
+	sameRepo := facts
+	sameRepo.PR = "2"
+	if unit == UnitName(sameRepo) {
+		t.Fatalf("two pull requests share unit %q", unit)
+	}
+	counts := repoRunCounts([]sweepCandidate{{facts: facts}}, []string{
+		unit + ".service", UnitName(otherRepo) + ".service", UnitName(sameRepo) + ".service",
+	})
+	if got := counts[facts.RepoSlug()]; got != 2 {
+		t.Fatalf("running pull requests in long-named repository = %d, want 2", got)
 	}
 }

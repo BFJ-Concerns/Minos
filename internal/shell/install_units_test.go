@@ -42,8 +42,8 @@ func TestInstallUnitsRendersTheRunsSliceFromTheConfiguredEnvelope(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(shipped) != 5 {
-		t.Fatalf("shipped units = %d, want the receiver, sweep, timer, sweep-after-run template and slice", len(shipped))
+	if len(shipped) != 6 {
+		t.Fatalf("shipped units = %d, want the receiver, sweep, timer, request path, sweep-after-run template and slice", len(shipped))
 	}
 	for _, entry := range shipped {
 		installed, err := os.ReadFile(filepath.Join(directory, entry.Name()))

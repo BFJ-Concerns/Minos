@@ -1999,7 +1999,10 @@ func adjudicatedFinding(id, severity, title string, line int, explanation string
 		"id": id, "source": "Correctness", "title": title, "severity": severity,
 		"confidence": 86, "path": "internal/review.go", "line": line, "explanation": explanation,
 		"proposingLabel": "specialist", "verifyLabel": "verifier",
-		"rawVerifier": map[string]any{"verdict": "upheld", "confidence": 94, "reason": "The condition is reachable."},
+		"rawVerifier": map[string]any{
+			"verdict": "confirmed", "confidence": 94, "severity": severity, "reason": "The condition is reachable.",
+			"outsideFact": "", "wouldSettle": "",
+		},
 	}
 }
 
@@ -2798,7 +2801,13 @@ func (s *forgejoFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		writeFixtureJSON(s.t, w, map[string]any{"clone_url": s.secondaryCloneURL, "default_branch": "main"})
 	case r.Method == http.MethodGet && path == "/api/v1/repos/minos-e2e-owner/subject/pulls":
-		writeFixtureJSON(s.t, w, append([]map[string]any{s.pullRequest}, s.stackedChildren...))
+		pulls := append([]map[string]any{s.pullRequest}, s.stackedChildren...)
+		if r.URL.Query().Get("state") == "open" {
+			pulls = slices.DeleteFunc(pulls, func(pr map[string]any) bool {
+				return pr["state"] != "open" || pr["merged"] == true
+			})
+		}
+		writeFixtureJSON(s.t, w, pulls)
 	case r.Method == http.MethodGet && path == pullPath:
 		s.pullRequestReads[fmt.Sprint(s.pullRequest["number"])]++
 		pullRequest := maps.Clone(s.pullRequest)

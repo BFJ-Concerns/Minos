@@ -1,5 +1,6 @@
 // Delivers a run's non-gating material — verified advisory findings,
-// unverified observations from outside the change, and configuration
+// unverified observations from outside the change, findings a verifier
+// could neither confirm nor refute, and configuration
 // diagnostics — to the repository's configured filing destination: a file
 // in a repository's default branch, an issue on a named repository, a
 // comment on the pull request, or nowhere. One entry files once,
@@ -18,6 +19,9 @@ const PUSH_ATTEMPTS = 2;
 const execFileAsync = promisify(execFile);
 
 export const FILING_KINDS = ["file", "issue", "pull-request-comment", "none"];
+
+// Entry kinds nobody confirmed.
+const UNVERIFIED_KINDS = ["out-of-scope-observation", "unsettled-finding"];
 
 // One entry is filed once: a repeat run over a later head that raises the
 // same defect at the same site finds its marker already at the destination
@@ -298,9 +302,11 @@ export async function deliverFilingEntries({
 }) {
   if (!validFilingDestination(destination)) throw new Error("filing destination is malformed");
   const kind = destination.kind;
-  // An observation is about code outside the change, so it never goes onto
-  // the pull request, whatever the destination.
-  if (kind === "pull-request-comment") entries = entries.filter((entry) => entry.kind !== "out-of-scope-observation");
+  // Unverified material, an out-of-scope observation or an unsettled
+  // finding, never reaches the pull request: for a pull-request-comment
+  // destination it stays in the run record.
+  if (kind === "pull-request-comment")
+    entries = entries.filter((entry) => !UNVERIFIED_KINDS.includes(entry.kind));
   if (entries.length === 0) return { kind, outcome: "nothing-to-file", written: 0 };
   if (kind === "none") return { kind, outcome: "discarded", written: 0 };
   if ([source && source.owner, source && source.repo, source && source.pr, source && source.date]
