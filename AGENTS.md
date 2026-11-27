@@ -75,7 +75,10 @@ nothing else.
   set.
 - The lead sizes each review by reading the change: nothing, the increment
   since the head Minos last finished on, or the whole pull request
-  (`lifecycle/lifecycle.md`, step 2). That earlier head is known by the
+  (`lifecycle/lifecycle.md`, step 2), choosing only among the outcomes
+  the repository's `push-inspection.outcomes` setting allows
+  (`MINOS_PUSH_INSPECTION_OUTCOMES`; all three by default, `full` always
+  among them). That earlier head is known by the
   content of the pull request's files, not by its commits (`minos forge
   earlier`), from a record kept under the runs directory. The record is a
   cache: without it, `minos forge earlier` looks among the newest 20 of
