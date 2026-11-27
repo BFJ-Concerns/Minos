@@ -133,6 +133,9 @@ func SweepCommand(ctx context.Context, args []string) error {
 			log.Print(message)
 		}
 	}
+	if err := reconcileRepositoryDescriptions(ctx, cfg, repos); err != nil {
+		log.Printf("repository descriptions: %v", err)
+	}
 	if err := expireInactiveRunHandoffs(ctx, cfg, repos); err != nil {
 		log.Printf("expire inactive run handoffs: %v", err)
 	}
