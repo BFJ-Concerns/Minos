@@ -28,11 +28,12 @@ credential-file = "/etc/minos/forgejo.token"
 signature-header = "X-Forgejo-Signature"
 
 # GitHub: Minos acts as a GitHub App installed on each reviewed repository.
-# The credential file is a JSON object naming the App's id, the
-# installation id on the reviewed repositories and the path of the App's
-# private key; the adaptation mints short-lived installation tokens from
-# it. The App's webhook posts every installed repository's events to
-# /hooks/github with the secret in webhook-secret-file, signed in
+# The credential file is a JSON object with "app-id" and
+# "private-key-file", the App's ID and the path to its private key.
+# The adaptation looks up the installation for each repository and mints
+# a short-lived token for that installation. The App's webhook posts events
+# from every installed repository to /hooks/github. GitHub signs them with
+# the secret in webhook-secret-file and sends the signature in
 # X-Hub-Signature-256. The App's login is its slug with GitHub's "[bot]"
 # suffix, for example "minos-review[bot]": make it the service's bot-login
 # when GitHub is the only forge, or this table's bot-login when another
