@@ -395,14 +395,15 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    missing or disabled endpoint produces "dependency state unavailable" and
    defers review until the next sweep pass.
 
-   For a GitHub forge, register a GitHub App (permissions: pull
-   requests and commit statuses read and write, contents read — and write
-   where a `file` filing destination or the failure ledger pushes to an
-   installed repository — and issues read and write where a filing
-   destination needs them; subscribe it
-   to pull request, pull request review and issue comment events; one
-   webhook pointing at `/hooks/github` with the secret), install it on each
-   repository Minos reviews, and write the credential file as JSON:
+   For a GitHub forge, register a GitHub App. Grant read and write access to
+   pull requests, and to commit statuses where `review.commit-status` is
+   enabled. Grant read access to contents, with write access where a
+   `file` filing destination or the failure ledger pushes to the repository.
+   Grant read and write access to issues where the filing destination
+   requires it. Subscribe to pull request, pull request review and issue
+   comment events. Point the webhook at `/hooks/github` with the secret,
+   install the App on each repository Minos reviews, and write the
+   credential file as JSON:
    `{"app-id": "<App id>", "private-key-file": "/etc/minos/github-app.pem"}`
    beside the downloaded private key. The adaptation asks GitHub which
    installation serves each repository and caches its token until it nears
