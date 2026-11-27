@@ -163,16 +163,39 @@ conversation_comments() {
 # internal/product names SummaryOpening.
 summary_opening='<!-- Minos summary:'
 
-# summary_comment prints the summary comment the login keeps on the pull
-# request as {id, body}, or null when it keeps none: the oldest of its
-# conversation comments whose body opens with the summary record. Returns 1
-# when the comments could not be read. This is the one place the comment is
-# found, for the snapshot that reads it and the guarded write that edits it.
+# conversation_comment_records projects a raw listing of the pull
+# request's conversation comments ($1) to the protocol's records, oldest
+# first: each comment's id, its author's login, its body and the time it was
+# written. pull-request-comments prints these, and the snapshot carries them.
+conversation_comment_records() {
+  printf '%s' "$1" | jq -c 'sort_by((.created_at // ""), (.id // 0)) | map({
+    id: (.id // 0),
+    user: (.user.login // .user.username // ""),
+    body: (.body // ""),
+    created_at: (.created_at // "")
+  })'
+}
+
+# summary_comment_of prints, from a raw listing of the pull request's
+# conversation comments ($1), the summary comment the login ($2) keeps as
+# {id, body, updated_at}, or null when it keeps none: the oldest of its
+# comments whose body opens with the summary record. updated_at is the
+# forge's time of the comment's last edit, which tells one write of the same
+# record from another.
+summary_comment_of() {
+  printf '%s' "$1" | jq -c --arg login "$2" --arg opening "$summary_opening" '
+    [.[] | select((.user.login // .user.username // "") == $login and ((.body // "") | startswith($opening)))] |
+    if length == 0 then null else min_by(.id) | {id, body, updated_at: (.updated_at // "")} end'
+}
+
+# summary_comment lists the pull request's conversation comments and prints
+# the login's summary comment from them (summary_comment_of). Returns 1 when
+# the comments could not be read. This is the one place the comment is
+# found, for the read that needs it alone and the guarded write that edits
+# it; the snapshot finds it in the listing it also carries.
 summary_comment() {
   summary_listing="$(conversation_comments "$1" "$2" "$3")" || return 1
-  printf '%s' "$summary_listing" | jq -c --arg login "$4" --arg opening "$summary_opening" '
-    [.[] | select((.user.login // .user.username // "") == $login and ((.body // "") | startswith($opening)))] |
-    if length == 0 then null else min_by(.id) | {id, body} end'
+  summary_comment_of "$summary_listing" "$4"
 }
 
 # The page anchor of the newest review this login left on the given head,
