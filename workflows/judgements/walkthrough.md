@@ -67,11 +67,9 @@ For each flow:
 
 `none` means that no walkthrough of this pull request is kept. Write one from the change alone.
 
-Otherwise this is the walkthrough written, as you are writing this one, at the earlier head named on it, and people have read it. The pull request has moved since. `git diff` from that head to `{{head}}` shows what the author did in between; if git does not know that commit, the branch was rewritten, and you check the whole earlier walkthrough against the change as it stands.
+Otherwise, revise the earlier walkthrough to describe the whole change shown by `git diff {{target}}...{{head}}`. A diff between the two heads can help you find what needs another look. After a merge from the target or a rebase, it can also show changes inherited from the target. Use the current pull request diff to decide what belongs in the walkthrough.
 
-Revise the earlier walkthrough. Do not write a fresh one. Keep the title and the wording of every group the new commits left as it was, because a reader coming back to the pull request should find the same account of what has not changed. Rewrite what the new commits made untrue, add what they brought in, and remove what they took out. Nobody checked the earlier walkthrough, so where your reading shows it wrong, correct it.
-
-Your answer is still the whole walkthrough of the pull request as it stands at `{{head}}`. It is never an account of what changed since the earlier head.
+A returning reader should recognise the account they have already read. Keep the wording of the overview, group titles and summaries wherever it still holds, including when the earlier walkthrough is for this same head. Correct anything the code shows was wrong, cover any changes the earlier walkthrough missed, and remove anything the pull request no longer changes. Each group's files should match the change as it stands.
 
 ## What to return
 
