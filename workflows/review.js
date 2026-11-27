@@ -12,13 +12,13 @@ export const meta = {
 // A workflow script cannot import statically, so what this one shares with
 // review-briefs.js is loaded from beside it: the checks of the input each builder
 // attached, beside the builder's own module; the prompt slots; and the
-// merge and verification stages every review runs on its proposed findings.
+// proposing, merge and verification stages every review runs.
 const { contractsFromInput } = await import("./review-contracts.mjs");
 const { routingFromInput } = await import("./role-routing.mjs");
 const { projectGuidanceFromInput, projectGuidanceSection } = await import("./orientation-guidance.mjs");
 const { pullRequestFromInput, pullRequestSection } = await import("./pull-request-description.mjs");
 const { promptFits, fillPrompt } = await import("./review-prompts.mjs");
-const { reviewStages, subjectOf, proposedFindingOf, uncheckedFindingOf } = await import("./review-stages.mjs");
+const { reviewStages, proposalsOf, subjectOf, proposedFindingOf, uncheckedFindingOf } = await import("./review-stages.mjs");
 
 function concernsFromInput(input) {
   const concerns = input && input.concerns;
@@ -103,8 +103,8 @@ const reviewedChangeValues = {
 
 const {
   incomplete, legs, outOfScopeObservations,
-  addLeg, legOutput, recordObservations,
-  mergeProposed, verifySubjects,
+  addLeg,
+  proposeUnits, mergeProposed, verifySubjects,
 } = reviewStages({ agent, parallel, routing, contracts, prompts, reviewedChangeValues });
 
 function envelope(fields) {
@@ -169,8 +169,6 @@ const specialistUnits = exploration.plan.map((unit, index) => ({
 }));
 
 phase("Specialise");
-for (const unit of specialistUnits)
-  addLeg(unit.label, "specialist", routing.proposer.model);
 
 // A planned unit's focus sentence and its scope paths, as the specialist
 // prompt shows its own unit and each other unit of its concern.
@@ -191,27 +189,15 @@ function specialistPrompt(unit) {
   });
 }
 
-const specialistResults = await parallel(
-  specialistUnits.map((unit) => () =>
-    agent(specialistPrompt(unit), {
-      engine: routing.proposer.engine,
-      schema: contracts.specialistSchema,
-      model: routing.proposer.model,
-      effort: routing.proposer.effort,
-      strip: ["skills", "agents"],
-      identity: true,
-      label: unit.label,
-      phase: "Specialise",
-    })
-  )
+const specialistResults = await proposeUnits(
+  specialistUnits.map((unit) => ({ ...unit, prompt: specialistPrompt(unit), source: unit.concern })),
+  "Specialise",
 );
 
 const reviewerStates = [];
 const proposed = [];
 const briefs = [];
-specialistUnits.forEach((unit, unitIndex) => {
-  const settlement = specialistResults[unitIndex];
-  const result = legOutput(settlement, unit.label);
+for (const { unit, completed, output: result } of specialistResults) {
   reviewerStates.push({
     label: unit.label,
     role: "specialist",
@@ -220,23 +206,16 @@ specialistUnits.forEach((unit, unitIndex) => {
     scope: unit.scope,
     family: unit.family,
     pinnedModel: routing.proposer.model,
-    status: settlement && settlement.failure === null ? "done" : "no-result",
+    status: completed ? "done" : "no-result",
   });
-  if (!result) return;
-  recordObservations(result.outOfScopeObservations, unit.concern, unit.label);
+  if (!result) continue;
   let count = 0;
-  const propose = (findings, outsideConcern) =>
-    (Array.isArray(findings) ? findings : []).forEach((finding) => {
-      count += 1;
-      proposed.push({
-        id: `${unit.label}:${count}`,
-        finding,
-        source: unit.concern,
-        reportedBy: unit.specialistType,
-        outsideConcern,
-        proposingLabel: unit.label,
-      });
-    });
+  const propose = (findings, outsideConcern) => proposed.push(...proposalsOf(findings, () => `${unit.label}:${count += 1}`, {
+    source: unit.concern,
+    reportedBy: unit.specialistType,
+    outsideConcern,
+    proposingLabel: unit.label,
+  }));
   // A specialist with nothing of its own kind to judge may still have met
   // another concern's problem on the way.
   if (result.applicability.status === "inapplicable") {
@@ -251,7 +230,7 @@ specialistUnits.forEach((unit, unitIndex) => {
     propose(result.findings, false);
   }
   propose(result.outsideConcernFindings, true);
-});
+}
 
 const dispatches = specialistUnits.map((unit) => ({
   id: unit.id,

@@ -1,7 +1,8 @@
-// The stages every review workflow runs after its own legs have proposed
-// findings: the merge of the findings one fix would resolve, and their
-// verification in rounds. review.js and review-briefs.js propose in
-// different ways and share everything from there on.
+// The stages every review workflow runs: the proposing legs, the merge of
+// the findings one fix would resolve, and their verification in rounds.
+// review.js and review-briefs.js plan their proposing units and prompt them
+// in different ways; the dispatch of those units and everything after it
+// is shared.
 //
 // A workflow script cannot import statically, so it loads this module
 // where it needs it, from beside itself:
@@ -27,6 +28,12 @@ import { fillPrompt } from "./review-prompts.mjs";
 
 function pick(record, fields) {
   return Object.fromEntries(fields.filter((field) => record[field] !== undefined).map((field) => [field, record[field]]));
+}
+
+// The proposed findings one list of a proposing leg's output gives, each
+// carrying the id `idOf` gives it and the provenance `fields`.
+export function proposalsOf(findings, idOf, fields) {
+  return (Array.isArray(findings) ? findings : []).map((finding, index) => ({ id: idOf(index), finding, ...fields }));
 }
 
 // One run's stages over the values the workflow checked in its input:
@@ -72,6 +79,31 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
         observingLabel: label,
         verified: false,
       });
+    });
+  }
+
+  // The proposing legs: one for each unit, each sent the unit's own
+  // `prompt` under its `label` on the proposer route. A unit's `source`
+  // names it on the observations it records. Each unit comes back with
+  // whether its leg completed and its usable output, null where the leg
+  // failed or answered nothing, which already marks the run incomplete.
+  async function proposeUnits(units, phaseName) {
+    for (const unit of units) addLeg(unit.label, "specialist", routing.proposer.model);
+    const settlements = await parallel(units.map((unit) => () => agent(unit.prompt, {
+      engine: routing.proposer.engine,
+      schema: contracts.specialistSchema,
+      model: routing.proposer.model,
+      effort: routing.proposer.effort,
+      strip: ["skills", "agents"],
+      identity: true,
+      label: unit.label,
+      phase: phaseName,
+    })));
+    return units.map((unit, index) => {
+      const settlement = settlements[index];
+      const output = legOutput(settlement, unit.label);
+      if (output) recordObservations(output.outOfScopeObservations, unit.source, unit.label);
+      return { unit, completed: Boolean(settlement && settlement.failure === null), output };
     });
   }
 
@@ -245,6 +277,7 @@ export function reviewStages({ agent, parallel, routing, contracts, prompts, rev
     addLeg,
     legOutput,
     recordObservations,
+    proposeUnits,
     mergeProposed,
     verifySubjects,
   };

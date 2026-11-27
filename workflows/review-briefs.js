@@ -18,13 +18,13 @@ function slug(value) {
 // A workflow script cannot import statically, so what this one shares with
 // review.js is loaded from beside it: the checks of the input each builder
 // attached, beside the builder's own module; the prompt slots; and the
-// merge and verification stages every review runs on its proposed findings.
+// proposing, merge and verification stages every review runs.
 const { contractsFromInput } = await import("./review-contracts.mjs");
 const { routingFromInput } = await import("./role-routing.mjs");
 const { projectGuidanceFromInput, projectGuidanceSection } = await import("./orientation-guidance.mjs");
 const { pullRequestFromInput, pullRequestSection } = await import("./pull-request-description.mjs");
 const { promptFits, fillPrompt } = await import("./review-prompts.mjs");
-const { reviewStages, subjectOf, proposedFindingOf, uncheckedFindingOf } = await import("./review-stages.mjs");
+const { reviewStages, proposalsOf, subjectOf, proposedFindingOf, uncheckedFindingOf } = await import("./review-stages.mjs");
 
 // The deterministic brief pass arrives computed: the input builder parsed
 // each brief's frontmatter, named it and settled its path-scope and
@@ -190,8 +190,8 @@ const reviewedChangeValues = {
 
 const {
   incomplete, legs, outOfScopeObservations,
-  addLeg, legOutput, recordObservations,
-  mergeProposed, verifySubjects,
+  addLeg, legOutput,
+  proposeUnits, mergeProposed, verifySubjects,
 } = reviewStages({ agent, parallel, routing, contracts, prompts, reviewedChangeValues });
 const reports = new Map();
 const misconfigurations = [];
@@ -367,39 +367,31 @@ function assignment(unit) {
 }
 
 phase("Review");
-for (const unit of dispatched) addLeg(unit.label, "specialist", routing.proposer.model);
-const specialistResults = await parallel(dispatched.map((unit) => () => agent(
-  fillPrompt(prompts.repository, {
-    ...reviewedChangeValues,
-    "brief-path": unit.brief,
-    brief: unit.briefContent,
-    assignment: assignment(unit),
-  }),
-  {
-    engine: routing.proposer.engine,
-    schema: contracts.specialistSchema,
-    model: routing.proposer.model,
-    effort: routing.proposer.effort,
-    strip: ["skills", "agents"],
-    identity: true,
-    label: unit.label,
-    phase: "Review",
-  },
-)));
+const specialistResults = await proposeUnits(
+  dispatched.map((unit) => ({
+    ...unit,
+    prompt: fillPrompt(prompts.repository, {
+      ...reviewedChangeValues,
+      "brief-path": unit.brief,
+      brief: unit.briefContent,
+      assignment: assignment(unit),
+    }),
+    source: unit.title,
+  })),
+  "Review",
+);
 
 const reviewerStates = [];
 const proposed = [];
 const inapplicableByBrief = new Map();
-dispatched.forEach((unit, unitIndex) => {
-  const settlement = specialistResults[unitIndex];
-  const result = legOutput(settlement, unit.label);
+specialistResults.forEach(({ unit, completed, output: result }, unitIndex) => {
   reviewerStates.push({
     label: unit.label,
     role: "specialist",
     brief: unit.brief,
     family: routing.proposer.engine,
     pinnedModel: routing.proposer.model,
-    status: settlement && settlement.failure === null ? "done" : "no-result",
+    status: completed ? "done" : "no-result",
   });
   if (!result) {
     reports.set(unit.brief, {
@@ -410,18 +402,11 @@ dispatched.forEach((unit, unitIndex) => {
     });
     return;
   }
-  recordObservations(result.outOfScopeObservations, unit.title, unit.label);
-  const propose = (findings, kind, fields) =>
-    (Array.isArray(findings) ? findings : []).forEach((finding, findingIndex) => {
-      proposed.push({
-        id: `repository-brief-unit-${unitIndex + 1}:${kind}:${findingIndex + 1}`,
-        finding,
-        source: unit.title,
-        reportedBy: unit.title,
-        proposingLabel: unit.label,
-        ...fields,
-      });
-    });
+  const propose = (findings, kind, fields) => proposed.push(...proposalsOf(
+    findings,
+    (findingIndex) => `repository-brief-unit-${unitIndex + 1}:${kind}:${findingIndex + 1}`,
+    { source: unit.title, reportedBy: unit.title, proposingLabel: unit.label, ...fields },
+  ));
   // A problem outside the brief's concern that the change introduced is a
   // finding about the change, whatever the brief's extent or applicability.
   propose(result.outsideConcernFindings, "outside", { outsideConcern: true });
