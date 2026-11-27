@@ -451,6 +451,48 @@ A pull request excluded by the rules gets no new run or forge write.
 A run admitted earlier can still be in flight when the rules or pull
 request change.
 
+## Comment commands
+
+A conversation comment on an admitted pull request can ask for a review
+(`@<login> review`), a full review (`@<login> full review`) or that the pull
+request be skipped (`@<login> skip`). The mention is the forge's bot login,
+or on GitHub the App's slug without `[bot]`; it opens the comment's first
+non-empty line, and the command is the rest of that line. Only a user the
+forge shows with write access commands. GitHub reports that access
+directly. Forgejo answers a permission query about another user only to a
+repository administrator: make the service account an administrator of
+each repository whose collaborators should command. Where it is not one,
+only the owner of a user-owned repository commands, and the receiver's log
+says why another user's command was ignored.
+
+Webhook deliveries and the sweep read the commands on every pass, once the
+admission rules pass, and react with `eyes` on every command, a superseded
+one included:
+
+- The newest command decides between skip and review. While a skip is the
+  newest, the pull request is deferred as `skipped by comment command`,
+  whatever its head.
+- A review command waits until a terminal result appears that was not on
+  the forge when Minos first started a run for it: an approving or
+  request-changes review on any head, or a clean or attention status on
+  the current head or on the head the `.reviewed/` record names. While it
+  waits, it spends the current head's completion marker, so the next pass
+  starts a run, and every run started is started for it. A run already
+  started when the command arrived, whose scope was fixed then, never
+  answers it.
+- The run it starts may not choose `no-review`. It is given a full review
+  alone where the command asked for one or the head already carries a
+  result, over which an increment would be empty. Otherwise the
+  repository's `push-inspection.outcomes` apply without `no-review`.
+
+Minos keeps, in `.commands/` under `runs.dir`, one file per pull request,
+the results on the forge when a run was first started for each command and
+the commands it has acknowledged; the file goes with the pull request. It
+is a cache: losing it costs one more review of each command already
+answered and a repeated acknowledgement check. The Forgejo token's
+`write:issue` scope covers the reactions; a GitHub App needs no permission
+beyond those listed above.
+
 ## How runs and the sweep behave
 
 Run units, run directories and continuation handoffs include the configured

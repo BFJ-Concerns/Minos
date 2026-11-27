@@ -1,0 +1,39 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
+
+# Reacts on one of the open pull request's conversation comments, so its
+# writer sees the service read it. A reaction the login already left there
+# counts as written.
+owner="$1"; repo="$2"; pr="$3"; head="$4"; target="$5"; login="$6"; comment="$7"; content="$8"
+
+if guard_open_pull_request "$owner" "$repo" "$pr" "$head" "$target" "$login"; then
+  :
+else
+  status=$?
+  if [ "$status" -eq 1 ]; then write_result rejected "$guard_reason"; else write_result uncertain "forge guard could not be confirmed"; fi
+  exit 0
+fi
+
+reactions_path="/repos/${owner}/${repo}/issues/comments/${comment}/reactions"
+if reaction_present_at "$reactions_path" "$content" "$login"; then
+  write_result applied "reaction already present"
+  exit 0
+else
+  presence=$?
+  if [ "$presence" -eq 2 ]; then
+    write_result uncertain "reaction read-back could not be confirmed"
+    exit 0
+  fi
+fi
+
+payload="$(jq -nc --arg content "$content" '{content:$content}')"
+api_json POST "$reactions_path" "$payload" >/dev/null 2>&1 || true
+
+if reaction_present_at "$reactions_path" "$content" "$login"; then
+  write_result applied
+else
+  write_result uncertain "reaction write could not be discovered"
+fi

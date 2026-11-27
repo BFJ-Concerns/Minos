@@ -128,6 +128,12 @@ setting is absent or either companion judgement module is missing,
   progress beyond its predecessor (`stopStalledContinuation` in
   `internal/shell/spawn.go`).
   `runs.max-concurrent` caps how many runs are live at once.
+- A conversation comment from a user with write access can ask for a
+  review, a full review or a skip (`internal/shell/comment_commands.go`).
+  Admission reads the commands from the forge on every pass, after the
+  rules: a waiting review command spends the head's completion marker and
+  narrows the run's `MINOS_PUSH_INSPECTION_OUTCOMES` so it never chooses
+  `no-review`, and a newest skip defers the pull request.
 - Minos carries no sandbox of its own: whatever isolates the deployment is
   the security boundary, and the docs recommend a dedicated container or
   VM without requiring one. Run-scoped containment layers, policy gates

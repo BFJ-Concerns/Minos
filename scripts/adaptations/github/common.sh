@@ -311,8 +311,14 @@ web_base() {
 
 # Lookup helpers distinguish absence (1) from an unreadable forge (2).
 reaction_id() {
-  reaction_records="$(collect "/repos/$1/$2/issues/$3/reactions" 2>/dev/null)" || return 2
-  reaction_found="$(printf '%s' "$reaction_records" | jq -er --arg content "$4" --arg login "$5" '
+  reaction_id_at "/repos/$1/$2/issues/$3/reactions" "$4" "$5"
+}
+
+# reaction_id_at is reaction_id over any reactions listing: the pull
+# request's own ($1 its path) or one of its comments'.
+reaction_id_at() {
+  reaction_records="$(collect "$1" 2>/dev/null)" || return 2
+  reaction_found="$(printf '%s' "$reaction_records" | jq -er --arg content "$2" --arg login "$3" '
     if any(.[]; type != "object") then error("expected reaction objects") else
       [.[] | select(.content == $content and .user.login == $login)] |
       if length == 0 then empty else
@@ -324,6 +330,10 @@ reaction_id() {
 
 reaction_present() {
   reaction_id "$@" >/dev/null
+}
+
+reaction_present_at() {
+  reaction_id_at "$@" >/dev/null
 }
 
 # The page anchor of the newest review this login left on the given head,

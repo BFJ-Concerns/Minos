@@ -2,7 +2,9 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -121,7 +123,7 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		TargetSHA:   snapshot.TargetSHA,
 	}
 	if pullRequestClosed(snapshot) {
-		return ReconcileResult{Decision: ReconcileNothing}, removeReviewedChange(cfg, facts.Forge, guard)
+		return ReconcileResult{Decision: ReconcileNothing}, errors.Join(removeReviewedChange(cfg, facts.Forge, guard), removeCommandRecord(cfg, facts.Forge, guard))
 	}
 	if snapshot.State != "open" {
 		return ReconcileResult{Decision: ReconcileNothing}, nil
@@ -160,6 +162,40 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 			return ReconcileResult{}, fmt.Errorf("remove stale %s marker: %s: %s", terminal.role, result.Outcome, result.Reason)
 		}
 	}
+	botLogin := cfg.BotLogin(facts.Forge)
+	commands, err := readIssuedCommands(ctx, adapter, guard.Repository, snapshot.PullRequest, botLogin)
+	if err != nil {
+		return ReconcileResult{
+			Decision: ReconcileNothing, DeferralReason: "comment commands unavailable",
+			DeferralReasons: append([]string{"comment commands unavailable"}, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
+		}, fmt.Errorf("read comment commands: %w", err)
+	}
+	lastFinished := func() (headStatuses, error) {
+		return lastFinishedHeadStatuses(ctx, cfg, facts.Forge, adapter, guard)
+	}
+	record := readCommandRecord(cfg, facts.Forge, guard)
+	effect, err := commandsInForce(commands, snapshot, lastFinished, record, botLogin, cfg.Service.StatusContext)
+	if err != nil {
+		return ReconcileResult{
+			Decision: ReconcileNothing, DeferralReason: "comment commands unavailable",
+			DeferralReasons: append([]string{"comment commands unavailable"}, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
+		}, fmt.Errorf("work out comment commands: %w", err)
+	}
+	if acknowledged := acknowledgeCommands(ctx, adapter, guard, effect.unacknowledged); len(acknowledged) > 0 {
+		record.Acknowledged = append(record.Acknowledged, acknowledged...)
+		writeCommandRecord(cfg, facts.Forge, guard, record)
+	}
+	if effect.skipped {
+		return ReconcileResult{
+			Decision: ReconcileDecision(deferredDecisionPrefix + skippedByCommandReason), DeferralReason: skippedByCommandReason,
+			DeferralReasons: append([]string{skippedByCommandReason}, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
+		}, nil
+	}
+	if effect.reviewRequested {
+		eligibility.completedRun = false
+		eligibility.reasons = slices.DeleteFunc(eligibility.reasons, func(reason string) bool { return reason == "completed-marker" })
+		repo.PushInspection.Outcomes = commandedOutcomes(repo.PushInspection.Outcomes, effect)
+	}
 	facts.HeadSHA = snapshot.HeadSHA
 	facts.BaseSHA = snapshot.TargetSHA
 	facts.BaseRef = snapshot.TargetBranch
@@ -177,6 +213,18 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 	outcome, err := SpawnRun(ctx, cfg, repo, facts)
 	if err != nil {
 		return ReconcileResult{}, err
+	}
+	if outcome.Outcome == SpawnStarted || outcome.Outcome == SpawnContinued {
+		startedFor := false
+		for _, comment := range effect.waiting {
+			if _, started := record.Started[comment.ID]; !started {
+				record.Started[comment.ID] = effect.results
+				startedFor = true
+			}
+		}
+		if startedFor {
+			writeCommandRecord(cfg, facts.Forge, guard, record)
+		}
 	}
 	return ReconcileResult{
 		Decision:     outcome.Outcome,
