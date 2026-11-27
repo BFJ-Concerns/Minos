@@ -257,19 +257,24 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    shipped example comments an illustrative value of 4).
 
    `[routing]` maps each workflow role — `exploration`, `proposer`,
-   `verifier`, `brief-planner`, `judgement`, `description` — to an
+   `verifier`, `brief-planner`, `judgement`, `description`,
+   `walkthrough`, `walkthrough-diagrams` — to an
    engine, model and effort. A role left unset defaults at run time: with
    both engines provisioned, proposing and planning roles (`exploration`,
-   `proposer`, `brief-planner`) run on Codex, and the
-   `verifier`, `judgement` and `description` on Claude. With one engine provisioned, every
+   `proposer`, `brief-planner`) and `walkthrough-diagrams` run on Codex,
+   and the `verifier`, `judgement`, `description` and `walkthrough` on
+   Claude. With one engine provisioned, every
    role runs on it. A role on
    Claude defaults to `claude-opus-5-5`; on Codex the `proposer` defaults to
    `gpt-6.2-astra` and every other role to `gpt-6.1-sol`. Default effort is `high` for
-   `exploration` and `brief-planner`, and `medium` for `proposer`,
+   `exploration` and `brief-planner`, `xhigh` for `walkthrough` and
+   `walkthrough-diagrams`, and `medium` for `proposer`,
    `verifier`, `judgement` and `description`. `judgement` is the role
    of the run driver's one-shot judgement stages
-   (`workflows/judgements/`), and `description` the role of the stage
-   that writes the description Minos keeps of a repository. An effort is one of the Ensemble
+   (`workflows/judgements/`), `description` the role of the stage
+   that writes the description Minos keeps of a repository, and
+   `walkthrough` and `walkthrough-diagrams` the roles of the two stages
+   that write a pull request's [walkthrough](#walkthroughs). An effort is one of the Ensemble
    runtime's levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
    or `max`. The verifier's routing also carries
    the leg that merges findings one fix would resolve before they are
@@ -994,6 +999,42 @@ same description. The record is a cache: removing it costs one new
 description. The sweep removes the record of a repository whose
 description is switched off or that is no longer enrolled, and a run of
 such a repository is shown none.
+
+### Walkthroughs
+
+With `walkthrough.enabled = true`, under `[repositories.walkthrough]` in
+`service.toml` or `[walkthrough]` in a repository's own file, each head
+the scripted driver reviews and finishes clean or with changes requested
+gets a walkthrough in its summary comment: an overview of the whole pull
+request, grouped by what changed with the files each group touched, that
+says which range the review read and which models wrote it. With
+`walkthrough.diagrams = true` as well, it carries sequence diagrams of the
+flows the change touches, drawn by both forges from Mermaid source Minos
+renders. Each is off until enabled, and diagrams apply only where the
+walkthrough is on. The resident lead writes no walkthrough.
+
+Before either walkthrough stage starts, the summary comment holds the
+verdict and Minos records the run's completion. A refused status or marker
+write is reported and the walkthrough still proceeds. The run holds its
+place while the stages read. The `walkthrough` stage reads the change, and
+`walkthrough-diagrams` traces the flows it names. For an incremental review,
+the walkthrough still covers the whole pull request and says what range
+the review read. Minos revises any walkthrough kept for that pull request.
+A head that needed no review, or whose run stopped short, shows the last
+walkthrough under the head it describes.
+
+The run report lists failed stages, invalid rendered diagrams, oversized
+walkthroughs and unconfirmed writes as presentation anomalies. A flow the
+diagrams stage leaves undrawn is omitted. If the diagrams stage fails, the
+walkthrough can still be published without diagrams. Walkthrough anomalies
+do not change the run's outcome.
+
+Minos keeps the last published walkthrough in a private record under
+`<runs.dir>/.walkthroughs/`. The record and any partial write are removed
+when the pull request is closed or its repository is no longer enrolled.
+Starting a run with the walkthrough off also removes both files. The
+record is a cache. Removing it costs the display of the earlier
+walkthrough until the next reviewed head.
 
 ## Filing deduplication
 

@@ -131,6 +131,15 @@ Claude Code by default or on Codex (`MINOS_LEAD_ENGINE`).
   which is no run and takes no run place; a run is handed a copy of the
   kept record, which its legs are shown beside the guidance and never as
   the project's intent.
+- A repository with `walkthrough.enabled` on gets a walkthrough of the
+  pull request in the summary comment of each head the scripted driver
+  reviewed and finished (`workflows/walkthrough.mjs`, the
+  `write-walkthrough` closing duty), and sequence diagrams inside it with
+  `walkthrough.diagrams` on too. The duty runs after `withdraw`; a fault
+  in either stage is an anomaly in the report and never changes how the
+  run ended. The service keeps the last one per pull request beside its
+  other records and names it in `MINOS_WALKTHROUGH_RECORD`; the resident
+  lead writes none.
 - Each pull request has one summary comment: a conversation comment the
   service creates at the first claim and edits in place ever after
   (`minos forge summary`, each adaptation's `guarded-write-summary`). Its

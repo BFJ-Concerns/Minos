@@ -94,6 +94,8 @@ export function judgementArgs(stage, input, { env = process.env } = {}) {
 // checked here. An unusable answer throws: a stage with no answer has
 // judged nothing, and nothing downstream may act as though it had.
 export function answerFrom(stage, input, result) {
+  if (result?.stage === stage.name && typeof result.failure === "string" && result.failure)
+    throw new Error(`stage ${stage.name} failed: ${result.failure}`);
   if (!result || result.stage !== stage.name || !result.answer || typeof result.answer !== "object" || Array.isArray(result.answer))
     throw new Error(`stage ${stage.name} gave no answer`);
   const problem = stage.answerProblem(result.answer, input);
@@ -101,11 +103,19 @@ export function answerFrom(stage, input, result) {
   return result.answer;
 }
 
+// The model that answered a stage: the one the workflow's result names,
+// which a fallback may have made another than the one routed, or the
+// routed one where the result names none.
+export function answeringModel(result, routing) {
+  const named = result?.answeredBy;
+  return typeof named === "string" && named !== "" ? named : routing?.model ?? null;
+}
+
 // What a run keeps of one judgement: what the stage was given, what it
-// answered and the routing it answered on. replay-judgement.mjs takes a
-// record and puts its input to the stage again. `answer` may equally hold
-// a choice made some other way on the same input, which a replay is then
-// compared with.
-export function judgementRecord(stage, input, answer, routing) {
-  return { kind: RECORD_KIND, stage: stage.name, input, answer, routing };
+// answered, the routing it was sent on and, where known, the model that
+// answered. replay-judgement.mjs takes a record and puts its input to the
+// stage again. `answer` may equally hold a choice made some other way on
+// the same input, which a replay is then compared with.
+export function judgementRecord(stage, input, answer, routing, answeredBy) {
+  return { kind: RECORD_KIND, stage: stage.name, input, answer, routing, ...(answeredBy ? { answeredBy } : {}) };
 }

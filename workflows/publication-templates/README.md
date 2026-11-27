@@ -12,7 +12,7 @@ refused.
 
 | File | Composed by | Slots |
 |---|---|---|
-| `summary-comment.md` | `workflows/summary-comment.mjs` | `state`, `sections`, `outstanding` |
+| `summary-comment.md` | `workflows/summary-comment.mjs` | `state`, `sections`, `outstanding`, `walkthrough` |
 
 The summary comment's first line, the record that binds its state to a
 head, is not part of the template: `minos forge summary` writes it above

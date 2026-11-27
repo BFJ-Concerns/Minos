@@ -97,6 +97,15 @@ signature-header = "X-Forgejo-Signature"
 # written and a kept one is removed.
 # [repositories.description]
 # enabled = false
+# The walkthrough: an overview of each reviewed head's pull request, grouped
+# by what changed with the files each group touched, which the summary
+# comment carries once the head is finished. Diagrams adds sequence diagrams
+# of the flows the change touches, and applies only where the walkthrough is
+# on. Each is off unless enabled, and a walkthrough that cannot be written
+# is reported in the run's report and never changes how the run ended.
+# [repositories.walkthrough]
+# enabled = false
+# diagrams = false
 # Guidance sources: the documents that carry each project's declared intent,
 # read in this order. A source names a path in the reviewed repository, or a
 # path in a named secondary repository on the same forge (cloned read-only
@@ -122,12 +131,14 @@ signature-header = "X-Forgejo-Signature"
 # attention = {label = "REPLACE_WITH_ATTENTION_LABEL"}
 
 # Workflow role routing: which engine, model and effort each role runs on.
-# Roles: exploration, proposer, verifier, brief-planner, judgement and
-# description.
+# Roles: exploration, proposer, verifier, brief-planner, judgement,
+# description, walkthrough and walkthrough-diagrams.
 # With both engines provisioned, proposing and planning roles default to
 # Codex. The proposer uses gpt-6.2-astra and the planning roles gpt-6.1-sol.
 # The verifier, the judgement stages and the description stage default to
-# Claude at medium effort (claude-opus-5-5). With one engine provisioned
+# Claude at medium effort (claude-opus-5-5). The walkthrough defaults to
+# Claude and its diagrams to Codex (gpt-6.1-sol), both at xhigh effort.
+# With one engine provisioned
 # every role runs on it. The verifier's routing also carries the finding
 # merge. A model needs its engine named.
 #

@@ -25,16 +25,25 @@ if (
 ) throw new Error("deterministic input omitted the stage's routing");
 
 phase("Judge");
-const answer = await agent(input.prompt, {
+const settlement = await agent(input.prompt, {
   engine: routing.engine,
   schema: input.schema,
   model: routing.model,
   effort: routing.effort,
   strip: ["skills", "agents"],
+  identity: true,
   label: stage,
   phase: "Judge",
 });
 
 // A leg that gave no answer is returned as none. The runner fails the stage
-// on it: no default stands in for a judgement nobody made.
-return { stage, answer: answer || null };
+// on it: no default stands in for a judgement nobody made. `answeredBy` is
+// the model that answered, or null where the runtime names none. A failed
+// leg carries the runtime's reason for the runner to report.
+const answered = settlement && settlement.failure === null ? settlement : null;
+return {
+  stage,
+  answer: (answered && answered.output) || null,
+  answeredBy: answered?.answeredBy?.model ?? null,
+  failure: settlement?.failure?.message ?? null,
+};

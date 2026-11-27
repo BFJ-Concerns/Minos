@@ -158,17 +158,21 @@ type RoleRouting struct {
 // under Concerns the specialist concerns that propose on routing of their
 // own, by concern name.
 type Routing struct {
-	Exploration  RoleRouting            `toml:"exploration"`
-	Proposer     RoleRouting            `toml:"proposer"`
-	Verifier     RoleRouting            `toml:"verifier"`
-	Judgement    RoleRouting            `toml:"judgement"`
-	Description  RoleRouting            `toml:"description"`
-	BriefPlanner RoleRouting            `toml:"brief-planner"`
-	Concerns     map[string]RoleRouting `toml:"concerns"`
+	Exploration  RoleRouting `toml:"exploration"`
+	Proposer     RoleRouting `toml:"proposer"`
+	Verifier     RoleRouting `toml:"verifier"`
+	Judgement    RoleRouting `toml:"judgement"`
+	Description  RoleRouting `toml:"description"`
+	BriefPlanner RoleRouting `toml:"brief-planner"`
+	// Walkthrough writes a pull request's walkthrough, and
+	// WalkthroughDiagrams traces the flows its diagrams show.
+	Walkthrough         RoleRouting            `toml:"walkthrough"`
+	WalkthroughDiagrams RoleRouting            `toml:"walkthrough-diagrams"`
+	Concerns            map[string]RoleRouting `toml:"concerns"`
 }
 
 // routingRoles names the workflow roles in the order they are listed.
-var routingRoles = []string{"exploration", "proposer", "verifier", "brief-planner", "judgement", "description"}
+var routingRoles = []string{"exploration", "proposer", "verifier", "brief-planner", "judgement", "description", "walkthrough", "walkthrough-diagrams"}
 
 // role is the named role's routing field, for reading and replacing it.
 func (r *Routing) role(name string) *RoleRouting {
@@ -185,6 +189,10 @@ func (r *Routing) role(name string) *RoleRouting {
 		return &r.Judgement
 	case "description":
 		return &r.Description
+	case "walkthrough":
+		return &r.Walkthrough
+	case "walkthrough-diagrams":
+		return &r.WalkthroughDiagrams
 	}
 	panic("unknown routing role " + name)
 }
@@ -336,6 +344,15 @@ type RepositoryKnobs struct {
 		// any kept one is removed.
 		Enabled bool `toml:"enabled"`
 	} `toml:"description"`
+	Walkthrough struct {
+		// Enabled has each reviewed head's run write a walkthrough of the
+		// pull request's change into its summary comment once the head is
+		// finished. Off, none is written and a kept one is removed.
+		Enabled bool `toml:"enabled" json:"enabled"`
+		// Diagrams adds sequence diagrams of the flows the change touches to
+		// the walkthrough. It applies only where the walkthrough is on.
+		Diagrams bool `toml:"diagrams" json:"diagrams"`
+	} `toml:"walkthrough"`
 	// GuidanceSources is the ordered list of documents that carry the
 	// reviewed project's declared intent. Empty means the reviewed
 	// repository's own checked-in guidance.
@@ -609,6 +626,12 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if defined("description", "enabled") {
 		knobs.Description.Enabled = own.Description.Enabled
+	}
+	if defined("walkthrough", "enabled") {
+		knobs.Walkthrough.Enabled = own.Walkthrough.Enabled
+	}
+	if defined("walkthrough", "diagrams") {
+		knobs.Walkthrough.Diagrams = own.Walkthrough.Diagrams
 	}
 	if defined("guidance-sources") {
 		knobs.GuidanceSources = own.GuidanceSources

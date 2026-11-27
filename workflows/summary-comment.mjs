@@ -20,9 +20,10 @@
 
 import { readFileSync } from "node:fs";
 
-import { plural, short } from "./finding-presentation.mjs";
+import { codeSpan, plural, short } from "./finding-presentation.mjs";
 import { fillPrompt, slotNames } from "./review-prompts.mjs";
 import { CHANGES_REQUESTED, CLEAN, INCOMPLETE } from "./run-endings.mjs";
+import { renderWalkthrough } from "./walkthrough.mjs";
 
 // What the comment says of the head it names. The three a run can end on
 // are the endings' own names (run-endings.mjs); these two are shown while
@@ -88,15 +89,15 @@ function outstanding({ outstanding = [] }) {
   ].join("\n");
 }
 
-// Literal titles and paths may themselves contain Markdown code spans.
-function codeSpan(text) {
-  const value = text.replace(/[\r\n]+/g, " ");
-  const longest = Math.max(0, ...[...value.matchAll(/`+/g)].map(([run]) => run.length));
-  const fence = "`".repeat(longest + 1);
-  return longest === 0 ? `${fence}${value}${fence}` : `${fence} ${value} ${fence}`;
+// The walkthrough of the pull request's change, where the writer hands one
+// over: a record walkthrough.mjs has checked, shown under the head it
+// describes. It is the one part a state does not decide: a kept
+// walkthrough rides every write until a newer one replaces it.
+function walkthrough({ walkthrough, head }) {
+  return walkthrough ? renderWalkthrough(walkthrough, head) : "";
 }
 
-export const PARTS = { state, sections, outstanding };
+export const PARTS = { state, sections, outstanding, walkthrough };
 
 // Text inside one table cell: a bar would end the cell and a line break
 // the row.

@@ -85,6 +85,6 @@ test("facts the parts cannot render and slots that name no part are refused", ()
   assert.throws(() => composeSummary({ state: CLEAN, head, target, sections: [{ kind: CONCERN, name: "x", findings: 1, skipped: "why" }] }), /either its count/);
   assert.throws(() => composeSummary({ state: CLEAN, head, target, sections: [{ kind: "stage", name: "x", findings: 1 }] }), /names a concern, the general review or a brief/);
   assert.throws(() => composeSummary({ state: CLEAN, head, target, outstanding: [{ path: "a.go" }] }), /names its path, line and head/);
-  assert.throws(() => composeSummary({ state: CLEAN, head, target }, { template: "{{state}}\n\n{{walkthrough}}" }), /no part named walkthrough/);
-  assert.throws(() => composeSummary({ state: CLEAN, head, target }, { hidden: ["walkthrough"] }), /no part named walkthrough/);
+  assert.throws(() => composeSummary({ state: CLEAN, head, target }, { template: "{{state}}\n\n{{banner}}" }), /no part named banner/);
+  assert.throws(() => composeSummary({ state: CLEAN, head, target }, { hidden: ["banner"] }), /no part named banner/);
 });
