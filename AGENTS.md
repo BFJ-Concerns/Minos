@@ -1,17 +1,29 @@
 # Minos
 
 Minos is a pull-request review service. An authenticated webhook or the
-periodic sweep starts one trusted Claude Code lead. The lead may clone and
-read without an internal containment layer; it reviews and publishes to the
-forge, and nothing else.
+periodic sweep starts one trusted lead, on Claude Code by default or on
+Codex (`MINOS_LEAD_ENGINE`). The lead may clone and read without an
+internal containment layer; it reviews and publishes to the forge, and
+nothing else.
 
 ## Layout
 
 - `cmd/minos` — the service binary.
-- `internal/shell/` — the Go service: webhook receiver, sweep, and run
-  lifecycle.
-- `workflows/` — the Ensemble review workflow and its Node tests.
-- `scripts/` — provisioning and the on-box per-run driver (`run-body/`).
+- `internal/shell/` — the Go service: webhook receiver, sweep, run
+  lifecycle, configuration and the `minos forge` commands the lead runs.
+- `internal/forge/` — the forge protocol: the adapter that runs a forge's
+  adaptation scripts and the write guards and markers built on it.
+- `internal/product/` — the status vocabulary Minos writes on a pull
+  request and the head-and-target record a review body carries.
+- `workflows/` — the Ensemble review workflows, the Node modules the lead
+  runs around them, and their Node tests.
+- `workflows/review-briefs/` — the Markdown prompts the review legs
+  receive; its `README.md` maps each file to its stage and slots.
+- `runtime/` — the vendored Ensemble runtime (below).
+- `scripts/adaptations/` — one directory of forge scripts per forge
+  (`forgejo`, `github`).
+- `scripts/` — provisioning, the runtime installer and the on-box per-run
+  driver (`run-body/`).
 - `lifecycle/lifecycle.md` — the lead's own run prompt.
 - `deploy/` — the shipped systemd units and configuration.
 
@@ -24,16 +36,25 @@ forge, and nothing else.
   the forge's own CI is the build evidence.
 - Keep one accountable lead from claim through the review workflow, the
   `.review/` briefs stage, verdict classification and publication.
-- Keep the review workflow as an Ensemble workflow the Opus lead invokes
-  through the installed launcher and adjudication wrapper. Independent
-  reviewers propose findings over the whole range the lead chose and the
-  opposite model family verifies them; the workflow honours the reviewed
-  repository's `.review/` briefs, reporting a skipped concern as skipped,
-  never as passed.
-- The workflow's explicit engine dispatch guarantees the opposite-family
-  pairing. A leg that does not complete or a finding without a complete
-  verifier verdict makes the run incomplete: no review is published and no
-  clean status is set.
+- Keep the review as Ensemble workflows the lead invokes through the
+  installed launcher and adjudication wrapper (`workflows/review.js`, then
+  `workflows/review-briefs.js` for the reviewed repository's `.review/`
+  briefs). In the main review an exploration leg plans the review and
+  concern specialists propose findings over the whole range the lead
+  chose; in the brief stage a planner selects the briefs the change gives
+  work to and divides them into units, each proposed on by its own leg.
+  Both then merge, where one leg groups the findings one fix would
+  resolve, and verify, where verifier legs give each merged finding one
+  verdict — `confirmed`, `refuted` or `unsettled`. Only a confirmed
+  finding is a defect; a refuted one reaches no surface; an unsettled one
+  is filed as an open question, never as a defect (`workflows/finding-disposition.mjs`). The brief stage
+  reports a skipped concern as skipped, never as passed.
+- With both engines provisioned, the workflow's explicit engine dispatch
+  guarantees the opposite-family pairing: a finding is verified by the
+  family that did not propose it, a verifier's own new finding included
+  (`workflows/role-routing.mjs` holds the defaults). A leg that does not
+  complete or a finding without a complete verifier verdict makes the run
+  incomplete: no review is published and no clean status is set.
 - The lead sizes each review by reading the change: nothing, the
   increment since the head Minos last finished on, or the whole pull
   request (`lifecycle/lifecycle.md`, step 2). That earlier head is known
@@ -62,8 +83,7 @@ forge, and nothing else.
 - Minos carries no sandbox of its own: whatever isolates the deployment is
   the security boundary, and the docs recommend a dedicated container or VM
   without requiring one. Run-scoped machinery — containment layers, policy
-  gates, health and lifecycle bookkeeping — was deliberately removed and
-  stays out.
+  gates, health and lifecycle bookkeeping — stays out by design.
 
 ## The vendored Ensemble runtime
 
