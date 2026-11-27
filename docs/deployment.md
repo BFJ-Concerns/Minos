@@ -315,9 +315,10 @@ needs; it is not required.
 
 Run units, run directories and continuation handoffs include the configured
 forge key in their names (for example `minos-run-forgejo-owner-repo-pr1`), so
-two forges reviewing the same owner/repository namespace cannot collide. Deploy
-with no live run units and no preserved handoff directories carrying the
-older names without the forge key.
+the same owner and repository on different forges have separate run
+names. Long repository prefixes keep a digest of the full identity so the
+run unit, its exit hook and its archive have room for their suffixes.
+Deploy with no live runs or preserved handoffs that use older names.
 
 A run that exits cleanly requests a sweep pass so the freed slot can refill
 before the periodic timer fires. Its `OnSuccess=` hook starts an instance of

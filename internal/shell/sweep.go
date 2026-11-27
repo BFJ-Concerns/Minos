@@ -185,9 +185,7 @@ func repoRunCounts(candidates []sweepCandidate, activeUnits []string) map[string
 			continue
 		}
 		counts[slug] = 0
-		prefixFacts := candidate.facts
-		prefixFacts.PR = ""
-		prefix := UnitName(prefixFacts)
+		prefix := runRepoUnitPrefix(candidate.facts)
 		for _, unit := range activeUnits {
 			if strings.HasPrefix(unit, prefix) {
 				counts[slug]++

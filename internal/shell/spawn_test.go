@@ -1359,3 +1359,35 @@ func TestSpawnRunSeparatesForgeNamespaces(t *testing.T) {
 		t.Fatalf("new-name active unit detection = %#v, err=%v, active=%v", result, err, active)
 	}
 }
+
+func TestUnitNameBoundsLongNamesAndKeepsRepositoryPrefix(t *testing.T) {
+	facts := Facts{
+		Forge: "forgejo",
+		Owner: strings.Repeat("owner-", 45),
+		Repo:  strings.Repeat("repo-", 50),
+		PR:    "9223372036854775807",
+	}
+	unit := UnitName(facts)
+	if len(sweepAfterRunUnit(unit)) > 255 || len(unit+".service") > 255 {
+		t.Fatalf("unit or exit hook exceeds systemd's limit: %q", unit)
+	}
+	if unit != UnitName(facts) || !strings.HasPrefix(unit, "minos-run-") || !strings.HasSuffix(unit, "-pr"+facts.PR) {
+		t.Fatalf("unexpected bounded unit: %q", unit)
+	}
+	otherRepo := facts
+	otherRepo.Repo += "-elsewhere"
+	if unit == UnitName(otherRepo) {
+		t.Fatalf("two long repository identities share unit %q", unit)
+	}
+	sameRepo := facts
+	sameRepo.PR = "2"
+	if unit == UnitName(sameRepo) {
+		t.Fatalf("two pull requests share unit %q", unit)
+	}
+	counts := repoRunCounts([]sweepCandidate{{facts: facts}}, []string{
+		unit + ".service", UnitName(otherRepo) + ".service", UnitName(sameRepo) + ".service",
+	})
+	if got := counts[facts.RepoSlug()]; got != 2 {
+		t.Fatalf("running pull requests in long-named repository = %d, want 2", got)
+	}
+}
