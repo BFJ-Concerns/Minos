@@ -256,3 +256,27 @@ func TestServiceWideRoutingChangedOnThePageReachesEveryRepository(t *testing.T) 
 		t.Errorf("the repository does not show the route as service-wide:\n%s", row)
 	}
 }
+
+func TestChoiceAtItsDefaultOpensOnTheDefault(t *testing.T) {
+	_, read, write := configurationRoot(t)
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	row := settingRowHTML(t, visit(site, "/settings", session).Body.String(), "review.threshold")
+	if !strings.Contains(row, "<option selected>High</option>") || strings.Contains(row, "<option selected>Critical</option>") {
+		t.Errorf("the threshold at its default does not open on High:\n%s", row)
+	}
+}
+
+func TestOneEngineConcurrencySetFromTheDefaultsIsSaved(t *testing.T) {
+	root, read, write := configurationRoot(t)
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	response := submit(site, "/settings", url.Values{"setting": {"ensemble.concurrency-claude"}, "value": {"3"}, "action": {"set"}}, session)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("setting Claude's concurrency alone answered %d:\n%s", response.Code, response.Body)
+	}
+	cfg, err := shell.LoadServiceConfig(root)
+	if err != nil || cfg.Ensemble.ConcurrencyClaude != 3 || cfg.Ensemble.ConcurrencyCodex != 2 {
+		t.Fatalf("concurrency = %d/%d (%v), want 3 and the default 2", cfg.Ensemble.ConcurrencyClaude, cfg.Ensemble.ConcurrencyCodex, err)
+	}
+}

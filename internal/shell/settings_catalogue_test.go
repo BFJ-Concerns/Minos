@@ -81,6 +81,14 @@ func TestSettingsCatalogueDescribesEveryKeyTheLoaderAccepts(t *testing.T) {
 	}
 }
 
+func TestEveryChoiceDefaultIsOneOfItsChoices(t *testing.T) {
+	for _, setting := range settingsCatalogue() {
+		if setting.Form == ChoiceForm && !slices.Contains(setting.Choices, setting.Default) {
+			t.Errorf("%s defaults to %q, which is not among %v", setting.Name(), setting.Default, setting.Choices)
+		}
+	}
+}
+
 func TestSettingsSayWhereEachValueComesFrom(t *testing.T) {
 	root, repo := settingsRoot(t)
 	if err := WriteServiceSetting(root, ServiceWideKey([]string{"routing", "verifier"}), map[string]any{"engine": "claude"}); err != nil {

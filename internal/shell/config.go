@@ -123,6 +123,7 @@ const (
 	defaultRunMemoryEnvelopeGiB        = 8
 	defaultRunDurationCeiling          = "12h"
 	defaultRunPressureThresholdPercent = 85
+	defaultEngineConcurrency           = 2
 )
 
 func (cfg ServiceConfig) runMemoryEnvelopeGiB() int {
@@ -470,9 +471,13 @@ func loadServiceConfigFile(root, path string) (ServiceConfig, error) {
 	if cfg.Runs.MaxConcurrent < 0 || cfg.MaxConcurrentRuns() > cfg.Runs.MemoryEnvelopeGiB {
 		return ServiceConfig{}, fmt.Errorf("service.toml: runs max-concurrent must be between 1 and %d — beyond that the shared %dG run memory envelope cannot give each run a useful share", cfg.Runs.MemoryEnvelopeGiB, cfg.Runs.MemoryEnvelopeGiB)
 	}
-	if cfg.Ensemble.ConcurrencyClaude == 0 && cfg.Ensemble.ConcurrencyCodex == 0 {
-		cfg.Ensemble.ConcurrencyClaude = 2
-		cfg.Ensemble.ConcurrencyCodex = 2
+	// Each engine's concurrency left unset takes the default on its own, so
+	// setting one leaves the other in force.
+	if !metadata.IsDefined("ensemble", "concurrency-claude") {
+		cfg.Ensemble.ConcurrencyClaude = defaultEngineConcurrency
+	}
+	if !metadata.IsDefined("ensemble", "concurrency-codex") {
+		cfg.Ensemble.ConcurrencyCodex = defaultEngineConcurrency
 	}
 	if cfg.Ensemble.ConcurrencyClaude < 1 || cfg.Ensemble.ConcurrencyCodex < 1 {
 		return ServiceConfig{}, fmt.Errorf("service.toml: ensemble concurrency-claude and concurrency-codex must be positive")

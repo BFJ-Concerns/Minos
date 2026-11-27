@@ -245,8 +245,8 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    two consecutive samples of anonymous memory plus swap at that threshold.
    With a higher concurrency cap, raise the envelope toward the runs'
    combined peak, measured as below. Each run paces `ensemble.concurrency-claude` and
-   `concurrency-codex` workers of its own (the loader defaults both to 2
-   when neither is set; the shipped example comments both at 2).
+   `concurrency-codex` workers of its own (the loader defaults each one left
+   unset to 2; the shipped example comments both at 2).
    `ensemble.agent-ceiling` optionally caps a workflow's agents across
    both engines together; unset, the runtime applies no combined cap (the
    shipped example comments an illustrative value of 4).

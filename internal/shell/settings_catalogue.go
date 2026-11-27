@@ -136,8 +136,8 @@ func settingsCatalogue() []Setting {
 		serviceSetting("runs.memory-envelope-gib", "The memory, in GiB, all runs share through the runs slice.", strconv.Itoa(defaultRunMemoryEnvelopeGiB), NumberForm).restartsWith(whenUnitsInstalled),
 		serviceSetting("runs.duration-ceiling", "How long a run may last before it is stopped, as a Go duration (12h, 90m).", defaultRunDurationCeiling, TextForm),
 		serviceSetting("runs.pressure-threshold-percent", "The share of the memory envelope at which a run is asked to wind down.", strconv.Itoa(defaultRunPressureThresholdPercent), NumberForm),
-		serviceSetting("ensemble.concurrency-claude", "How many Claude agents a workflow runs at once.", "2, when neither engine's concurrency is set.", NumberForm),
-		serviceSetting("ensemble.concurrency-codex", "How many Codex agents a workflow runs at once.", "2, when neither engine's concurrency is set.", NumberForm),
+		serviceSetting("ensemble.concurrency-claude", "How many Claude agents a workflow runs at once.", strconv.Itoa(defaultEngineConcurrency), NumberForm),
+		serviceSetting("ensemble.concurrency-codex", "How many Codex agents a workflow runs at once.", strconv.Itoa(defaultEngineConcurrency), NumberForm),
 		serviceSetting("ensemble.agent-ceiling", "How many agents a workflow runs at once across both engines.", "The runtime's own ceiling.", NumberForm),
 
 		Setting{Key: []string{"adaptation", "run-body"}, Scope: RepositoryFileScope, About: "The program each run of this repository starts.", Form: TextForm},
