@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { CONFIRMED, NO_VERDICT, UNSETTLED, findingDisposition } from "./finding-disposition.mjs";
+import { CONFIRMED, NO_VERDICT, UNSETTLED, findingDisposition, findingGrade } from "./finding-disposition.mjs";
 import { SEVERITIES } from "./review-contracts.mjs";
 
 const LOW_COMBINED_CONFIDENCE = 70;
@@ -348,10 +348,10 @@ export async function adjudicate({ envelope, recordDir }) {
       ? Math.round((proposed.confidence + rawVerifier.confidence) / 2)
       : null;
     const { proposingLabel, verifyLabel, rawVerifier: omittedVerifier, ...finding } = proposed;
-    // A finding left standing carries the verifier's own grade; the
+    // A finding left standing carries the grade findingGrade gives it; the
     // proposer's is kept beside it for the record.
     const graded = verdict === CONFIRMED || verdict === UNSETTLED
-      ? { severity: rawVerifier.severity, proposedSeverity: proposed.severity }
+      ? { severity: findingGrade(rawVerifier, proposed.severity), proposedSeverity: proposed.severity }
       : {};
     return {
       ...finding,

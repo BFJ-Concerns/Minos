@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findingDisposition } from "./finding-disposition.mjs";
+import { findingDisposition, findingGrade } from "./finding-disposition.mjs";
 
 const verdict = (overrides = {}) => ({
   verdict: "confirmed",
@@ -44,4 +44,13 @@ test("anything short of a whole verdict is no verdict", () => {
     verdict({ wouldSettle: undefined }),
   ])
     assert.equal(findingDisposition(broken), "no-verdict");
+});
+
+test("a finding left standing is graded on the scale, by its proposer where the verifier graded it as refuted", () => {
+  const outsideFact = "the service rejects a message without a topic";
+  assert.equal(findingGrade(verdict({ severity: "Low" }), "High"), "Low");
+  assert.equal(findingGrade(verdict({ verdict: "unsettled", severity: "Medium", wouldSettle: "ask" }), "High"), "Medium");
+  assert.equal(findingGrade(verdict({ verdict: "refuted", severity: "None", outsideFact }), "High"), "High");
+  assert.equal(findingGrade(verdict({ verdict: "refuted", severity: "None" }), "High"), null);
+  assert.equal(findingGrade(verdict({ severity: "None" }), "High"), null);
 });
