@@ -979,3 +979,74 @@ test("a brief reviewer's finding outside the brief's concern is verified without
     { title: "repository defect", outsideConcern: undefined, wholeScope: "pkg/" },
   ]);
 });
+
+test("a brief grouping that loses or repeats a finding stops the brief review before verification", async (t) => {
+  const twoFindings = () => specialistResult([finding({ title: "first brief defect" }), finding({ title: "second brief defect", line: 9 })]);
+  for (const groups of [
+    (ids) => [{ findingIds: [ids[0]], primary: ids[0], sharedCause: "" }],
+    (ids) => [{ findingIds: ids, primary: ids[0], sharedCause: "" }, { findingIds: [ids[1]], primary: ids[1], sharedCause: "" }],
+    (ids) => [{ findingIds: ids, primary: "elsewhere", sharedCause: "" }],
+    (ids) => [{ findingIds: [...ids, ids[1]], primary: ids[0], sharedCause: "" }],
+  ]) {
+    const { result, calls } = await run(args(), responder({
+      specialist: twoFindings,
+      merge: (_label, prompt) => ({ groups: groups(findingsFromVerifierPrompt(prompt).map((entry) => entry.id)) }),
+    }));
+    assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
+    assert.deepEqual(result.proposedFindings, []);
+    assert.ok(result.incomplete.some((reason) => reason.startsWith("agent brief-merge returned a grouping")), result.incomplete.join("\n"));
+    const verdict = await adjudicateEnvelope(t, result);
+    assert.equal(verdict.status, "incomplete");
+  }
+});
+
+test("a finding a brief verifier raises is verified by a later leg, and one the last round raises stays unchecked", async (t) => {
+  let raisedCount = 0;
+  const { result, calls } = await run(args(), responder({
+    verify: (label, prompt) => ({
+      verdicts: findingsFromVerifierPrompt(prompt).map((entry) => verdictFor(entry.id, { confidence: 92, reason: "confirmed" })),
+      newFindings: [finding({ title: `raised by ${label}`, line: 40 + (raisedCount += 1) })],
+      outOfScopeObservations: [],
+    }),
+  }));
+  const verifierLabels = calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => call.opts.label);
+  assert.equal(verifierLabels.length, 3);
+  const lastLabel = verifierLabels.at(-1);
+  assert.deepEqual(result.proposedFindings.map(({ source, verifyLabel }) => ({ source, verifyLabel })).slice(1), [
+    { source: "verification", verifyLabel: verifierLabels[1] },
+    { source: "verification", verifyLabel: verifierLabels[2] },
+  ]);
+  assert.deepEqual(result.uncheckedFindings.map(({ id, source }) => ({ id, source })), [
+    { id: `${lastLabel}:raised:1`, source: "verification" },
+  ]);
+  assert.ok(result.incomplete.includes("verification stopped after 3 rounds with 1 finding(s) raised and not verified"));
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "incomplete");
+  assert.ok(verdict.incomplete.includes(
+    `finding "raised by ${lastLabel}" has no complete verdict (raised in the last round of verification and never verified)`,
+  ), verdict.incomplete.join("\n"));
+  assert.deepEqual(verdict.confirmedFindings, []);
+});
+
+test("findings brief verifiers raise in one round are merged under the brief's merge label before the next round", async (t) => {
+  const merges = [];
+  const { result } = await run(args(), responder({
+    merge: (label, prompt) => {
+      merges.push(label);
+      return separateGroups(prompt);
+    },
+    verify: (label, prompt) => ({
+      verdicts: findingsFromVerifierPrompt(prompt).map((entry) => verdictFor(entry.id, { confidence: 92, reason: "confirmed" })),
+      newFindings: label.startsWith("verify-brief-round-") ? [] : [
+        finding({ title: "first raised defect", line: 50 }),
+        finding({ title: "second raised defect", line: 60 }),
+      ],
+      outOfScopeObservations: [],
+    }),
+  }));
+  assert.deepEqual(merges, ["brief-merge-round-2"], "one proposed finding needs no merge; the two raised ones do");
+  assert.ok(result.requiredModelEvidence.some((leg) => leg.label === "brief-merge-round-2" && leg.role === "merge"));
+  assert.equal(result.proposedFindings.filter((entry) => entry.source === "verification").length, 2);
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+});
