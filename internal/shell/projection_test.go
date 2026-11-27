@@ -61,7 +61,7 @@ func TestProjectionSweepFacts(t *testing.T) {
 				state.changePullRequest(func(pr map[string]any) { pr["head"].(map[string]any)["ref"] = "structural/work" })
 				state.setDependencies([]map[string]any{{"number": 7, "state": "open", "repository": map[string]any{"full_name": "owner/prerequisite"}}})
 				if scenario == "three reasons" {
-					state.setStatuses([]map[string]any{{"id": 7, "context": "Minos", "status": "failure", "description": product.Attention().Description(), "creator": map[string]any{"login": "Minos"}}})
+					state.setStatuses([]map[string]any{{"id": 7, "context": "Minos", "status": "failure", "description": product.Attention().Description(), "target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1", "creator": map[string]any{"login": "Minos"}}})
 				}
 			case "partial":
 				path := filepath.Join(cfg.Root, "service.toml")
@@ -95,7 +95,7 @@ run-body = "/opt/minos/run-body/run-body"
 				if scenario == "attention" {
 					terminal = product.Attention()
 				}
-				state.setStatuses([]map[string]any{{"id": 7, "context": "Minos", "status": terminal.ForgeState(), "description": terminal.Description(), "creator": map[string]any{"login": "Minos"}}})
+				state.setStatuses([]map[string]any{{"id": 7, "context": "Minos", "status": terminal.ForgeState(), "description": terminal.Description(), "target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1", "creator": map[string]any{"login": "Minos"}}})
 			}
 			original := commandCombinedOutput
 			t.Cleanup(func() { commandCombinedOutput = original })

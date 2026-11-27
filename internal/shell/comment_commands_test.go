@@ -729,3 +729,53 @@ func TestCommandRecordUpdatesDoNotLoseEachOther(t *testing.T) {
 		t.Fatalf("acknowledged after concurrent updates = %v, want all 16", got)
 	}
 }
+
+// A run started for a command that ends having written nothing answers it
+// with nothing: the summary its predecessor finished still stands, and the
+// record knew that summary when the run started.
+func TestCommandOutlivesARunThatWroteNothingUnderAFinishedSummary(t *testing.T) {
+	journey := newCommandJourney(t)
+	result, err := writeSummary(t.Context(), journey.adapter, journey.state.guard(), product.SummaryClean, "Summary.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	githubApplied(t, result)
+	journey.comment("maintainer", "@minos-review review")
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || len(journey.launches) != 1 {
+		t.Fatalf("commanded reconciliation = %#v after %d launches", result, len(journey.launches))
+	}
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || len(journey.launches) != 2 || journey.launchedOutcomes(t) != `["full"]` {
+		t.Fatalf("reconciliation after a run that wrote nothing = %#v after %d launches, want the command still waiting", result, len(journey.launches))
+	}
+}
+
+// Two pull requests can share a head commit. A status Minos wrote for the
+// other one is on the commit but answers no command given on this one.
+func TestReviewCommandIsNotAnsweredByAnotherPullRequestsStatus(t *testing.T) {
+	journey := newCommandJourney(t)
+	journey.comment("maintainer", "@minos-review review")
+	if result := journey.reconcile(t); result.Decision != SpawnStarted {
+		t.Fatalf("commanded reconciliation = %#v", result)
+	}
+	commanded := journey.launchedOutcomes(t)
+	journey.status(t, product.Clean())
+	journey.state.mu.Lock()
+	moved := false
+	for _, status := range journey.state.statuses {
+		if status["context"] == "Minos" && strings.HasSuffix(status["target_url"].(string), "/pull/7") {
+			status["target_url"] = strings.TrimSuffix(status["target_url"].(string), "/pull/7") + "/pull/8"
+			moved = true
+		}
+	}
+	if !moved {
+		t.Fatalf("no clean status of this pull request to move: %#v", journey.state.statuses)
+	}
+	journey.state.mu.Unlock()
+	if result := journey.reconcile(t); result.Decision != SpawnStarted || len(journey.launches) != 2 || journey.launchedOutcomes(t) != commanded {
+		t.Fatalf("reconciliation after the other pull request's status = %#v after %d launches, want the command still waiting", result, len(journey.launches))
+	}
+	journey.status(t, product.Clean())
+	if result := journey.reconcile(t); result.DeferralReason != "completed-marker" || len(journey.launches) != 2 {
+		t.Fatalf("reconciliation after this pull request's status = %#v after %d launches", result, len(journey.launches))
+	}
+}

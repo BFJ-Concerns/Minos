@@ -172,7 +172,12 @@ func TestHeadCompletionReadsTheSummaryCommentThenTheReviewAndStatus(t *testing.T
 		return &forge.SummaryComment{ID: 9, Body: body}
 	}
 	requestChanges := []forge.Review{{ID: 3, User: "Minos", CommitID: "head", State: "REQUEST_CHANGES"}}
-	cleanStatus := []forge.Status{{ID: 4, Context: "Minos", Creator: "Minos", State: forge.StatusSuccess, Description: product.Clean().Description()}}
+	status := func(id int64, targetURL string) forge.Status {
+		return forge.Status{ID: id, Context: "Minos", Creator: "Minos", State: forge.StatusSuccess, Description: product.Clean().Description(), TargetURL: targetURL}
+	}
+	cleanStatus := []forge.Status{status(4, "https://forge.invalid/owner/repo/pulls/7#issuecomment-11")}
+	otherPullRequestsStatus := []forge.Status{status(4, "https://forge.invalid/owner/repo/pulls/8")}
+	requestChangesThenAdvice := append(requestChanges, forge.Review{ID: 5, User: "Minos", CommitID: "head", State: "COMMENT"})
 	tests := []struct {
 		name      string
 		snapshot  forge.Snapshot
@@ -182,6 +187,14 @@ func TestHeadCompletionReadsTheSummaryCommentThenTheReviewAndStatus(t *testing.T
 		{name: "a clean summary of this head", snapshot: forge.Snapshot{Summary: summary("head", product.SummaryClean)}, want: product.Clean(), completed: true},
 		{name: "changes requested by the summary alone", snapshot: forge.Snapshot{Summary: summary("head", product.SummaryChangesRequested)}, want: product.Attention(), completed: true},
 		{name: "an incomplete summary", snapshot: forge.Snapshot{Summary: summary("head", product.SummaryIncomplete)}},
+		{name: "an incomplete summary beside an earlier review of the head", snapshot: forge.Snapshot{Summary: summary("head", product.SummaryIncomplete), Reviews: requestChanges}},
+		{name: "an incomplete summary beside an earlier status on the head", snapshot: forge.Snapshot{Summary: summary("head", product.SummaryIncomplete), Statuses: cleanStatus}},
+		{name: "a summary still reviewing the head beside an earlier review of it", snapshot: forge.Snapshot{Summary: summary("head", product.SummaryReviewing), Reviews: requestChanges}},
+		{name: "a request for changes followed by an advice review", snapshot: forge.Snapshot{Reviews: requestChangesThenAdvice}, want: product.Attention(), completed: true},
+		{name: "a status another pull request on the commit was given", snapshot: forge.Snapshot{Statuses: otherPullRequestsStatus}},
+		{name: "a status on the commit in another repository's pull request of that number", snapshot: forge.Snapshot{Statuses: []forge.Status{status(4, "https://forge.invalid/owner/fork/pulls/7")}}},
+		{name: "a status with no pull-request address", snapshot: forge.Snapshot{Statuses: []forge.Status{status(4, "")}}},
+		{name: "a github status of this pull request", snapshot: forge.Snapshot{Statuses: []forge.Status{status(4, "https://github.invalid/Owner/Repo/pull/7")}}, want: product.Clean(), completed: true},
 		{name: "a clean summary of the head that was", snapshot: forge.Snapshot{Summary: summary("earlier", product.SummaryClean)}},
 		{name: "a finished summary over an older review of the head", snapshot: forge.Snapshot{Summary: summary("head", product.SummaryClean), Reviews: requestChanges}, want: product.Clean(), completed: true},
 		{name: "a review of the head and no summary", snapshot: forge.Snapshot{Reviews: requestChanges}, want: product.Attention(), completed: true},
@@ -192,6 +205,7 @@ func TestHeadCompletionReadsTheSummaryCommentThenTheReviewAndStatus(t *testing.T
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			test.snapshot.HeadSHA = "head"
+			test.snapshot.Repository, test.snapshot.PullRequest = "owner/repo", 7
 			if got, completed := headCompletion(test.snapshot, "Minos", "Minos"); got != test.want || completed != test.completed {
 				t.Fatalf("headCompletion = (%#v, %t), want (%#v, %t)", got, completed, test.want, test.completed)
 			}

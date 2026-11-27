@@ -208,7 +208,7 @@ func TestForgejoAdmissionUsesFreshPullRequestSnapshot(t *testing.T) {
 		cfg, repo, facts := state.service(t)
 		state.setStatuses([]map[string]any{{
 			"id": 7, "context": "Minos", "status": "success", "description": product.Clean().Description(),
-			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/2",
+			"target_url": state.server.URL + "/minos-e2e-owner/subject/pulls/1",
 			"creator":    map[string]any{"login": "Minos"},
 		}})
 

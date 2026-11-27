@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -42,28 +43,33 @@ func currentContinuationPriority(ctx context.Context, cfg ServiceConfig, facts F
 	return continuationPriority(forge.Snapshot{Statuses: statuses}, cfg.BotLogin(facts.Forge), cfg.Service.StatusContext), nil
 }
 
-// currentReview finds the bot's latest review of the current head. Minos
-// authors no commits, so any head movement is the author's and simply leaves
-// old reviews behind: a review marks a completed run only while its commit is
-// still the head.
-func currentReview(snapshot forge.Snapshot, botLogin string) (forge.Review, bool) {
+// currentTerminalReview finds the bot's latest approving or request-changes
+// review of the current head. Minos authors no commits, so any head
+// movement is the author's and simply leaves old reviews behind: a review
+// marks a completed run only while its commit is still the head. A comment
+// review the run posts after its verdict, such as one carrying advice,
+// judges nothing and leaves the verdict standing.
+func currentTerminalReview(snapshot forge.Snapshot, botLogin string) (product.State, bool) {
 	var latest forge.Review
+	var latestState product.State
 	found := false
 	for _, review := range snapshot.Reviews {
-		if review.User == botLogin && review.CommitID == snapshot.HeadSHA && (!found || review.ID > latest.ID) {
-			latest = review
-			found = true
+		if review.User != botLogin || review.CommitID != snapshot.HeadSHA || (found && review.ID < latest.ID) {
+			continue
+		}
+		if state, terminal := terminalState(review); terminal {
+			latest, latestState, found = review, state, true
 		}
 	}
-	return latest, found
+	return latestState, found
 }
 
 // latestOwnedStatus reads commit statuses normalised by the configured adaptation.
 // Provider records their origin; ownership is the configured context and creator.
-func latestOwnedStatus(snapshot forge.Snapshot, botLogin, statusContext string) (forge.Status, bool) {
+func latestOwnedStatus(statuses []forge.Status, botLogin, statusContext string) (forge.Status, bool) {
 	var latest forge.Status
 	found := false
-	for _, status := range snapshot.Statuses {
+	for _, status := range statuses {
 		if status.Context == statusContext &&
 			status.Creator == botLogin &&
 			(!found || status.ID > latest.ID) {
@@ -74,8 +80,43 @@ func latestOwnedStatus(snapshot forge.Snapshot, botLogin, statusContext string) 
 	return latest, found
 }
 
+// pullRequestStatuses keeps the statuses written for the snapshot's own
+// pull request. A commit status belongs to a commit, and two pull requests
+// can share a head commit while differing in target; each forge's status
+// writer sets target_url to the pull request's own address, optionally
+// with a page anchor, and that address is what ties a status to the pull
+// request it judged.
+func pullRequestStatuses(statuses []forge.Status, repository string, pullRequest int64) []forge.Status {
+	var kept []forge.Status
+	for _, status := range statuses {
+		if statusOfPullRequest(status, repository, pullRequest) {
+			kept = append(kept, status)
+		}
+	}
+	return kept
+}
+
+func statusOfPullRequest(status forge.Status, repository string, pullRequest int64) bool {
+	if repository == "" || pullRequest <= 0 {
+		return false
+	}
+	address, err := url.Parse(status.TargetURL)
+	if err != nil {
+		return false
+	}
+	path := strings.TrimSuffix(address.Path, "/")
+	number := strconv.FormatInt(pullRequest, 10)
+	for _, route := range []string{"/pulls/", "/pull/"} {
+		suffix := "/" + repository + route + number
+		if len(path) >= len(suffix) && strings.EqualFold(path[len(path)-len(suffix):], suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func continuationPriority(snapshot forge.Snapshot, botLogin, statusContext string) int {
-	latest, found := latestOwnedStatus(snapshot, botLogin, statusContext)
+	latest, found := latestOwnedStatus(snapshot.Statuses, botLogin, statusContext)
 	state, recognised := product.StateForDescription(latest.Description)
 	if found && recognised && (state == product.Incomplete() ||
 		state == product.Working() || state == product.Continuation()) {
@@ -241,27 +282,27 @@ func staleTerminalMarker(snapshot forge.Snapshot, botLogin, statusContext string
 }
 
 // headCompletion is the current head's completion marker. The summary
-// comment speaks first: a record that names this head with a finished
-// state completes it. Where the comment says nothing finished of this
-// head, the head is completed by a terminal Minos review of it, or else by
-// the latest Minos status on it when that status is terminal. Those two
-// are all a head carries when the run that finished it wrote no summary
-// comment, as the resident lead writes none, and such a head reads as
-// finished for as long as it stands.
+// comment speaks first: a record that names this head settles it, finished
+// or not, so a head the comment records as inspecting, reviewing or
+// incomplete is unfinished whatever Minos published of it before. Only
+// where the comment says nothing of this head is the head completed by a
+// terminal Minos review of it, or else by the latest Minos status written
+// for this pull request on it when that status is terminal. Those two are
+// all a head carries when the run that finished it wrote no summary
+// comment, as the resident lead writes none and a pull request finished
+// before the comment existed has none, and such a head reads as finished
+// for as long as it stands.
 // Admission and marker reconciliation both read this, so a head is never
 // deferred as one outcome while carrying the other's marker.
 func headCompletion(snapshot forge.Snapshot, botLogin, statusContext string) (product.State, bool) {
-	if record, found := snapshot.SummaryRecord(); found {
-		if state, completed := record.Completion(snapshot.HeadSHA); completed {
-			return state, true
-		}
+	if record, found := snapshot.SummaryRecord(); found && record.Head == snapshot.HeadSHA {
+		return record.Completion(snapshot.HeadSHA)
 	}
-	if review, found := currentReview(snapshot, botLogin); found {
-		if state, terminal := terminalState(review); terminal {
-			return state, true
-		}
+	if state, found := currentTerminalReview(snapshot, botLogin); found {
+		return state, true
 	}
-	if status, found := latestOwnedStatus(snapshot, botLogin, statusContext); found {
+	statuses := pullRequestStatuses(snapshot.Statuses, snapshot.Repository, snapshot.PullRequest)
+	if status, found := latestOwnedStatus(statuses, botLogin, statusContext); found {
 		if state, terminal := product.CompletionMarker(string(status.State), status.Description); terminal {
 			return state, true
 		}
