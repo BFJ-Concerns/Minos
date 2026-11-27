@@ -21,6 +21,16 @@ It is defined as the others are, in the same two files, and runs through
 the same workflow and runner, so a record of its input replays it as one
 replays theirs. *A stage asked outside a run* below says what differs.
 
+Two stages are asked by a run and decide nothing about it. They write the
+walkthrough the summary comment carries where a repository enables one:
+
+| Stage | Writes | Closing duty |
+|---|---|---|
+| `walkthrough` | the overview of a pull request's change, the groups it falls into with the files each touched, and the flows worth drawing | `run-steps/write-walkthrough.mjs` |
+| `walkthrough-diagrams` | each of those flows as a sequence: its participants and the steps between them | `run-steps/write-walkthrough.mjs` |
+
+*Stages that write for a run* below says what differs for them.
+
 ## A stage's files
 
 A stage is two files here, both named for it.
@@ -138,6 +148,26 @@ description with the commit it was made from, one record for each
 repository (`internal/shell/repository_description.go`), and a pull
 request's run is shown the record it was set up with
 (`workflows/repository-description.mjs`).
+
+## Stages that write for a run
+
+`walkthrough` and `walkthrough-diagrams` are asked once a head has been
+judged, by a closing duty, so the verdict never waits for them. Each runs
+on a role of its own under its own name, so a deployment routes the
+writing of the walkthrough and the tracing of its diagrams apart from each
+other and from the judgements of a run.
+
+Their answers are published and gate nothing, so the rule that a stage
+with no answer ends the run incomplete does not hold for them. The duty
+records a stage that gave no usable answer as an anomaly in the run's
+report and the head keeps the result it already has. What the two answers
+are made into, where it is kept and how it reaches the summary comment are
+in `workflows/walkthrough.mjs`.
+
+The two settings reach them as the stages' rule for settings has it.
+`walkthrough.diagrams` changes what `walkthrough` is asked for, the flows
+worth drawing, so it is a field of that stage's input and a slot of its
+prompt. `walkthrough.enabled` changes only whether the duty asks at all.
 
 ## Adding a stage
 

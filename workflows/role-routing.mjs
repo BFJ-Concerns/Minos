@@ -10,8 +10,14 @@
 // `judgement` is the role every one-shot judgement stage of the run driver
 // takes (workflows/judgements/README.md). `description` is the role of the
 // one stage that serves no run, the stage that writes the description Minos
-// keeps of a repository.
-export const ROLES = ["exploration", "proposer", "verifier", "brief-planner", "judgement", "description"];
+// keeps of a repository. `walkthrough` and `walkthrough-diagrams` are the
+// roles of the two stages that write a pull request's walkthrough
+// (workflows/walkthrough.mjs): the one that reads the change and writes it,
+// and the one that traces the flows its diagrams show.
+export const ROLES = [
+  "exploration", "proposer", "verifier", "brief-planner", "judgement", "description",
+  "walkthrough", "walkthrough-diagrams",
+];
 export const ENGINES = ["claude", "codex"];
 // The Ensemble runtime's canonical effort domain; the Go loader validates the
 // configured value against the same list, so nothing the run receives can be
@@ -33,13 +39,20 @@ const DEFAULT_EFFORT = {
   "brief-planner": "high",
   judgement: "medium",
   description: "medium",
+  walkthrough: "xhigh",
+  "walkthrough-diagrams": "xhigh",
 };
 // The documented recommendation: every finding-proposing and planning role on
 // GPT, every verifier on Claude, so a finding is checked by the family that
 // did not propose it. A judgement stage decides a run's course or its
 // published result and proposes nothing; it takes Claude. So does the
 // description stage, whose prose is handed to the legs of both families
-// and checked by none.
+// and checked by none. The walkthrough is published prose checked by none
+// and takes Claude as well; its diagrams are a tracing of the code, a
+// read-and-report leg, which Codex takes. The project's owner chose Claude
+// Opus for the first and Gemini Neon for the second, both at xhigh; Neon
+// runs on an engine ENGINES does not hold, so until it does the tracing
+// defaults to the other provisioned family.
 const PAIRED_ENGINE = {
   exploration: "codex",
   proposer: "codex",
@@ -47,6 +60,8 @@ const PAIRED_ENGINE = {
   "brief-planner": "codex",
   judgement: "claude",
   description: "claude",
+  walkthrough: "claude",
+  "walkthrough-diagrams": "codex",
 };
 
 export function defaultModel(role, engine) {
