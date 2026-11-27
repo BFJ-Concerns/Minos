@@ -786,11 +786,13 @@ test("the lifecycle prescribes the verdict-classification seam", () => {
   assert.match(lifecycle, /The one upward exception\s+is judging a below-threshold finding's severity an undergrade that\s+genuinely belongs at or above the threshold, named as such/);
   assert.match(lifecycle, /`\$MINOS_RUN_DIR\/verdict-decision\.json` \(`verdict-decision-brief\.json`\s+for the brief verdict\)[\s\S]*?"kind": "minos-verdict-decision-v1"[\s\S]*?"basis":[\s\S]*?"gating": false, "class": "declared-out-of-scope"[\s\S]*?"gating": true, "undergrade":/);
   assert.match(lifecycle, /Validate each decision before any forge write[\s\S]*?verdict-classification\.mjs" \\\s+--validate VERDICT_FILE DECISION_FILE "\$MINOS_REVIEW_THRESHOLD"/);
-  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition, a `class` on a gating finding, a blank `defect` label or\s+one whose findings, those already raised aside, gate or are classed\s+differently — is corrected and\s+re-validated rather than worked around; nothing has touched the forge\s+yet/);
+  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition, a `class` on a gating finding, a blank `defect` label,\s+one whose findings, those already raised aside, gate or are classed\s+differently, or findings of one defect at one site that are already\s+raised in one disposition and new in another — is corrected and\s+re-validated rather than worked around; nothing has touched the forge\s+yet/);
   assert.match(lifecycle, /A gating disposition carries no `class` at all/);
   assert.match(lifecycle, /a brief finding at the same line and under the same title\s+as a main-review finding even where you gave them no label, because\s+the composer merges the two as one finding/);
   assert.match(lifecycle, /Those findings aside,\s+it refuses, with nothing written, a label whose findings gate\s+differently across the two decisions, and a non-gating defect the two\s+decisions class differently/);
   assert.match(lifecycle, /Give every one of those findings\s+the one `defect` label\. Class the finding at the earlier site\s+`already-raised`\.[\s\S]*?The findings at the new sites take their own call/);
+  assert.match(lifecycle, /findings of one defect at one site take one answer on it\. Two findings\s+at one line under one title, and a label's findings at one line\s+whatever their titles, all take `already-raised` or none of them\s+does/);
+  assert.match(lifecycle, /A site's one answer on\s+`already-raised` holds across the two decisions as well, for those\s+twins and for a label's findings at one line where the decisions each\s+hold one/);
   assert.match(lifecycle, /The run's overall verdict is\s+`request-changes` when either validated decision is; `clean` only when\s+every validated decision is clean/);
   assert.match(lifecycle, /take the same `defect`\s+label on their dispositions[\s\S]*?they gate\s+alike — so a below-threshold restatement of a gating defect gates too,\s+and carries an `undergrade`[\s\S]*?publishes a labelled defect once, at its highest-severity\s+site[\s\S]*?Distinct\s+defects at one\s+line take no label/);
 });
@@ -907,7 +909,8 @@ test("the lifecycle approves a clean outcome through the guarded command and set
   assert.doesNotMatch(lifecycle, /publish no approval review/);
   assert.match(lifecycle, /run\s+`"\$MINOS_BIN" forge approve HEAD TARGET` first, on every clean\s+outcome, a run that reviewed nothing included/);
   assert.match(lifecycle, /An\s+approval the forge will not take, for any reason but a moved head,[\s\S]*?forge status HEAD TARGET incomplete`/);
-  assert.match(lifecycle, /refuses as well twins that one decision classes `already-raised` and\s+the other calls new, even where the other gates them/);
+  assert.match(lifecycle, /The\s+command already tries again an approval whose write came back\s+uncertain or retryable, so a last answer that is not `applied` is an\s+approval the forge will not take/);
+  assert.match(lifecycle, /refuses as well findings of one defect at one site, twins under one\s+title or a label's findings at one line, that are already raised in\s+one decision and new in the other, even where the other gates them/);
   assert.match(lifecycle, /only when its `user` is the\s+snapshot's `author` and its `created_at` is later than the\s+`submitted_at` the snapshot gives for the Minos review whose body\s+holds the finding/);
 });
 
