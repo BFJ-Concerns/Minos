@@ -682,11 +682,11 @@ test("a whole-scope finding keeps its scope through the merge when a finding abo
 
   const verifierCalls = calls.filter((call) => call.opts.label?.startsWith("verify-brief-"));
   assert.equal(verifierCalls.length, 1);
-  assert.deepEqual(findingsFromVerifierPrompt(verifierCalls[0].prompt).map(({ title, wholeScope, wholeScopeBrief }) => ({ title, wholeScope, wholeScopeBrief })), [
-    { title: "change finding", wholeScope: "pkg/", wholeScopeBrief: whole.path },
+  assert.deepEqual(findingsFromVerifierPrompt(verifierCalls[0].prompt).map(({ title, wholeScope, brief }) => ({ title, wholeScope, brief })), [
+    { title: "change finding", wholeScope: "pkg/", brief: whole.path },
   ]);
-  assert.deepEqual(result.proposedFindings.map(({ title, wholeScope, wholeScopeBrief }) => ({ title, wholeScope, wholeScopeBrief })), [
-    { title: "change finding", wholeScope: "pkg/", wholeScopeBrief: whole.path },
+  assert.deepEqual(result.proposedFindings.map(({ title, wholeScope, brief }) => ({ title, wholeScope, brief })), [
+    { title: "change finding", wholeScope: "pkg/", brief: whole.path },
   ]);
 });
 
@@ -712,9 +712,9 @@ test("a finding a verifier raises while checking a whole-scope finding takes tha
       const entries = findingsFromVerifierPrompt(prompt);
       const firstRound = !label.includes("-round-");
       if (firstRound) {
-        assert.deepEqual(entries.map(({ title, wholeScope, wholeScopeBrief }) => ({ title, wholeScope, wholeScopeBrief })), [
-          { title: "change finding", wholeScope: undefined, wholeScopeBrief: undefined },
-          { title: "guard the retry", wholeScope: "pkg/", wholeScopeBrief: whole.path },
+        assert.deepEqual(entries.map(({ title, wholeScope, brief }) => ({ title, wholeScope, brief })), [
+          { title: "change finding", wholeScope: undefined, brief: diff.path },
+          { title: "guard the retry", wholeScope: "pkg/", brief: whole.path },
         ]);
       }
       const [changeEntry, wholeEntry] = entries;
@@ -736,13 +736,13 @@ test("a finding a verifier raises while checking a whole-scope finding takes tha
   }));
 
   const expected = [
-    { title: "legacy retry fault", wholeScope: "pkg/", wholeScopeBrief: whole.path },
-    { title: "change-named fault", wholeScope: undefined, wholeScopeBrief: undefined },
-    { title: "command fault", wholeScope: undefined, wholeScopeBrief: undefined },
-    { title: "misnamed fault", wholeScope: undefined, wholeScopeBrief: undefined },
-    { title: "unnamed fault", wholeScope: undefined, wholeScopeBrief: undefined },
+    { title: "legacy retry fault", wholeScope: "pkg/", brief: whole.path },
+    { title: "change-named fault", wholeScope: undefined, brief: undefined },
+    { title: "command fault", wholeScope: undefined, brief: undefined },
+    { title: "misnamed fault", wholeScope: undefined, brief: undefined },
+    { title: "unnamed fault", wholeScope: undefined, brief: undefined },
   ];
-  const scopeOf = ({ title, wholeScope, wholeScopeBrief }) => ({ title, wholeScope, wholeScopeBrief });
+  const scopeOf = ({ title, wholeScope, brief }) => ({ title, wholeScope, brief });
   const secondRound = calls.filter((call) => call.opts.label?.startsWith("verify-brief-round-2"));
   assert.equal(secondRound.length, 1);
   const shown = findingsFromVerifierPrompt(secondRound[0].prompt);

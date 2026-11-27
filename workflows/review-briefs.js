@@ -432,9 +432,13 @@ specialistResults.forEach(({ unit, completed, output: result }, unitIndex) => {
       status: "run",
       reason: "applicable concern reviewed",
     });
+  // A finding is made under its brief, whose path it carries to the
+  // verifier, and under the brief's directory as it stands where the brief
+  // reads its whole part.
   propose(result.findings, "finding", {
     outsideConcern: false,
-    ...(unit.extent === "full" ? { wholeScope: wholeScopeOf(unit), wholeScopeBrief: unit.brief } : {}),
+    brief: unit.brief,
+    ...(unit.extent === "full" ? { wholeScope: wholeScopeOf(unit) } : {}),
   });
 });
 

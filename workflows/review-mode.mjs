@@ -19,15 +19,19 @@
 // `.review/` briefs after it under either mode, unchanged.
 //
 // A repository's `review.mode` setting says how a run comes by its mode,
-// and the service exports it to the run as MINOS_REVIEW_MODE. Only the
+// and the service exports it to the run as MINOS_REVIEW_MODE. It names a
+// mode for every head, or is `automatic`, which leaves each head's mode to
+// the review-mode judgement stage (judgements/review-mode.mjs). Only the
 // run reads the setting, to settle the mode before it starts the review:
 // the scripted driver in its choose-review-mode step
 // (run-steps/choose-review-mode.mjs), the resident lead in step 3 of
-// lifecycle/lifecycle.md. An input builder and a workflow belong to one
-// mode each and are never told the setting.
+// lifecycle/lifecycle.md, which gives an `automatic` head the specialist
+// review. An input builder and a workflow belong to one mode each and are
+// never told the setting.
 
 export const SPECIALIST = "specialist";
 export const QUICK = "quick";
+export const AUTOMATIC = "automatic";
 
 // Each mode's review: its input builder and its workflow, as names under
 // the workflows directory. Whichever the mode, the review is dispatched as
@@ -47,10 +51,10 @@ export const GENERAL_REVIEWER = "general";
 
 export const MODE_VARIABLE = "MINOS_REVIEW_MODE";
 
-// The values `review.mode` takes. Each names the mode every head of the
-// repository is reviewed in. The Go loader holds the configured value to
-// the same list.
-export const MODE_SETTINGS = [SPECIALIST, QUICK];
+// The values `review.mode` takes: a mode, which every head of the
+// repository is reviewed in, or `automatic`. The Go loader holds the
+// configured value to the same list.
+export const MODE_SETTINGS = [...MODES, AUTOMATIC];
 
 // The repository's setting, as the service exported it. Unset or empty is
 // the specialist review, the documented default, as when a run is started

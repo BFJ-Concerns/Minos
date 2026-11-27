@@ -4,6 +4,16 @@ import { fileURLToPath } from "node:url";
 
 import { prepareStage, runCommand } from "../run-process.mjs";
 
+// The predecessor's main verdict the service carried to this run, where
+// it is for this head read from this base, or null. Reading it consumes
+// nothing: the review step takes the carry up when it dispatches.
+export function carriedReview(run, reviewBase) {
+  const carriedFile = join(run.runDir, "carried-review-result.json");
+  if (!existsSync(carriedFile)) return null;
+  const verdict = JSON.parse(readFileSync(carriedFile, "utf8"));
+  return verdict.reviewed?.head === run.head && verdict.reviewed?.target === reviewBase ? verdict : null;
+}
+
 export async function dispatchReview(run, inspection, { name, builder, workflow, carry }) {
   const command = fileURLToPath(new URL(`../${builder}`, import.meta.url));
   const input = await runCommand(run, process.execPath, [command, inspection.reviewBase, run.head]);
@@ -11,8 +21,8 @@ export async function dispatchReview(run, inspection, { name, builder, workflow,
   const resultFile = () => join(run.runDir, `${attempt}-result.json`);
   const carriedFile = join(run.runDir, "carried-review-result.json");
   if (carry && existsSync(carriedFile)) {
-    const verdict = JSON.parse(readFileSync(carriedFile, "utf8"));
-    if (verdict.reviewed?.head === run.head && verdict.reviewed?.target === inspection.reviewBase) {
+    const verdict = carriedReview(run, inspection.reviewBase);
+    if (verdict) {
       renameSync(carriedFile, resultFile());
       return finish(verdict, { carried: true });
     }

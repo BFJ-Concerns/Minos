@@ -39,7 +39,12 @@ author, and the forge's own CI remains the build evidence.
    with the project. A repository set to the quick review
    (`review.mode = "quick"`) has no plan and no specialists: one general
    reviewer reads the change for every kind of problem, and divides it
-   among several general reviewers only when it is too large for one.
+   among several general reviewers only when it is too large for one. A
+   repository set to `automatic` has an agent read each head's change
+   first and choose: the specialist review where the change carries
+   enough risk to justify it, the quick review otherwise, and the
+   specialist review where the agent gives no usable answer. The run's
+   report gives the choice and its reason.
    Either way, findings that one fix would resolve are merged, and a
    verifier checks each of the rest against the code and finds it confirmed,
    refuted or unsettled. Only a confirmed finding is treated as a defect; an
@@ -262,7 +267,7 @@ Per-repository settings take their defaults from `[repositories]` in
 | `admission` | Ready pull requests from the same repository | Filters by labels, author, base branch, draft state, title, touched paths and fork source. [Admission settings](docs/deployment.md#pull-request-admission) |
 | `review.threshold` | `High` | Severity threshold the lead weighs when classifying: `Critical`, `High`, `Medium` or `Low` |
 | `review.depth` | `standard` | How widely exploration plans and how far each reviewer reads around the change: `light`, `standard` or `thorough`; it never bounds the findings a review returns |
-| `review.mode` | `specialist` | Which review a head gets: `specialist`, planned by exploration with a specialist for each concern, or `quick`, made by general reviewers with no concerns. Both merge and verify every finding alike |
+| `review.mode` | `specialist` | Which review a head gets: `specialist`, planned by exploration with a specialist for each concern; `quick`, made by general reviewers with no concerns; or `automatic`, where an agent reads each head's change and chooses between the two by its risk. Both reviews merge and verify every finding alike |
 | `review.file-safeguard-requests` | `false` | Whether a confirmed request for a safeguard against a failure nobody has observed goes to the filing destination, marked as a safeguard request; it never gates either way |
 | `push-inspection.outcomes` | `["no-review", "increment", "full"]` | Which reviews Minos may choose for a new head before reviewing it: none, only what changed since the head it last finished on, or the whole pull request; `full` is always among them |
 | `filing-destination.kind` | `pull-request-comment` | Where findings that do not block go: committed to a `file` in a repository, filed as an `issue`, posted as a `pull-request-comment`, or `none` |

@@ -113,7 +113,6 @@ test("the builder hands the workflow the change's paths and the general, merge a
   assert.deepEqual(Object.keys(ARGS.prompts.generalAssignment).sort(), ["share", "wholeChange"]);
   assert.equal(ARGS.concerns, undefined);
   assert.equal(ARGS.concernRouting, undefined);
-  assert.match(ARGS.prompts.general, /MINOS_TEST_COMMISSION_QUICK|\{\{project-documents\}\}/);
   assert.equal(ARGS.routing.proposer.engine, "codex");
   assert.equal(ARGS.routing.verifier.engine, "claude");
   assert.notEqual(builtArgs({ depth: "thorough" }).prompts.general, ARGS.prompts.general);
@@ -128,6 +127,8 @@ test("an undivided change is one general leg on the proposer's route, its findin
   const [general] = calls;
   assert.equal(general.opts.engine, "codex");
   assert.deepEqual(general.opts.schema, ARGS.contracts.generalWholeChangeSchema);
+  // The project's documents reach the reviewer in the prompt it was sent.
+  assert.match(general.prompt, /MINOS_TEST_COMMISSION_QUICK/);
   assert.match(general.prompt, new RegExp(`git diff ${ARGS.target}\\.\\.\\.${ARGS.head}`));
   assert.doesNotMatch(general.prompt, /\{\{[a-z-]+\}\}/);
   assert.equal(calls[2].opts.engine, "claude");
@@ -148,12 +149,21 @@ test("an undivided change is one general leg on the proposer's route, its findin
   assert.equal(verdict.confirmedFindings.length, 2);
 });
 
-test("a single share is no division, and the whole-change answer is the review", async () => {
-  const { calls, result } = await invokeWorkflow(script, ARGS, responder({
-    whole: wholeChangeResult({ shares: [TWO_SHARES[0]] }),
-  }));
+test("no shares is no division, and the whole-change answer is the review", async () => {
+  const { calls, result } = await invokeWorkflow(script, ARGS, responder({ whole: wholeChangeResult() }));
   assert.deepEqual(calls.map((call) => call.opts.label), ["general-codex", "verify-1-claude"]);
   assert.deepEqual(result.dispatches, []);
+});
+
+// A reviewer that divides leaves the reading to the share reviewers, so a
+// one-share answer with no findings is a change nobody read.
+test("a single share leaves the review incomplete, never clean", async (t) => {
+  const { calls, result } = await invokeWorkflow(script, ARGS, responder({
+    whole: wholeChangeResult({ shares: [TWO_SHARES[0]], findings: [] }),
+  }));
+  assert.deepEqual(calls.map((call) => call.opts.label), ["general-codex"]);
+  assert.match(result.incomplete.join("\n"), /division/);
+  assert.equal((await adjudicateEnvelope(t, result)).status, "incomplete");
 });
 
 test("a divided change sends one reviewer for each share, told its share and the others', and keeps the divider's findings", async () => {
@@ -166,6 +176,7 @@ test("a divided change sends one reviewer for each share, told its share and the
     assert.deepEqual(call.opts.schema, ARGS.contracts.generalSchema);
     assert.equal(call.opts.engine, "codex");
     assert.doesNotMatch(call.prompt, /\{\{[a-z-]+\}\}/);
+    assert.match(call.prompt, /MINOS_TEST_COMMISSION_QUICK/);
   }
   const [first, second] = shareCalls.map((call) => call.prompt);
   const yours = (prompt) => prompt.slice(prompt.indexOf("Your share:"), prompt.indexOf("The other reviewers' shares:"));

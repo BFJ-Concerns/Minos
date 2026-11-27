@@ -20,7 +20,7 @@ That assignment is your bound. You are finished when you have read all of it for
 
 What counts as a finding under the brief depends on which of two things the assignment covers.
 
-Where it covers only what the change did, a finding is something the change gets wrong under the brief. Judge that by the lines, not by the behaviour: a problem in lines the change neither wrote nor altered, which the change does nothing to bring about, was there before it, while a problem in lines the change did write is the change's even where the software misbehaved in the same way before. `git show {{target}}:<path>` shows a file as it stood before the change.
+Where it covers only what the change did, a finding is something the change gets wrong under the brief. Judge that by the lines, not by the behaviour: a problem in lines the change neither wrote nor altered, which the change does nothing to bring about, was there before it, while a problem in lines the change did write is the change's even where the software misbehaved in the same way before. `git show $(git merge-base {{target}} {{head}}):<path>` shows a file as it stood before the change, on the commit the diff is taken from.
 
 Where it covers a whole part of the repository as it stands, a finding is anything in that part that is wrong under the brief, in code the change never touched as much as in code it wrote. The project asked for that part to be read as it is, so whether the change introduced a fault does not decide where you report it: it goes in `findings` either way.
 

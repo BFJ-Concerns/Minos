@@ -48,12 +48,18 @@ function promptsFromInput(input) {
   return prompts;
 }
 
-// A division the whole-change reviewer returned: null where it is fewer
-// than two shares, which is no division; the shares where each has a
-// distinct id, a focus and changed paths no other share lists; false
-// otherwise, a division no reviewer can be sent on.
+// A division the whole-change reviewer returned: null where it returned
+// no shares, which is no division and leaves its own reading the review;
+// the shares where there are two or more and each has a distinct id, a
+// focus and changed paths no other share lists; false otherwise, a
+// division no reviewer can be sent on. A single share is such a division:
+// whole-change.md tells a reviewer that divides to leave the reading to
+// the share reviewers, so a reviewer that returned one may have read
+// nothing, and sending that share's reviewer alone would be a division
+// the prompt never offered.
 function divisionOf(shares, changedPaths) {
-  if (!Array.isArray(shares) || shares.length < 2) return null;
+  if (!Array.isArray(shares) || shares.length === 0) return null;
+  if (shares.length < 2) return false;
   const ids = new Set();
   const listed = new Set();
   for (const share of shares) {
@@ -169,7 +175,7 @@ if (!wholeChangeResult.output) return envelope();
 
 const division = divisionOf(wholeChangeResult.output.shares, changedPaths);
 if (division === false) {
-  incomplete.push("the general reviewer returned a division that does not give every share its own id, a focus and changed paths no other share lists");
+  incomplete.push("the general reviewer returned a division that is not two or more shares, each with its own id, a focus and changed paths no other share lists");
   return envelope();
 }
 

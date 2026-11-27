@@ -125,37 +125,42 @@ const sampleFinding = {
 };
 const observationSample = { title: "t", path: "a.go", line: 1, explanation: "e" };
 
-// One answer each shipped stage schema must accept, as a leg would return it.
+// The answers each shipped stage schema must accept, as a leg would return
+// them.
 const schemaSamples = {
-  explorationSchema: {
+  explorationSchema: [{
     applicability: { reason: "r" },
     files: [{ path: "a.go", added: 1, deleted: 0 }],
     plan: [{ id: "u", concern: "c", scope: ["a.go"], specialistType: "logic" }],
-  },
-  specialistSchema: {
+  }],
+  specialistSchema: [{
     applicability: { status: "applicable", reason: "r" },
     findings: [sampleFinding],
     outsideConcernFindings: [],
     outOfScopeObservations: [observationSample],
-  },
-  generalSchema: { findings: [sampleFinding], outOfScopeObservations: [observationSample] },
-  generalWholeChangeSchema: {
-    shares: [
-      { id: "parser", focus: "The parser's new record type.", paths: ["a.go"] },
-      { id: "store", focus: "The store that keeps it.", paths: ["b.go", "c.go"] },
-    ],
-    findings: [],
-    outOfScopeObservations: [],
-  },
-  mergeSchema: { groups: [{ findingIds: ["a", "b"], primary: "a", sharedCause: "one fix" }] },
-  verifierSchema: {
+  }],
+  generalSchema: [{ findings: [sampleFinding], outOfScopeObservations: [observationSample] }],
+  generalWholeChangeSchema: [
+    // Undivided: the reviewer's own reading is the review.
+    { shares: [], findings: [sampleFinding], outOfScopeObservations: [observationSample] },
+    {
+      shares: [
+        { id: "parser", focus: "The parser's new record type.", paths: ["a.go"] },
+        { id: "store", focus: "The store that keeps it.", paths: ["b.go", "c.go"] },
+      ],
+      findings: [],
+      outOfScopeObservations: [],
+    },
+  ],
+  mergeSchema: [{ groups: [{ findingIds: ["a", "b"], primary: "a", sharedCause: "one fix" }] }],
+  verifierSchema: [{
     verdicts: [{
       findingId: "a", verdict: "unsettled", confidence: 50, severity: "Medium",
       reason: "r", outsideFact: "f", wouldSettle: "w",
     }],
     newFindings: [{ ...sampleFinding, foundWhileChecking: "a" }],
     outOfScopeObservations: [],
-  },
+  }],
 };
 
 const cleanDecision = { verdict: "clean", basis: "No finding gates.", findings: [] };
@@ -181,6 +186,10 @@ const judgementSamples = {
   "earlier-findings": [{
     input: { findings: [{ key: "thread-1" }] },
     answer: { findings: [{ key: "thread-1", outcome: "stands", reason: "The parser still drops the record." }] },
+  }],
+  "review-mode": [{
+    input: {},
+    answer: { mode: "quick", reason: "The change rewords one comment in a test helper." },
   }],
   "repository-description": [{
     input: { commit: "1111111111111111111111111111111111111111", earlier: null },
@@ -291,7 +300,8 @@ test("the installed runtime compiles every shipped stage schema and accepts a we
   const directory = join(root, "workflows", "judgements");
   const stages = readdirSync(directory).filter((entry) => entry.endsWith(".mjs")).map((entry) => entry.slice(0, -4));
   assert.deepEqual(stages.sort(), Object.keys(judgementSamples).sort(), "each installed judgement needs a sample");
-  for (const [name, sample] of Object.entries(schemaSamples)) assertSchema(name, contracts[name], sample);
+  for (const [name, samples] of Object.entries(schemaSamples))
+    for (const sample of samples) assertSchema(name, contracts[name], sample);
   for (const name of stages) {
     const stage = await loadStage(name);
     for (const { input, answer } of judgementSamples[name]) assertSchema(name, stage.answerSchema(input), answer);
@@ -305,9 +315,10 @@ test("the installed runtime compiles every shipped stage schema and accepts a we
     assert.ok(validate(sample, codexSchema), `${name} accepts a well-formed answer as a Codex output schema`);
   }
 
-  assert.ok(!validate({ ...schemaSamples.verifierSchema, verdicts: [{ ...schemaSamples.verifierSchema.verdicts[0], verdict: "upheld" }] }, contracts.verifierSchema),
+  const [verifierSample] = schemaSamples.verifierSchema;
+  assert.ok(!validate({ ...verifierSample, verdicts: [{ ...verifierSample.verdicts[0], verdict: "upheld" }] }, contracts.verifierSchema),
     "a verdict outside the three is refused");
-  assert.ok(!validate({ ...schemaSamples.verifierSchema, newFindings: [sampleFinding] }, contracts.verifierSchema),
+  assert.ok(!validate({ ...verifierSample, newFindings: [sampleFinding] }, contracts.verifierSchema),
     "a raised finding that does not name the finding it was found while checking is refused");
 });
 

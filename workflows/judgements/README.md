@@ -8,6 +8,7 @@ answer the driver carries out as given.
 | Stage | Decides | Driver step |
 |---|---|---|
 | `push-inspection` | how much review a head needs: none, the increment since the head Minos last finished on, or the whole pull request | `run-steps/inspect-push.mjs` |
+| `review-mode` | which review a head gets, specialist or quick, where the repository's `review.mode` is `automatic` | `run-steps/choose-review-mode.mjs` |
 | `verdict-classification` | which confirmed findings of the main and brief verdicts gate, take a never-gating class or are advisory | `run-steps/classify.mjs` |
 | `earlier-findings` | whether each blocking finding of an earlier Minos review still stands: answered by the author, gone from the code, or not | `run-steps/settle-earlier-findings.mjs` |
 
@@ -89,6 +90,13 @@ A stage that gives no answer, or one its `answerProblem` refuses, fails
 the step that asked, and the run ends incomplete. No default answer stands
 in: a default would be the driver deciding.
 
+`review-mode` is the one exception. Where it gives no usable answer the
+head gets the specialist review, the one a repository gets unless set, and
+the run goes on with the failure among the report's anomalies. Neither of
+its answers is wrong for any change, and the specialist review is the one
+that misses less, so taking it decides nothing about the change that the
+stage was asked to decide.
+
 The step then carries the answer out. What an answer makes the run do is
 the step's code and never the stage's.
 
@@ -145,7 +153,12 @@ Write `NAME.md` and `NAME.mjs` here, the step that gathers its input and
 carries out its answer under `workflows/run-steps/`, and a row in the
 table above.
 
-Add a representative input to `judgementSamples` in
-`workflows/runtime_bundle_compatibility_test.mjs`. The compatibility check
-uses that input to build the stage's arguments and validate them with the
-installed runtime.
+Add a sample to `judgementSamples` in
+`workflows/runtime_bundle_compatibility_test.mjs`: an `input` and an
+`answer` the stage could give to it. The input need hold only the fields
+the stage's `answerSchema` reads. The compatibility check builds the
+stage's answer schema from the input, compiles it under the installed
+runtime, as given and as a Codex output schema, and validates the answer
+against both, so a sample without an answer leaves the stage unchecked. A
+stage whose schema narrows with the input can be given a sample for each shape
+it can take.

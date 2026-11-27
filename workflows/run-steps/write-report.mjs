@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { AUTOMATIC } from "../review-mode.mjs";
 import { runCommand } from "../run-process.mjs";
 
 export async function writeReport(run, settled, ending, closingProblems = []) {
@@ -10,6 +11,7 @@ export async function writeReport(run, settled, ending, closingProblems = []) {
     ...closingProblems,
     settled.claimSummaryProblem, settled.reviewingSummaryProblem,
     settled.workingStatusProblem, settled.terminalStatusProblem, settled.terminalMarkerProblem,
+    settled.reviewMode?.problem && `The review-mode stage gave no usable answer, so the head got the specialist review: ${settled.reviewMode.problem}`,
     settled.reviewDispatchProblem, settled.briefDispatchProblem, publication?.filingRecordProblem,
     ...(publication?.filing.outcome === "unfiled" ? [publication.filing.reason] : []),
   ].filter(Boolean);
@@ -36,6 +38,7 @@ export async function writeReport(run, settled, ending, closingProblems = []) {
     "", "## Review", "",
     ...(inspection ? [`- Push inspection chose **${inspection.outcome}**. ${inspection.reason}`] : []),
     ...(mode ? [`- Main review in the **${mode}** mode.`] : []),
+    ...modeChoiceLines(settled.reviewMode),
     ...(settled.carriedReview ? ["- Reused the predecessor's completed main review."] : []),
     ...(decisions?.main ? [`- Main classification — ${decisions.main.basis}`] : []),
     ...(decisions?.brief ? [`- Brief classification — ${decisions.brief.basis}`] : []),
@@ -48,6 +51,16 @@ export async function writeReport(run, settled, ending, closingProblems = []) {
     ...(problems.length ? ["", "## Anomalies", "", ...problems.map((problem) => `- ${problem}`)] : []),
   ];
   writeFileSync(join(run.runDir, "report.md"), `${lines.join("\n")}\n`);
+}
+
+// How an `automatic` setting came by the head's mode: the stage's choice
+// and its reason, the carried verdict, or the stage's failure, whose cause
+// the anomalies give.
+function modeChoiceLines(reviewMode) {
+  if (reviewMode?.setting !== AUTOMATIC) return [];
+  if (reviewMode.carried) return ["  - The mode was left to each head; the reused review settled it, and no choice was asked for."];
+  if (reviewMode.problem) return ["  - The mode was left to each head and no choice was made; the specialist review stood in."];
+  return [`  - The mode was left to each head and the review-mode stage chose it. ${reviewMode.chosen}`];
 }
 
 async function timingLines(run, problems) {
