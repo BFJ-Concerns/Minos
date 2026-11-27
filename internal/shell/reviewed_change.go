@@ -187,18 +187,22 @@ func changedPaths(earlier, current map[string]string) []string {
 // after the forge accepted the durable outcome: the summary comment's write
 // of a finished state, or a clean or attention status, which the resident
 // lead writes in its place. A record that cannot be written is said on
-// stderr; the next head's earlier-head search then reads the summary
-// comment instead.
+// stderr, and the record it would have replaced is removed: left in place,
+// it would name an older head than the one just finished and answer the
+// next earlier-head search ahead of the summary comment, which names the
+// right one.
 func recordReviewedChange(ctx context.Context, guard forge.Guard, outcome string) {
 	workspace := os.Getenv("MINOS_WORKSPACE")
 	if workspace == "" {
 		return
 	}
-	err := func() error {
-		cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
-		if err != nil {
-			return err
-		}
+	cfg, err := LoadServiceConfig(os.Getenv("MINOS_CONFIG"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "minos: the reviewed change at %s could not be recorded: %v\n", guard.HeadSHA, err)
+		return
+	}
+	path := reviewedChangePath(cfg, os.Getenv("MINOS_FORGE"), guard)
+	err = func() error {
 		files, err := changeFingerprints(ctx, workspace, guard.TargetSHA, guard.HeadSHA)
 		if err != nil {
 			return err
@@ -207,7 +211,6 @@ func recordReviewedChange(ctx context.Context, guard forge.Guard, outcome string
 		if err != nil {
 			return err
 		}
-		path := reviewedChangePath(cfg, os.Getenv("MINOS_FORGE"), guard)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return err
 		}
@@ -217,8 +220,12 @@ func recordReviewedChange(ctx context.Context, guard forge.Guard, outcome string
 		}
 		return os.Rename(staging, path)
 	}()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "minos: the reviewed change at %s could not be recorded: %v; the next head gets a full review\n", guard.HeadSHA, err)
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "minos: the reviewed change at %s could not be recorded: %v\n", guard.HeadSHA, err)
+	if removeErr := removeRecordFile(path); removeErr != nil {
+		fmt.Fprintf(os.Stderr, "minos: the earlier reviewed change could not be removed either: %v; the next head may be compared with an older finished head\n", removeErr)
 	}
 }
 
