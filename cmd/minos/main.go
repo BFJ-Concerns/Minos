@@ -8,6 +8,7 @@ import (
 	"os/exec"
 
 	"github.com/BFJ-Concerns/Minos/internal/shell"
+	"github.com/BFJ-Concerns/Minos/internal/webpage"
 )
 
 const version = "0.1.0"
@@ -43,7 +44,7 @@ func run(args []string) error {
 		_, err := fmt.Fprintln(os.Stdout, version)
 		return err
 	case "receive":
-		return shell.ReceiveCommand(ctx, args[1:])
+		return shell.ReceiveCommand(ctx, args[1:], webpage.Routes)
 	case "sweep":
 		return shell.SweepCommand(ctx, args[1:])
 	case "run":

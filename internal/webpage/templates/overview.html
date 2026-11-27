@@ -1,0 +1,20 @@
+{{define "content"}}
+<h1>Overview</h1>
+<p>Reviewing as <strong>{{.BotLogin}}</strong>, at most {{.MaxConcurrent}} {{if eq .MaxConcurrent 1}}run{{else}}runs{{end}} at a time.</p>
+
+<h2>Repositories</h2>
+{{- if .Repositories}}
+<table>
+<thead>
+<tr><th>Repository</th><th>Forge</th><th>Severity threshold</th></tr>
+</thead>
+<tbody>
+{{- range .Repositories}}
+<tr><td><a href="/repositories/{{.Forge}}/{{.Owner}}/{{.Repo}}/findings">{{.Owner}}/{{.Repo}}</a></td><td>{{.Forge}}</td><td>{{.Review.Threshold}}</td></tr>
+{{- end}}
+</tbody>
+</table>
+{{- else}}
+<p class="empty">No repository is enrolled yet. Each enrolled repository is one file under <code>repos/</code> in the configuration directory.</p>
+{{- end}}
+{{end}}

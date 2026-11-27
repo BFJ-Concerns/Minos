@@ -79,14 +79,20 @@ function fixture(t, { skip = false, outstanding = false, blocking = false, refus
       if (operation === "earlier") return {
         head: briefBase, ancestor: true, outcome: "clean", changed_paths: [],
       };
-      if (operation === "threads") return outstanding ? [{
-        path: "parser.go", line: 10,
-        comments: [{ commit_id: reviewBase, user: "minos", body: "**Blocking** The parser rejects a valid record." }],
-      }] : [];
+      if (operation === "threads") {
+        const earlierThreads = outstanding ? [{
+          path: "lexer.go", line: 5,
+          comments: [{ commit_id: run.head, user: "minos", body: "**Blocking** The lexer drops an empty token." }],
+        }] : [];
+        const postedThreads = drafts.flat().map(({ path, line, body }) => ({
+          path, line, comments: [{ commit_id: run.head, user: "minos", body }],
+        }));
+        return [...earlierThreads, ...postedThreads];
+      }
       if (operation === "approve") return { outcome: "not-needed" };
       if (operation === "review") {
-        drafts.push(JSON.parse(readFileSync(args[4], "utf8")));
         if (refusedReview) return { outcome: "uncertain", reason: "findings review was not confirmed" };
+        drafts.push(JSON.parse(readFileSync(args[4], "utf8")));
         if (pressureOnPublish) writeFileSync(join(runDir, "memory-pressure"), "fixture pressure");
       }
       if (operation === "marker" && args[3] === "remove" && (blocking || incomplete || moved || outstanding)) {
@@ -112,11 +118,17 @@ function fixture(t, { skip = false, outstanding = false, blocking = false, refus
               brief: decision("clean"),
             };
             break;
-          case "earlier-findings":
-            assert.equal(outstanding, true);
-            assert.deepEqual(args.input.findings.map(({ key }) => key), ["thread-1"]);
-            answer = { findings: [{ key: "thread-1", outcome: "stands", reason: "Fixture defect still stands." }] };
+          case "earlier-findings": {
+            const paths = [
+              ...(outstanding ? ["lexer.go"] : []),
+              ...(blocking ? ["parser.go"] : []),
+            ];
+            assert.deepEqual(args.input.findings.map(({ path, head }) => [path, head]), paths.map((path) => [path, run.head]));
+            answer = { findings: paths.map((_, index) => ({
+              key: `thread-${index + 1}`, outcome: "stands", reason: "Fixture defect still stands.",
+            })) };
             break;
+          }
           default:
             assert.fail(`unexpected judgement stage ${args.stage}`);
         }
@@ -155,7 +167,7 @@ test("the course posts only the validated blocking review and records its non-cl
   assert.deepEqual(await f.drive(), { outcome: "changes-requested" });
   assert.deepEqual(f.calls.map(([op, ...args]) => op === "status" ? args[2] : op),
     ["snapshot", "claim", "working", "earlier", "judge", "dispatch", "dispatch", "snapshot", "threads",
-      "judge", "review", "snapshot", "threads", "attention", "marker", "marker"]);
+      "judge", "review", "snapshot", "threads", "judge", "attention", "marker", "marker"]);
   assert.deepEqual(f.calls.find(([op]) => op === "review").slice(1, 4), [f.run.head, target, "request-changes"]);
   assert.match(f.drafts[0][0].body, /Blocking/);
   assert.match(f.read("failure-log"), /cause=this run published blocking findings/);
@@ -163,6 +175,7 @@ test("the course posts only the validated blocking review and records its non-cl
   assert.match(f.read("report.md"), /Fixture inspection/);
   assert.equal(f.json("verdict-decision.json").verdict, "request-changes");
   assert.equal(f.json("triage-result.json").outcome, "nothing-to-file");
+  assert.equal(f.json("judgements/earlier-findings.json").input.findings[0].head, f.run.head);
 });
 
 test("a no-review run approves only a clean outcome and never restates earlier findings", async (t) => {
@@ -177,7 +190,9 @@ test("a no-review run approves only a clean outcome and never restates earlier f
   assert.deepEqual(blocked.calls.map(([op]) => op), ["snapshot", "claim", "status", "earlier", "judge", "snapshot", "threads", "judge", "status", "marker", "marker"]);
   assert.match(blocked.read("failure-log"), /earlier review remain outstanding/);
   assert.match(blocked.read("report.md"), /Fixture defect still stands/);
-  assert.equal(blocked.json("judgements/earlier-findings.json").answer.findings[0].outcome, "stands");
+  const settlement = blocked.json("judgements/earlier-findings.json");
+  assert.equal(settlement.input.findings[0].head, blocked.run.head);
+  assert.equal(settlement.answer.findings[0].outcome, "stands");
 });
 
 test("an incomplete review or unconfirmed write withdraws the run without a clean marker", async (t) => {

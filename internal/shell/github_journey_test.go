@@ -93,14 +93,15 @@ type githubFixtureState struct {
 	// refuseReviewReads, when non-zero, is the HTTP status the fixture
 	// answers every review listing with, so a script's read-back sees an
 	// unreadable forge rather than an empty one.
-	refuseReviewReads int
-	reactions         []map[string]any
-	definedLabels     []map[string]any
-	issues            []map[string]any
-	pullRequests      []map[string]any
-	writes            []githubFixtureWrite
-	unreadablePath    string
-	refuseMutation    bool
+	refuseReviewReads  int
+	reactions          []map[string]any
+	definedLabels      []map[string]any
+	issues             []map[string]any
+	pullRequests       []map[string]any
+	expectedPullsState string
+	writes             []githubFixtureWrite
+	unreadablePath     string
+	refuseMutation     bool
 }
 
 func newGitHubFixtureState(t *testing.T) *githubFixtureState {
@@ -1124,8 +1125,12 @@ func (s *githubFixtureState) handleOperations(w http.ResponseWriter, r *http.Req
 	var records []map[string]any
 	switch path {
 	case "/repos/acme/widgets/pulls":
-		if r.URL.Query().Get("state") != "open" {
-			s.t.Error("pull listing must select open")
+		expected := s.expectedPullsState
+		if expected == "" {
+			expected = "open"
+		}
+		if got := r.URL.Query().Get("state"); got != expected {
+			s.t.Errorf("pull listing state = %q, want %q", got, expected)
 		}
 		records = s.pullRequests
 	case "/repos/acme/widgets/issues/7/reactions":

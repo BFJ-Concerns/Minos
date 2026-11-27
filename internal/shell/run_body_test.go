@@ -173,6 +173,17 @@ func TestRunBodyExportsSocketSafeTempDirectoryForLongRunName(t *testing.T) {
 	}
 }
 
+// The lead chooses among the push-inspection outcomes the repository
+// allows (lifecycle step 2), so the list the service exported must reach
+// the lead's own environment unchanged.
+func TestRunBodyCarriesThePushInspectionOutcomesToTheLead(t *testing.T) {
+	fixture := newRunBodyFixture(t)
+	fixture.run(t, map[string]string{"MINOS_PUSH_INSPECTION_OUTCOMES": `["increment","full"]`})
+	if got := environmentValue(t, fixture.record+".worker-env", "MINOS_PUSH_INSPECTION_OUTCOMES"); got != `["increment","full"]` {
+		t.Fatalf("lead's MINOS_PUSH_INSPECTION_OUTCOMES = %q, want the exported list", got)
+	}
+}
+
 func TestRunBodyExportsTheProvisionedEnginesFromTheSeedsItNames(t *testing.T) {
 	both := newRunBodyFixture(t)
 	both.run(t, nil)

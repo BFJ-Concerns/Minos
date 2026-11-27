@@ -1,6 +1,9 @@
 // Finds which blocking findings of earlier Minos reviews on this pull
-// request still stand. Part of that is mechanical: a finding raised on this
-// head is this run's own, and a resolved thread is the author's answer.
+// request still stand. Part of that is mechanical: a resolved thread is the
+// author's answer. A finding raised on this head is read like any other,
+// because an earlier run on the same head may have raised it; this run's
+// own blocking findings, published before this step, stand by the same
+// reading, and the run requests changes for them in any case.
 // Whether the author rejected a finding in words, and whether the defect it
 // describes is gone from the code at this head, are judgements, so this
 // step gathers the rest with their replies and the author's comments, asks
@@ -25,9 +28,9 @@ export function authorCommentsAfter(comments, author, submittedAt) {
 }
 
 // The blocking findings that need reading, as the stage is shown them.
-export function findingsToRead({ snapshot, threads, comments, head }) {
+export function findingsToRead({ snapshot, threads, comments }) {
   return earlierMinosFindings(snapshot, threads)
-    .filter((finding) => finding.blocking && finding.head !== head && !(finding.where === THREAD && finding.resolved))
+    .filter((finding) => finding.blocking && !(finding.where === THREAD && finding.resolved))
     .map(({ key, where, path, line, head: raisedOn, finding, replies, submittedAt }) => ({
       key, path, line, head: raisedOn, finding, where,
       ...(where === THREAD
@@ -39,9 +42,9 @@ export function findingsToRead({ snapshot, threads, comments, head }) {
 export async function settleEarlierFindings(run) {
   const [snapshot, threads] = [await run.forge("snapshot"), await run.forge("threads")];
   const needsComments = earlierMinosFindings(snapshot, threads)
-    .some((finding) => finding.blocking && finding.where === REVIEW_BODY && finding.head !== run.head);
+    .some((finding) => finding.blocking && finding.where === REVIEW_BODY);
   const comments = needsComments ? await run.forge("comments") : [];
-  const findings = findingsToRead({ snapshot, threads, comments, head: run.head });
+  const findings = findingsToRead({ snapshot, threads, comments });
   if (findings.length === 0) return { outstanding: [] };
 
   const answer = await run.judge(earlierFindings, { head: run.head, findings });

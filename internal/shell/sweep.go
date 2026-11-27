@@ -99,6 +99,12 @@ func SweepCommand(ctx context.Context, args []string) error {
 		result, err := reconcilePullRequest(ctx, cfg, candidate.repo, candidate.facts)
 		if err != nil {
 			log.Printf("%s#%s: %v", candidate.facts.RepoSlug(), candidate.facts.PR, err)
+			if result.DeferralReason == "" && result.Decision != ReconcileNothing {
+				result.DeferralReason = "pull request reconciliation failed"
+			}
+		}
+		if result.Decision == SpawnAttention {
+			result.DeferralReason = result.Detail
 		}
 		if result.DeferralReason != "" {
 			document.Deferrals = append(document.Deferrals, sweepDeferral{
