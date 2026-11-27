@@ -772,6 +772,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	repo.Review.Threshold = "Medium"
+	repo.PushInspection.Outcomes = []string{"increment", "full"}
 	repo.GuidanceSources = []GuidanceSource{
 		{Repository: "owner/repo-plans", Path: "README.md"},
 		{Path: "docs/intent.md"},
@@ -826,6 +827,7 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		`MINOS_GUIDANCE_SOURCES=[{"repository":"owner/repo-plans","path":"README.md"},{"path":"docs/intent.md"}]`,
 		`MINOS_FILING_DESTINATION={"kind":"file","repository":"owner/repo-plans","path":"ISSUES.md"}`,
 		`MINOS_ROUTING={"verifier":{"engine":"codex","model":"gpt-6-astra","effort":"low"}}`,
+		`MINOS_PUSH_INSPECTION_OUTCOMES=["increment","full"]`,
 		"ENSEMBLE_CONCURRENCY_CLAUDE=10",
 		"ENSEMBLE_CONCURRENCY_CODEX=6",
 		"ENSEMBLE_AGENT_CEILING=12",

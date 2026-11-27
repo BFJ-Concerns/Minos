@@ -66,6 +66,11 @@ signature-header = "X-Forgejo-Signature"
 # allow-forks = false
 # [repositories.review]
 # threshold = "High"
+# Push inspection reads each new head before any review and chooses no
+# review, a review of what changed since the head Minos last finished on,
+# or a full review. Outcomes lists the ones it may choose; full is required.
+# [repositories.push-inspection]
+# outcomes = ["no-review", "increment", "full"]
 # Guidance sources: the documents that carry each project's declared intent,
 # read in this order. A source names a path in the reviewed repository, or a
 # path in a named secondary repository on the same forge (cloned read-only

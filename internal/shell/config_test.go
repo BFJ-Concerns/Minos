@@ -210,6 +210,8 @@ const testRepositoryDefaults = `[repositories]
 work-in-progress-branch-prefixes = ["structural/"]
 [repositories.review]
 threshold = "Medium"
+[repositories.push-inspection]
+outcomes = ["increment", "full"]
 [[repositories.guidance-sources]]
 path = "docs/intent.md"
 [repositories.filing-destination]
@@ -255,6 +257,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 	writeRepoConfig(t, root, "overrides.toml", repoConfig(
 		"work-in-progress-branch-prefixes = []\n"+
 			"[review]\nthreshold = \"Low\"\n"+
+			"[push-inspection]\noutcomes = [\"no-review\", \"full\"]\n"+
 			"[[guidance-sources]]\nrepository = \"owner/repo-plans\"\npath = \"README.md\"\n"+
 			"[[guidance-sources]]\npath = \"AGENTS.md\"\n"+
 			"[filing-destination]\nkind = \"none\"\n"+
@@ -270,6 +273,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 
 	inherits := byPath["inherits.toml"]
 	if inherits.Review.Threshold != "Medium" ||
+		!slices.Equal(inherits.PushInspection.Outcomes, []string{"increment", "full"}) ||
 		!slices.Equal(inherits.WorkInProgressBranchPrefixes, []string{"structural/"}) ||
 		!slices.Equal(inherits.GuidanceSources, []GuidanceSource{{Path: "docs/intent.md"}}) ||
 		inherits.FilingDestination != (FilingDestination{Kind: FilingKindFile, Path: "ISSUES.md"}) ||
@@ -281,6 +285,7 @@ func TestRepositoryKnobsLayerServiceDefaultsUnderEachRepository(t *testing.T) {
 
 	overrides := byPath["overrides.toml"]
 	if overrides.Review.Threshold != "Low" ||
+		!slices.Equal(overrides.PushInspection.Outcomes, []string{"no-review", "full"}) ||
 		len(overrides.WorkInProgressBranchPrefixes) != 0 ||
 		!slices.Equal(overrides.GuidanceSources, []GuidanceSource{{Repository: "owner/repo-plans", Path: "README.md"}, {Path: "AGENTS.md"}}) ||
 		overrides.FilingDestination != (FilingDestination{Kind: FilingKindNone}) ||
@@ -302,12 +307,13 @@ func TestRepositoryKnobsUnsetAtBothLevelsTakeTheShippedDefaults(t *testing.T) {
 		t.Fatalf("repos = %+v, error = %v", repos, err)
 	}
 	knobs := repos[0].RepositoryKnobs
-	if knobs.Review.Threshold != "High" || len(knobs.GuidanceSources) != 0 || len(knobs.WorkInProgressBranchPrefixes) != 0 ||
+	if knobs.Review.Threshold != "High" || !slices.Equal(knobs.PushInspection.Outcomes, []string{"no-review", "increment", "full"}) ||
+		len(knobs.GuidanceSources) != 0 || len(knobs.WorkInProgressBranchPrefixes) != 0 ||
 		knobs.FilingDestination != (FilingDestination{Kind: FilingKindPullRequestComment}) ||
 		knobs.Markers.InFlight == nil || *knobs.Markers.InFlight != (forge.Marker{Reaction: "eyes"}) ||
 		knobs.Markers.Clean == nil || *knobs.Markers.Clean != (forge.Marker{Reaction: "+1"}) ||
 		knobs.Markers.Attention != nil {
-		t.Fatalf("knobs = %+v, want High threshold, checked-in guidance, no prefixes, pull-request-comment filing, eyes and +1 markers and no attention marker", knobs)
+		t.Fatalf("knobs = %+v, want High threshold, every push-inspection outcome, checked-in guidance, no prefixes, pull-request-comment filing, eyes and +1 markers and no attention marker", knobs)
 	}
 }
 
@@ -317,6 +323,10 @@ func TestRepositoryKnobsAreValidatedAtBothLevels(t *testing.T) {
 		toml string
 		want string
 	}{
+		{name: "push-inspection outcome that is not one", toml: "[push-inspection]\noutcomes = [\"skip\", \"full\"]\n", want: "push-inspection.outcomes must hold only no-review, increment, full"},
+		{name: "push-inspection outcome named twice", toml: "[push-inspection]\noutcomes = [\"full\", \"full\"]\n", want: "push-inspection.outcomes names full twice"},
+		{name: "push-inspection outcomes without full", toml: "[push-inspection]\noutcomes = [\"no-review\", \"increment\"]\n", want: "push-inspection.outcomes must include full"},
+		{name: "push-inspection outcomes empty", toml: "[push-inspection]\noutcomes = []\n", want: "push-inspection.outcomes must include full"},
 		{name: "guidance source without a path", toml: "[[guidance-sources]]\nrepository = \"owner/plans\"\n", want: "guidance-sources[0].path is required"},
 		{name: "guidance source leaving the repository", toml: "[[guidance-sources]]\npath = \"../secrets.md\"\n", want: "cannot leave the repository"},
 		{name: "guidance source with an absolute path", toml: "[[guidance-sources]]\npath = \"/etc/passwd\"\n", want: "must be relative"},
@@ -347,6 +357,7 @@ func TestRepositoryKnobsAreValidatedAtBothLevels(t *testing.T) {
 			serviceLevel := strings.ReplaceAll(test.toml, "[[guidance-sources]]", "[[repositories.guidance-sources]]")
 			serviceLevel = strings.ReplaceAll(serviceLevel, "[filing-destination]", "[repositories.filing-destination]")
 			serviceLevel = strings.ReplaceAll(serviceLevel, "[markers]", "[repositories.markers]")
+			serviceLevel = strings.ReplaceAll(serviceLevel, "[push-inspection]", "[repositories.push-inspection]")
 			if err := os.WriteFile(filepath.Join(root, "service.toml"), []byte(testServiceConfig+serviceLevel), 0o644); err != nil {
 				t.Fatal(err)
 			}

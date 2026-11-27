@@ -212,6 +212,7 @@ Per-repository settings take their defaults from `[repositories]` in
 |---------|---------|--------|
 | `admission` | Ready pull requests from the same repository | Filters by labels, author, base branch, draft state, title, touched paths and fork source. [Admission settings](docs/deployment.md#pull-request-admission) |
 | `review.threshold` | `High` | Severity threshold the lead weighs when classifying: `Critical`, `High`, `Medium` or `Low` |
+| `push-inspection.outcomes` | `["no-review", "increment", "full"]` | Which reviews Minos may choose for a new head before reviewing it: none, only what changed since the head it last finished on, or the whole pull request; `full` is always among them |
 | `filing-destination.kind` | `pull-request-comment` | Where findings that do not block go: committed to a `file` in a repository, filed as an `issue`, posted as a `pull-request-comment`, or `none` |
 | `markers` | `eyes` in flight, `+1` clean | The reactions or labels Minos puts on a pull request |
 | `work-in-progress-branch-prefixes` | none | Branch prefixes Minos leaves unreviewed |

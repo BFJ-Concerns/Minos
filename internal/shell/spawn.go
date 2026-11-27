@@ -251,10 +251,11 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 	// present: an empty guidance list is exported as [] so the run script
 	// reads "configured empty" rather than guessing from an absent variable.
 	for key, value := range map[string]any{
-		"MINOS_GUIDANCE_SOURCES":   nonNilSources(repo.GuidanceSources),
-		"MINOS_FILING_DESTINATION": repo.FilingDestination,
-		"MINOS_ROUTING":            cfg.Routing.Roles(),
-		"MINOS_MARKERS":            repo.Markers,
+		"MINOS_GUIDANCE_SOURCES":         nonNilSources(repo.GuidanceSources),
+		"MINOS_FILING_DESTINATION":       repo.FilingDestination,
+		"MINOS_ROUTING":                  cfg.Routing.Roles(),
+		"MINOS_MARKERS":                  repo.Markers,
+		"MINOS_PUSH_INSPECTION_OUTCOMES": repo.PushInspection.Outcomes,
 	} {
 		encoded, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
