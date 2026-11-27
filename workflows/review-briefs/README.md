@@ -60,11 +60,28 @@ for the repository's value.
 | Slot | In | Setting | Files |
 |---|---|---|---|
 | `{{safeguard-requests}}` | `specialist.md`, `repository.md` | `review.file-safeguard-requests` | `false.md`: reviewers leave out requests for a safeguard against a situation nothing suggests will arise. `true.md`: they report them, written as requests |
+| `{{exploration-depth}}` | `exploration.md` | `review.depth` | How wide the plan is. `light.md`: a concern is engaged by the change's own lines and the code that uses them directly, and divided only when one specialist could not get through it. `standard.md`: a concern is divided only when the change is too large for one reading. `thorough.md`: the change's effects are followed to what depends on them indirectly, and a concern is divided sooner |
+| `{{specialist-depth}}` | `specialist.md` | `review.depth` | How far a specialist reads around each changed hunk. `light.md`: the code the hunk sits in, and further only for a reason it can name. `standard.md`: empty, so the specialist reads as far as its own judgement takes it. `thorough.md`: the callers and readers, the neighbouring code and the history of every hunk |
 | `{{verifier-safeguard-requests}}` | `verifier.md` | `review.file-safeguard-requests` | `false.md`: empty, so a verifier judges every finding as a claimed fault. `true.md`: what each verdict means for a request for a safeguard, that a confirmed one is filed as a suggestion and never sent to the author as a defect, and that a request whose situation does arise is refuted and its fault returned as the verifier's own finding |
 
 A file is empty where its value adds nothing to the prompt, and it is still
 there. A setting that changes two prompts in different ways has a slot and
-a directory for each passage. `workflows/prompt-settings.mjs` lists the
+a directory for each passage.
+
+A passage holds the sentences that differ between a setting's values, and
+the prompt around its slot holds what is true under all of them. Where a
+value changes what a prompt already says, that sentence moves into the
+passage for the value it was written for, as `exploration-depth/standard.md`
+shows, so that no reader is given a rule and then its amendment. A passage
+is read without its siblings: it says what its own value asks for and does
+not compare itself with another value.
+
+Depth sets how wide the review plans and how far its specialists read. It
+never bounds what a leg returns: no depth passage caps or thins
+findings, and every changed hunk is considered at every depth. The verifier
+and the `.review/` brief prompts take no depth passage. A finding is checked
+in the same way at every depth, and how much a brief's reviewer reads is set
+by the brief's own extent and sweep. `workflows/prompt-settings.mjs` lists the
 settings, their values and their slots.
 
 ## Slots
