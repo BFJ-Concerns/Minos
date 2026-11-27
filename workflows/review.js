@@ -202,7 +202,10 @@ async function mergeProposed(proposed, mergeLabel, phaseName) {
   const groups = [];
   for (const group of Array.isArray(output.groups) ? output.groups : []) {
     const ids = Array.isArray(group && group.findingIds) ? group.findingIds : [];
-    if (ids.length === 0 || !ids.includes(group.primary) || ids.some((id) => !byId.has(id) || placed.has(id))) {
+    if (
+      ids.length === 0 || !ids.includes(group.primary) || new Set(ids).size !== ids.length ||
+      ids.some((id) => !byId.has(id) || placed.has(id))
+    ) {
       incomplete.push(`agent ${mergeLabel} returned a grouping that does not place every finding exactly once under a primary of its group`);
       return null;
     }
@@ -248,8 +251,9 @@ function shownToVerifier(subject) {
 // rounds: what one round raises is merged like any proposed findings and
 // verified by legs of the next, never by the leg that raised it. What the
 // last round raises has no verdict, which leaves the run incomplete; it is
-// returned unchecked for the record. Null means a merge failed, which has
-// already left the run incomplete.
+// returned unchecked for the record. Where a later round's merge fails,
+// which has already left the run incomplete, the findings it was to group
+// are returned unchecked in the same way.
 async function verifySubjects(subjects, labelPrefix, mergeLabel, phaseName) {
   const verified = [];
   let pending = subjects;

@@ -6,7 +6,7 @@ slots and sends it.
 
 | File | Sent to | Answer |
 |---|---|---|
-| `exploration.md` | the leg that plans the review | the plan (`explorationSchema` in `review.js`) |
+| `exploration.md` | the leg that plans the review | the plan (`explorationSchema`) |
 | `specialist.md` | one proposing leg for each planned unit, with that unit's concern from `concerns/` | `specialistSchema` |
 | `repository.md` | one proposing leg for each unit of a reviewed repository's `.review/` brief | `specialistSchema` |
 | `merge.md` | one leg, between proposing and verifying | `mergeSchema` |

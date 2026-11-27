@@ -914,6 +914,7 @@ test("a grouping that loses or repeats a finding stops the review before verific
     (ids) => [{ findingIds: [ids[0]], primary: ids[0], sharedCause: "" }],
     (ids) => [{ findingIds: ids, primary: ids[0], sharedCause: "" }, { findingIds: [ids[1]], primary: ids[1], sharedCause: "" }],
     (ids) => [{ findingIds: ids, primary: "elsewhere", sharedCause: "" }],
+    (ids) => [{ findingIds: [...ids, ids[1]], primary: ids[0], sharedCause: "" }],
   ]) {
     const { result, calls } = await runScript(ARGS, responder({
       exploration: explorationFixture({ plan }),
