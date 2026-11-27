@@ -172,10 +172,10 @@ func (r *Routing) role(name string) *RoleRouting {
 		return &r.Proposer
 	case "verifier":
 		return &r.Verifier
-	case "judgement":
-		return &r.Judgement
 	case "brief-planner":
 		return &r.BriefPlanner
+	case "judgement":
+		return &r.Judgement
 	}
 	panic("unknown routing role " + name)
 }
@@ -299,6 +299,11 @@ type RepositoryKnobs struct {
 	Review                       struct {
 		Threshold string `toml:"threshold"`
 	} `toml:"review"`
+	PushInspection struct {
+		// Outcomes are the push-inspection outcomes a run may choose
+		// among; full is always one of them.
+		Outcomes []string `toml:"outcomes"`
+	} `toml:"push-inspection"`
 	// GuidanceSources is the ordered list of documents that carry the
 	// reviewed project's declared intent. Empty means the reviewed
 	// repository's own checked-in guidance.
@@ -521,6 +526,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	if defined("review", "threshold") {
 		knobs.Review.Threshold = own.Review.Threshold
 	}
+	if defined("push-inspection", "outcomes") {
+		knobs.PushInspection.Outcomes = own.PushInspection.Outcomes
+	}
 	if defined("guidance-sources") {
 		knobs.GuidanceSources = own.GuidanceSources
 	}
@@ -532,6 +540,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if knobs.Review.Threshold == "" {
 		knobs.Review.Threshold = "High"
+	}
+	if knobs.PushInspection.Outcomes == nil {
+		knobs.PushInspection.Outcomes = slices.Clone(pushInspectionOutcomes)
 	}
 	if knobs.FilingDestination.Kind == "" {
 		knobs.FilingDestination = FilingDestination{Kind: FilingKindPullRequestComment}
@@ -554,6 +565,11 @@ func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
 	}
 	if knobs.Review.Threshold != "" && !validReviewThreshold(knobs.Review.Threshold) {
 		return fmt.Errorf("%s: review.threshold must be Critical, High, Medium or Low", where)
+	}
+	if knobs.PushInspection.Outcomes != nil {
+		if err := validPushInspectionOutcomes(knobs.PushInspection.Outcomes); err != nil {
+			return fmt.Errorf("%s: push-inspection.outcomes %w", where, err)
+		}
 	}
 	for _, prefix := range knobs.WorkInProgressBranchPrefixes {
 		if prefix == "" {
@@ -618,6 +634,32 @@ func validRepositoryPath(path string) error {
 		if segment == ".." {
 			return errors.New("cannot leave the repository")
 		}
+	}
+	return nil
+}
+
+// pushInspectionOutcomes are the outcomes push inspection may choose
+// between, in the order the run is told them.
+var pushInspectionOutcomes = []string{"no-review", "increment", "full"}
+
+// validPushInspectionOutcomes admits a list drawn once each from the
+// three outcomes that includes full. Full stays open because it is the one
+// outcome every head can take: an increment needs an earlier head this one
+// descends from, and no review is closed where the repository's briefs
+// engage what changed.
+func validPushInspectionOutcomes(outcomes []string) error {
+	seen := map[string]bool{}
+	for _, outcome := range outcomes {
+		if !slices.Contains(pushInspectionOutcomes, outcome) {
+			return fmt.Errorf("must hold only %s", strings.Join(pushInspectionOutcomes, ", "))
+		}
+		if seen[outcome] {
+			return fmt.Errorf("names %s twice", outcome)
+		}
+		seen[outcome] = true
+	}
+	if !seen["full"] {
+		return errors.New("must include full, the outcome every head can take")
 	}
 	return nil
 }

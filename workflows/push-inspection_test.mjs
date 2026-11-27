@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { judgementArgs } from "./judgement-stage.mjs";
 import { FULL, INCREMENT, NO_REVIEW, stage } from "./judgements/push-inspection.mjs";
-import { availableOutcomes, inspectPush } from "./run-steps/inspect-push.mjs";
+import { allowedOutcomes, availableOutcomes, inspectPush } from "./run-steps/inspect-push.mjs";
 import { operationRoot } from "./temporary-directory-fixture.mjs";
 
 const target = "1111111111111111111111111111111111111111";
@@ -62,9 +62,28 @@ test("what is mechanical narrows the outcomes before the stage is asked", () => 
   );
 });
 
+test("the repository's setting closes outcomes but never a full review", () => {
+  assert.deepEqual(availableOutcomes(laterHead, false, [INCREMENT, FULL]), [INCREMENT, FULL]);
+  assert.deepEqual(availableOutcomes(laterHead, false, [FULL]), [FULL]);
+  assert.deepEqual(
+    availableOutcomes({ ...laterHead, changedPaths: [] }, false, [INCREMENT, FULL]),
+    [INCREMENT, FULL],
+    "a repository that closes no-review is reviewed even where nothing changed",
+  );
+  assert.deepEqual(availableOutcomes({ outcome: "none" }, false, [NO_REVIEW, INCREMENT, FULL]), [NO_REVIEW, FULL]);
+});
+
+test("the allowed outcomes are read from the run's environment and refused when malformed", () => {
+  assert.deepEqual(allowedOutcomes({ MINOS_PUSH_INSPECTION_OUTCOMES: '["no-review","full"]' }), [NO_REVIEW, FULL]);
+  assert.throws(() => allowedOutcomes({}), /MINOS_PUSH_INSPECTION_OUTCOMES is required/);
+  assert.throws(() => allowedOutcomes({ MINOS_PUSH_INSPECTION_OUTCOMES: "full" }), /not valid JSON/);
+  assert.throws(() => allowedOutcomes({ MINOS_PUSH_INSPECTION_OUTCOMES: '["increment"]' }), /full among them/);
+  assert.throws(() => allowedOutcomes({ MINOS_PUSH_INSPECTION_OUTCOMES: '["skip","full"]' }), /drawn from/);
+});
+
 // A run as the step sees it: a clone holding one guidance document, the
 // forge's answer about the earlier head, and a stage that answers as told.
-function fixtureRun(t, { earlier, answer, brief = false }) {
+function fixtureRun(t, { earlier, answer, brief = false, allowed = [NO_REVIEW, INCREMENT, FULL] }) {
   const root = operationRoot(t, "minos-inspect-push-");
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "src"), { recursive: true });
@@ -84,6 +103,7 @@ function fixtureRun(t, { earlier, answer, brief = false }) {
   return {
     asked,
     run: {
+      env: { MINOS_PUSH_INSPECTION_OUTCOMES: JSON.stringify(allowed) },
       head,
       target,
       workspace,
@@ -130,6 +150,18 @@ test("a repository brief that engages what the author changed takes no-review of
     earlier: forgeEarlier,
     brief: true,
     answer: { outcome: FULL, reason: "The push rewrites the module." },
+  });
+
+  await inspectPush(run);
+
+  assert.deepEqual(asked[0].given.outcomes, [INCREMENT, FULL]);
+});
+
+test("the step offers only what the repository allows", async (t) => {
+  const { run, asked } = fixtureRun(t, {
+    earlier: forgeEarlier,
+    allowed: [INCREMENT, FULL],
+    answer: { outcome: INCREMENT, reason: "Two new commits rework the parser." },
   });
 
   await inspectPush(run);

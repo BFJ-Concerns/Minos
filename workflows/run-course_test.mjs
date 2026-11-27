@@ -6,9 +6,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { COURSE, driveRun } from "./run-driver.mjs";
+import { driveRun, judge } from "./run-driver.mjs";
 import { operationRoot } from "./temporary-directory-fixture.mjs";
-import { DECISION_KIND } from "./verdict-classification.mjs";
 
 const head = "2".repeat(40);
 const target = "1".repeat(40);
@@ -25,10 +24,10 @@ const blockingFinding = {
   explanation: "The empty name is valid.",
 };
 function decision(verdict, findings = []) {
-  return { kind: DECISION_KIND, verdict, basis: "Fixture decision.", findings };
+  return { verdict, basis: "Fixture decision.", findings };
 }
 
-function fixture(t, { skip = false, outstanding = [], blocking = false, refusedReview = false, incomplete = false, pressure = false, moved = false, carry = false, killedFirstReview = false } = {}) {
+function fixture(t, { skip = false, outstanding = false, blocking = false, refusedReview = false, incomplete = false, pressure = false, moved = false, carry = false, killedFirstReview = false } = {}) {
   const runDir = operationRoot(t, "minos-course-");
   const workspace = join(runDir, "workspace");
   const orientation = join(runDir, "orientation.json");
@@ -62,31 +61,68 @@ function fixture(t, { skip = false, outstanding = [], blocking = false, refusedR
     MINOS_FILING_DESTINATION: '{"kind":"none"}', MINOS_COMMIT_AUTHOR_NAME: "Minos",
     MINOS_COMMIT_AUTHOR_EMAIL: "minos@example.test", MINOS_OWNER: "owner", MINOS_REPO_NAME: "repo",
     MINOS_HEAD_BRANCH: "work", MINOS_PR: "7",
+    MINOS_PUSH_INSPECTION_OUTCOMES: '["no-review","increment","full"]',
   };
   // Give the input builders real Git coordinates and leave a distinct
   // target pinned for all forge operations.
   const run = {
     head: briefBase, target, runDir, workspace, orientation, env,
     pullRequest: { owner: "owner", repository: "repo", number: "7" },
+    judge: (stage, input) => judge(run, stage, input),
+    judgementAnswers: new Map(),
     async forge(operation, ...args) {
       calls.push([operation, ...args.slice(0, 4)]);
       if (operation === "snapshot") return {
         head_sha: moved ? head : run.head, target_sha: reviewBase, authenticated_user: "minos",
         reviews: [{ id: 7, user: "minos", commit_id: run.head }, { id: 12, user: "author", commit_id: run.head }],
       };
+      if (operation === "earlier") return {
+        head: briefBase, ancestor: true, outcome: "clean", changed_paths: [],
+      };
+      if (operation === "threads") return outstanding ? [{
+        path: "parser.go", line: 10,
+        comments: [{ commit_id: reviewBase, user: "minos", body: "**Blocking** The parser rejects a valid record." }],
+      }] : [];
       if (operation === "approve") return { outcome: "not-needed" };
       if (operation === "review") {
         drafts.push(JSON.parse(readFileSync(args[4], "utf8")));
         if (refusedReview) return { outcome: "uncertain", reason: "findings review was not confirmed" };
       }
-      if (operation === "marker" && args[3] === "remove" && (blocking || incomplete || moved || outstanding.length)) {
+      if (operation === "marker" && args[3] === "remove" && (blocking || incomplete || moved || outstanding)) {
         assert.ok(existsSync(failureLog), "the failure was recorded before removing in-flight");
       }
       return { outcome: "applied" };
     },
-    async dispatch(name, workflow) {
+    async dispatch(name, workflow, runner) {
+      const args = json(`${name}-args.json`);
+      if (workflow === "judgement.js") {
+        assert.equal(runner, "run-judgement");
+        calls.push(["judge", name]);
+        let answer;
+        switch (args.stage) {
+          case "push-inspection":
+            answer = { outcome: skip ? "no-review" : "increment", reason: "Fixture inspection." };
+            break;
+          case "verdict-classification":
+            assert.deepEqual(args.input.findings.main.map(({ key }) => key), ["block"]);
+            assert.deepEqual(args.input.findings.brief, []);
+            answer = {
+              main: decision("request-changes", [{ key: "block", gating: true, class: "", defect: "", undergrade: "" }]),
+              brief: decision("clean"),
+            };
+            break;
+          case "earlier-findings":
+            assert.equal(outstanding, true);
+            assert.deepEqual(args.input.findings.map(({ key }) => key), ["thread-1"]);
+            answer = { findings: [{ key: "thread-1", outcome: "stands", reason: "Fixture defect still stands." }] };
+            break;
+          default:
+            assert.fail(`unexpected judgement stage ${args.stage}`);
+        }
+        return { stage: args.stage, answer };
+      }
       calls.push(["dispatch", name, workflow]);
-      const input = json(`${name}-args.json`);
+      const input = args;
       assert.equal(input.target, briefBase);
       assert.equal(input.head, run.head);
       assert.equal(input.guidance[0].content, "A parser library.\n");
@@ -106,26 +142,9 @@ function fixture(t, { skip = false, outstanding = [], blocking = false, refusedR
   };
   verdict.reviewed.head = run.head;
   if (carry) write("carried-review-result.json", verdict);
-  const stages = {
-    async inspectPush() {
-      return { inspection: { outcome: skip ? "no-review" : "increment", reason: "Fixture inspection.", reviewBase: skip ? null : briefBase } };
-    },
-    async classify(_run, { review, briefReview }) {
-      if (!review) return;
-      assert.equal(briefReview.status, "complete");
-      return { decisions: {
-        main: blocking ? decision("request-changes", [{ key: "block", gating: true }]) : decision("clean"),
-        brief: decision("clean"),
-      } };
-    },
-    async settleEarlierFindings() {
-      return { outstanding };
-    },
-  };
-  const course = COURSE.map((step) => stages[step.name] ?? step);
   return {
     calls, drafts, run, json, failureLog, runDir,
-    drive: () => driveRun(run, { course, complete: true }),
+    drive: () => driveRun(run, { complete: true }),
     read: (name) => readFileSync(join(runDir, name), "utf8"),
   };
 }
@@ -134,7 +153,8 @@ test("the course posts only the validated blocking review and records its non-cl
   const f = fixture(t, { blocking: true });
   assert.deepEqual(await f.drive(), { outcome: "changes-requested" });
   assert.deepEqual(f.calls.map(([op, ...args]) => op === "status" ? args[2] : op),
-    ["snapshot", "claim", "working", "dispatch", "dispatch", "review", "attention", "marker", "marker"]);
+    ["snapshot", "claim", "working", "earlier", "judge", "dispatch", "dispatch", "snapshot", "threads",
+      "judge", "review", "snapshot", "threads", "attention", "marker", "marker"]);
   assert.deepEqual(f.calls.find(([op]) => op === "review").slice(1, 4), [f.run.head, target, "request-changes"]);
   assert.match(f.drafts[0][0].body, /Blocking/);
   assert.match(f.read("failure-log"), /cause=this run published blocking findings/);
@@ -147,14 +167,16 @@ test("the course posts only the validated blocking review and records its non-cl
 test("a no-review run approves only a clean outcome and never restates earlier findings", async (t) => {
   const clean = fixture(t, { skip: true });
   assert.deepEqual(await clean.drive(), { outcome: "clean" });
-  assert.deepEqual(clean.calls.map(([op]) => op), ["snapshot", "claim", "status", "approve", "status", "marker", "marker"]);
+  assert.deepEqual(clean.calls.map(([op]) => op), ["snapshot", "claim", "status", "earlier", "judge", "snapshot", "threads", "approve", "status", "marker", "marker"]);
   assert.equal(clean.read("lead-complete"), "clean\n");
   assert.equal(existsSync(clean.failureLog), false);
 
-  const blocked = fixture(t, { skip: true, outstanding: [{}] });
+  const blocked = fixture(t, { skip: true, outstanding: true });
   assert.deepEqual(await blocked.drive(), { outcome: "changes-requested" });
-  assert.deepEqual(blocked.calls.map(([op]) => op), ["snapshot", "claim", "status", "status", "marker", "marker"]);
+  assert.deepEqual(blocked.calls.map(([op]) => op), ["snapshot", "claim", "status", "earlier", "judge", "snapshot", "threads", "judge", "status", "marker", "marker"]);
   assert.match(blocked.read("failure-log"), /earlier review remain outstanding/);
+  assert.match(blocked.read("report.md"), /Fixture defect still stands/);
+  assert.equal(blocked.json("judgements/earlier-findings.json").answer.findings[0].outcome, "stands");
 });
 
 test("an incomplete review or unconfirmed write withdraws the run without a clean marker", async (t) => {

@@ -1,12 +1,57 @@
-// Finds which gating findings of earlier Minos reviews on this pull request
-// still stand. Whether the author answered a finding, and whether the
-// defect it describes is gone from the code at this head, are judgements,
-// so this step gathers the earlier gating findings with their threads and
-// the author's comments, asks the judgement stage, and carries its answer.
-// It runs on every head, reviewed or not.
+// Finds which blocking findings of earlier Minos reviews on this pull
+// request still stand. Part of that is mechanical: a finding raised on this
+// head is this run's own, and a resolved thread is the author's answer.
+// Whether the author rejected a finding in words, and whether the defect it
+// describes is gone from the code at this head, are judgements, so this
+// step gathers the rest with their replies and the author's comments, asks
+// the earlier-findings stage, and carries its answer. It runs on every
+// head, reviewed or not.
 //
-// Settles `outstanding`: the earlier gating findings not settled, empty
-// when none stands.
-export async function settleEarlierFindings(run, settled) {
-  throw new Error("the settle earlier findings step is not built");
+// Settles `outstanding`: the earlier blocking findings that stand, each
+// { key, where, path, line, head, reason }, empty when none stands.
+
+import { REVIEW_BODY, THREAD, earlierMinosFindings } from "../earlier-minos-findings.mjs";
+import { STANDS, stage as earlierFindings } from "../judgements/earlier-findings.mjs";
+
+// The comments that can answer a review-body finding: the pull request's
+// author's, written after the review that holds the finding was published.
+// Times are compared as instants, so two spellings of one moment agree.
+export function authorCommentsAfter(comments, author, submittedAt) {
+  const published = Date.parse(submittedAt);
+  if (Number.isNaN(published)) throw new Error(`a Minos review's submitted_at is not a time: ${JSON.stringify(submittedAt)}`);
+  return comments
+    .filter((comment) => comment.user === author && Date.parse(comment.created_at) > published)
+    .map((comment) => comment.body);
+}
+
+// The blocking findings that need reading, as the stage is shown them.
+export function findingsToRead({ snapshot, threads, comments, head }) {
+  return earlierMinosFindings(snapshot, threads)
+    .filter((finding) => finding.blocking && finding.head !== head && !(finding.where === THREAD && finding.resolved))
+    .map(({ key, where, path, line, head: raisedOn, finding, replies, submittedAt }) => ({
+      key, path, line, head: raisedOn, finding, where,
+      ...(where === THREAD
+        ? { replies: replies.map((reply) => ({ byAuthor: reply.user === snapshot.author, body: reply.body })) }
+        : { comments: authorCommentsAfter(comments, snapshot.author, submittedAt) }),
+    }));
+}
+
+export async function settleEarlierFindings(run) {
+  const [snapshot, threads] = [await run.forge("snapshot"), await run.forge("threads")];
+  const needsComments = earlierMinosFindings(snapshot, threads)
+    .some((finding) => finding.blocking && finding.where === REVIEW_BODY && finding.head !== run.head);
+  const comments = needsComments ? await run.forge("comments") : [];
+  const findings = findingsToRead({ snapshot, threads, comments, head: run.head });
+  if (findings.length === 0) return { outstanding: [] };
+
+  const answer = await run.judge(earlierFindings, { head: run.head, findings });
+  const byKey = new Map(findings.map((finding) => [finding.key, finding]));
+  return {
+    outstanding: answer.findings
+      .filter((entry) => entry.outcome === STANDS)
+      .map(({ key, reason }) => {
+        const { where, path, line, head } = byKey.get(key);
+        return { key, where, path, line, head, reason };
+      }),
+  };
 }
