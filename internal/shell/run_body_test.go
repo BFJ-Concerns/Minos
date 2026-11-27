@@ -783,6 +783,89 @@ process.exitCode = 75;
 	}
 }
 
+// scriptedDriverFixture installs a driver with the given body beside the
+// three judgement modules a scripted install needs.
+func scriptedDriverFixture(t *testing.T, body string) runBodyFixture {
+	t.Helper()
+	fixture := newRunBodyFixture(t)
+	driver := filepath.Join(fixture.root, "run-driver.mjs")
+	if err := os.WriteFile(driver, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	judgements := filepath.Join(fixture.root, "judgements")
+	if err := os.Mkdir(judgements, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"push-inspection.mjs", "verdict-classification.mjs", "earlier-findings.mjs"} {
+		if err := os.WriteFile(filepath.Join(judgements, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixture.appendConfig(t, map[string]string{"MINOS_RUN_DRIVER": driver})
+	return fixture
+}
+
+// silentStageDriver starts a stage that never writes, in a session of its
+// own, and records the driver's and the stage's process ids.
+const silentStageDriver = `
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+const runDir = process.env.MINOS_RUN_DIR;
+const stage = spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
+writeFileSync(join(runDir, "driver-pids"), ` + "`${process.pid} ${stage.pid}\n`" + `);
+`
+
+func TestRunBodyStopsAScriptedDriversSilentStageAndLetsTheDriverClose(t *testing.T) {
+	fixture := scriptedDriverFixture(t, silentStageDriver+`
+stage.once("close", () => {
+  writeFileSync(join(runDir, "closing-ran"), "yes\n");
+  writeFileSync(join(runDir, "lead-complete"), "non-clean\n");
+  process.exitCode = 75;
+});
+`)
+	output, err := fixture.execute(map[string]string{"MINOS_LEAD_SILENCE_TIMEOUT": "1"})
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 75 {
+		t.Fatalf("scripted run exit = %v, want 75 from the driver's own ending\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "no run activity for 1 seconds; stopping the driver's stage") {
+		t.Fatalf("missing stage-stop diagnostic:\n%s", output)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "closing-ran"), "yes")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "stage-stopped"), "no run activity for 1 seconds")
+	assertProcessesGone(t, recordedPIDs(t, filepath.Join(fixture.runDir, "driver-pids")))
+}
+
+func TestRunBodyStopsEverythingADriverStartedWhenTheDriverOutlivesItsStoppedStage(t *testing.T) {
+	fixture := scriptedDriverFixture(t, silentStageDriver+`
+process.on("SIGTERM", () => {});
+const helper = spawn("sleep", ["300"], { stdio: "ignore" });
+writeFileSync(join(runDir, "helper-pid"), ` + "`${helper.pid}\n`" + `);
+setInterval(() => {}, 1000);
+`)
+	output, err := fixture.execute(map[string]string{"MINOS_LEAD_SILENCE_TIMEOUT": "1"})
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("scripted run exit = %v, want 1\n%s", err, output)
+	}
+	assertFailureLine(t, fixture.failureLog, "stage=run-driver",
+		"cause=scripted driver did not end within 1 seconds of its silent stage being stopped")
+	pids := recordedPIDs(t, filepath.Join(fixture.runDir, "driver-pids"))
+	assertProcessesGone(t, append(pids, recordedPIDs(t, filepath.Join(fixture.runDir, "helper-pid"))...))
+}
+
+func assertProcessesGone(t *testing.T, pids []int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for processesExist(pids) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if processesExist(pids) {
+		t.Fatalf("processes the driver started still exist: %v", pids)
+	}
+}
+
 func TestRunBodyExitStatusSaysWhetherTheHeadIsSpent(t *testing.T) {
 	for _, tc := range []struct {
 		marker, applied string

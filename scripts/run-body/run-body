@@ -106,13 +106,56 @@ lead_stop_codex() {
   fi
 }
 
+# process_tree ROOT prints ROOT and every process descended from it, so
+# a stage the driver dispatched, a forge write or a publication helper is
+# found whichever process group or session it put itself in.
+process_tree() {
+  ps -e -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
+    { parent[$1] = $2 }
+    END {
+      for (pid in parent) {
+        ancestor = pid
+        while (ancestor != root && (ancestor in parent) && ancestor > 1) ancestor = parent[ancestor]
+        if (ancestor == root) print pid
+      }
+    }'
+}
+
+# stop_process_tree ROOT [descendants] kills ROOT's process tree, or only
+# its descendants. The tree is frozen first and re-read until no new
+# process appears, so nothing forks past the kill, and is then killed
+# outright: what it was doing is abandoned with the run.
+stop_process_tree() {
+  stop_root="$1"
+  stop_scope="${2:-tree}"
+  stopped_pids=""
+  for _ in 1 2 3 4 5 6 7 8; do
+    tree_pids="$(process_tree "$stop_root")"
+    [ "$stop_scope" = tree ] || tree_pids="$(printf '%s\n' "$tree_pids" | grep -vx "$stop_root" || true)"
+    new_pids=""
+    for pid in $tree_pids; do
+      case " $stopped_pids " in
+        *" $pid "*) ;;
+        *) new_pids="$new_pids $pid" ;;
+      esac
+    done
+    [ -n "$new_pids" ] || break
+    # shellcheck disable=SC2086 # one argument per process id
+    kill -STOP $new_pids 2>/dev/null || true
+    stopped_pids="$stopped_pids$new_pids"
+  done
+  [ -n "$stopped_pids" ] || return 0
+  # shellcheck disable=SC2086 # one argument per process id
+  kill -KILL $stopped_pids 2>/dev/null || true
+}
+
 lead_launch() { "lead_launch_$MINOS_LEAD_ENGINE"; }
 lead_state() { "lead_state_$MINOS_LEAD_ENGINE"; }
 # Runs from the exit trap too, so it must be safe before the engine is
 # resolved: nothing to stop until a lead was launched.
 stop_session() {
   if [ -n "$driver_pid" ]; then
-    kill "$driver_pid" 2>/dev/null || true
+    stop_process_tree "$driver_pid"
     wait "$driver_pid" 2>/dev/null || true
     driver_pid=""
   fi
@@ -507,32 +550,10 @@ sample_memory_pressure() {
 # Presentation-class residue: its absence never blocks the run.
 "$(dirname "$0")/memory-telemetry" "$MINOS_RUN_DIR/memory-baseline.json" || true
 
-if [ -n "${MINOS_RUN_DRIVER:-}" ]; then
-  failure_stage="run-driver"
-  failure_cause="could not launch $MINOS_RUN_DRIVER"
-  node "$MINOS_RUN_DRIVER" </dev/null &
-  driver_pid=$!
-  prelaunch=false
-  while kill -0 "$driver_pid" 2>/dev/null; do
-    sample_memory_pressure
-    sleep "${MINOS_LEAD_POLL_SECONDS:-3}"
-  done
-  driver_status=0
-  wait "$driver_pid" || driver_status=$?
-  driver_pid=""
-  if ! grep -Eqx 'clean|non-clean|continuation' "$completion_marker" 2>/dev/null; then
-    capture_cgroup_death_evidence || echo "run-body: could not capture scripted driver death evidence" >&2
-    # A launch or process failure must not immediately requeue an unjudged head.
-    if [ "$driver_status" -eq 0 ] && [ ! -f "$MINOS_RUN_DIR/.salvage-recorded" ]; then
-      driver_status=75
-    fi
-  fi
-  exit "$driver_status"
-fi
-
-# During review the run tree may write only at phase transitions, measured
-# roughly 19–21 minutes apart on 2026-07-27. Do not tune this below about an
-# hour or a healthy review can hit the silence backstop.
+# The silence backstop, for the lead and for each stage the scripted driver
+# dispatches. During review the run tree may write only at phase
+# transitions, measured roughly 19–21 minutes apart on 2026-07-27. Do not
+# tune this below about an hour or a healthy review can hit it.
 silence_timeout="${MINOS_LEAD_SILENCE_TIMEOUT:-3600}"
 failure_stage="configuration"
 failure_cause="MINOS_LEAD_SILENCE_TIMEOUT must be whole seconds"
@@ -554,13 +575,6 @@ elif ! [ "$silence_timeout" -ge 0 ] 2>/dev/null; then
   exit 1
 fi
 
-failure_stage="lifecycle-instruction"
-failure_cause="could not read lifecycle instruction $instruction_path"
-instruction="$(cat "$instruction_path")"
-session_name="minos-${MINOS_OWNER:-run}-${MINOS_REPO_NAME:-lead}-pr${MINOS_PR:-unknown}"
-
-failure_stage="lead-launch"
-failure_cause="$MINOS_LEAD_ENGINE lead launch failed"
 # The newest change anywhere in the run tree outside the private home, the
 # pressure signal and the memory peak: its mtime, inode and size.
 run_activity_signature() {
@@ -569,6 +583,62 @@ run_activity_signature() {
     LC_ALL=C sort -rn |
     head -n 1
 }
+
+if [ -n "${MINOS_RUN_DRIVER:-}" ]; then
+  failure_stage="run-driver"
+  failure_cause="could not launch $MINOS_RUN_DRIVER"
+  node "$MINOS_RUN_DRIVER" </dev/null &
+  driver_pid=$!
+  prelaunch=false
+  # A stage that changes nothing in the run tree for the silence timeout
+  # is stopped, the driver's process left running, so the dispatch fails
+  # and the driver ends the run incomplete through its own closing duties.
+  # A driver that has not ended one more timeout later is stopped whole.
+  last_activity_signature="$(run_activity_signature)"
+  last_activity_at="$(date +%s)"
+  stage_stopped_at=""
+  while kill -0 "$driver_pid" 2>/dev/null; do
+    sample_memory_pressure
+    now="$(date +%s)"
+    activity_signature="$(run_activity_signature)"
+    if [ "$activity_signature" != "$last_activity_signature" ]; then
+      last_activity_signature="$activity_signature"
+      last_activity_at="$now"
+    fi
+    if [ -n "$stage_stopped_at" ]; then
+      if [ $((now - stage_stopped_at)) -ge "$silence_timeout" ]; then
+        supervisor_failure=true
+        failure_cause="scripted driver did not end within ${silence_timeout} seconds of its silent stage being stopped"
+        exit 1
+      fi
+    elif [ $((now - last_activity_at)) -ge "$silence_timeout" ]; then
+      echo "run-body: no run activity for ${silence_timeout} seconds; stopping the driver's stage" >&2
+      printf 'no run activity for %s seconds\n' "$silence_timeout" >"$MINOS_RUN_DIR/stage-stopped" || true
+      stop_process_tree "$driver_pid" descendants
+      stage_stopped_at="$now"
+    fi
+    sleep "${MINOS_LEAD_POLL_SECONDS:-3}"
+  done
+  driver_status=0
+  wait "$driver_pid" || driver_status=$?
+  driver_pid=""
+  if ! grep -Eqx 'clean|non-clean|continuation' "$completion_marker" 2>/dev/null; then
+    capture_cgroup_death_evidence || echo "run-body: could not capture scripted driver death evidence" >&2
+    # A launch or process failure must not immediately requeue an unjudged head.
+    if [ "$driver_status" -eq 0 ] && [ ! -f "$MINOS_RUN_DIR/.salvage-recorded" ]; then
+      driver_status=75
+    fi
+  fi
+  exit "$driver_status"
+fi
+
+failure_stage="lifecycle-instruction"
+failure_cause="could not read lifecycle instruction $instruction_path"
+instruction="$(cat "$instruction_path")"
+session_name="minos-${MINOS_OWNER:-run}-${MINOS_REPO_NAME:-lead}-pr${MINOS_PR:-unknown}"
+
+failure_stage="lead-launch"
+failure_cause="$MINOS_LEAD_ENGINE lead launch failed"
 last_activity_signature="$(run_activity_signature)"
 MINOS_LEAD_MODEL="${MINOS_LEAD_MODEL:-$lead_default_model}"
 export MINOS_LEAD_MODEL

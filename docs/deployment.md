@@ -312,7 +312,11 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    lead's session lives in the private home, so its output does not count;
    a Codex lead's output is written to `codex-lead.jsonl` and
    `codex-lead.stderr` in the run directory, so its output does. Keep the lifecycle's fallback wake shorter
-   than this value.
+   than this value. Under the scripted driver the same silence stops the
+   stage the driver is waiting on, leaving the driver to end the run
+   incomplete through its closing duties; a driver still running one more
+   timeout later is stopped whole. Stopping the driver, by this backstop
+   or when the run body exits, stops every process it started.
 
    Choose one Claude authentication mode in `run-body.env`:
 

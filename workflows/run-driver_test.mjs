@@ -193,6 +193,17 @@ test("a run's dispatch launches the stage from the clone and returns its result,
   await assert.rejects(run.dispatch("review-brief", "review-briefs.js"), /stage review-brief ended without a result; review-brief\.log/);
 });
 
+test("a stage the run supervisor stopped fails naming the supervisor's reason", async (t) => {
+  const run = scriptedRun(t, { forgeScript: "exit 0\n", dispatchScript: "kill -KILL $$\n" });
+  writeFileSync(join(run.runDir, "stage-stopped"), "no run activity for 3600 seconds\n");
+
+  await assert.rejects(run.dispatch("review", "review.js"), (error) => {
+    assert.match(error.message, /stage review ended without a result; review\.log has its diagnostics \(stopped by the run supervisor: no run activity for 3600 seconds\)/);
+    assert.equal(error.killed, true);
+    return true;
+  });
+});
+
 test("a run cannot open without the coordinates run-body exports", () => {
   assert.throws(() => openRun({ MINOS_BIN: "/usr/local/bin/minos" }), /MINOS_SETUP_WORKSPACE is required/);
 });

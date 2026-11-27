@@ -146,7 +146,8 @@ function dispatch(run, name, workflow, runner) {
     child.once("close", (code, signal) => {
       const result = join(run.runDir, `${name}-result.json`);
       if (code !== 0 || !existsSync(result)) {
-        const reason = signal ? `signal ${signal}` : `exit ${code}`;
+        const stopped = supervisorStop(run);
+        const reason = stopped ? `stopped by the run supervisor: ${stopped}` : signal ? `signal ${signal}` : `exit ${code}`;
         const failure = new Error(`stage ${name} ended without a result; ${name}.log has its diagnostics (${reason})`);
         failure.killed = signal !== null || [130, 137, 143].includes(code);
         return reject(failure);
@@ -158,6 +159,15 @@ function dispatch(run, name, workflow, runner) {
       }
     });
   });
+}
+
+// The reason run-body gave for stopping a silent stage, if it stopped one.
+function supervisorStop(run) {
+  try {
+    return readFileSync(join(run.runDir, "stage-stopped"), "utf8").trim();
+  } catch {
+    return "";
+  }
 }
 
 // Puts one input to a judgement stage and returns its answer, keeping the
