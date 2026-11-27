@@ -694,6 +694,8 @@ esac
 	}
 	assertContainsFile(t, filepath.Join(fixture.runDir, "lead-complete"), "clean")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "report.md"), "No file changed.")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "status head-sha target-sha clean")
+	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "marker head-sha target-sha clean add")
 	assertContainsFile(t, filepath.Join(fixture.runDir, "forge-calls"), "marker head-sha target-sha in-flight remove")
 	assertFileEmpty(t, fixture.failureLog)
 	if _, err := os.Stat(fixture.record + ".argv"); !os.IsNotExist(err) {

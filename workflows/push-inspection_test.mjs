@@ -1,7 +1,9 @@
 import "./isolate-from-live-run.mjs";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { judgementArgs } from "./judgement-stage.mjs";
@@ -35,7 +37,7 @@ test("a head with no earlier head is shown as that and nothing more", () => {
 });
 
 test("an increment cannot be offered without an earlier head this one descends from", () => {
-  for (const earlier of [{ outcome: "none" }, { ...laterHead, ancestor: false }])
+  for (const earlier of [{ outcome: "none" }, { ...laterHead, ancestor: false }, { ...laterHead, changedPaths: null }])
     assert.match(stage.inputProblem(input({ earlier })), /increment may be offered only with an earlier head/);
   assert.equal(stage.inputProblem(input({ earlier: { ...laterHead, ancestor: false }, outcomes: [NO_REVIEW, FULL] })), null);
 });
@@ -46,7 +48,7 @@ test("an input missing what the stage is given is refused, naming the part", () 
   assert.match(stage.inputProblem(input({ earlier: { ...laterHead, outcome: "working" } })), /earlier\.outcome/);
   assert.match(stage.inputProblem(input({ earlier: { ...laterHead, changedPaths: "src" } })), /earlier\.changedPaths/);
   assert.match(stage.inputProblem(input({ outcomes: [FULL, FULL] })), /outcomes must be/);
-  assert.equal(stage.inputProblem(input({ earlier: { ...laterHead, changedPaths: null } })), null);
+  assert.equal(stage.inputProblem(input({ earlier: { ...laterHead, changedPaths: null }, outcomes: [NO_REVIEW, FULL] })), null);
 });
 
 test("what is mechanical narrows the outcomes before the stage is asked", () => {
@@ -83,7 +85,7 @@ test("the allowed outcomes are read from the run's environment and refused when 
 
 // A run as the step sees it: a clone holding one guidance document, the
 // forge's answer about the earlier head, and a stage that answers as told.
-function fixtureRun(t, { earlier, answer, brief = false, allowed = [NO_REVIEW, INCREMENT, FULL] }) {
+function fixtureRun(t, { earlier, answer, brief = false, diverged, allowed = [NO_REVIEW, INCREMENT, FULL] }) {
   const root = operationRoot(t, "minos-inspect-push-");
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "src"), { recursive: true });
@@ -92,10 +94,29 @@ function fixtureRun(t, { earlier, answer, brief = false, allowed = [NO_REVIEW, I
     mkdirSync(join(workspace, ".review", "src"), { recursive: true });
     writeFileSync(join(workspace, ".review", "src", "parsing.md"), "Check every parser rejects trailing input.\n");
   }
+  let pinnedTarget = target;
+  let reviewedHead = head;
+  if (diverged) {
+    const git = (...args) => execFileSync("git", ["-C", workspace, ...args], { encoding: "utf8" }).trim();
+    const commit = (message) => {
+      git("add", ".");
+      git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", message);
+      return git("rev-parse", "HEAD");
+    };
+    git("init", "-q");
+    writeFileSync(join(workspace, "src", "existing.go"), "package src\n");
+    const base = commit("base");
+    writeFileSync(join(workspace, diverged.shared), "Identical edit on each branch.\n");
+    writeFileSync(join(workspace, diverged.targetOnly), "Target edit only.\n");
+    pinnedTarget = commit("target moves");
+    git("checkout", "-q", "--detach", base);
+    writeFileSync(join(workspace, diverged.shared), "Identical edit on each branch.\n");
+    reviewedHead = commit("author independently makes the shared edit");
+  }
   const orientation = join(root, "orientation.json");
   writeFileSync(orientation, JSON.stringify({
     repository: workspace,
-    head,
+    head: reviewedHead,
     guidance: [{ source: { path: "README.md" }, location: join(workspace, "README.md"), origin: "checked-in" }],
     misconfigurations: [],
   }));
@@ -104,12 +125,12 @@ function fixtureRun(t, { earlier, answer, brief = false, allowed = [NO_REVIEW, I
     asked,
     run: {
       env: { MINOS_PUSH_INSPECTION_OUTCOMES: JSON.stringify(allowed) },
-      head,
-      target,
+      head: reviewedHead,
+      target: pinnedTarget,
       workspace,
       orientation,
       forge: async (...args) => {
-        assert.deepEqual(args, ["earlier", head, target]);
+        assert.deepEqual(args, ["earlier", reviewedHead, pinnedTarget]);
         return earlier;
       },
       judge: async (judged, given) => {
@@ -167,4 +188,32 @@ test("the step offers only what the repository allows", async (t) => {
   await inspectPush(run);
 
   assert.deepEqual(asked[0].given.outcomes, [INCREMENT, FULL]);
+});
+
+
+test("first and uncomparable heads use the author's paths for push inspection and brief inputs", async (t) => {
+  const decisions = [
+    { shared: "src/shared.go", targetOnly: "elsewhere.go", engages: true },
+    { shared: "elsewhere.go", targetOnly: "src/target.go", engages: false },
+  ];
+  for (const diverged of decisions) {
+    for (const earlier of [{ outcome: "none" }, { ...forgeEarlier, changed_paths: null }]) {
+      const { run, asked } = fixtureRun(t, { brief: true, diverged, earlier, answer: { outcome: FULL, reason: "Fixture." } });
+      await inspectPush(run);
+      assert.deepEqual(asked[0].given.outcomes, diverged.engages ? [FULL] : [NO_REVIEW, FULL]);
+      if (earlier.outcome !== "none") continue;
+
+      const env = {
+        ...process.env, MINOS_ORIENTATION: run.orientation, MINOS_WORKSPACE: run.workspace,
+        MINOS_PROVISIONED_ENGINES: "claude",
+      };
+      const readInput = (name) => JSON.parse(execFileSync(process.execPath, [
+        fileURLToPath(new URL(name, import.meta.url)), run.target, run.head,
+      ], { encoding: "utf8", env }));
+      assert.deepEqual(readInput("./review-scope-inputs.mjs"), { briefsEngage: diverged.engages });
+      const briefInput = readInput("./review-brief-inputs.mjs");
+      assert.deepEqual(briefInput.changedPaths, [diverged.shared]);
+      assert.equal(briefInput.briefs[0].disposition.triggered === true, diverged.engages);
+    }
+  }
 });

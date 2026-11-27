@@ -1,13 +1,12 @@
 import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { applied, checkHead } from "./forge-writes.mjs";
+import { applied, currentSnapshot } from "./forge-writes.mjs";
 
 export async function continueRun(run, stage) {
   if (!existsSync(join(run.runDir, "memory-pressure"))) return false;
 
-  const snapshot = await run.forge("snapshot");
-  checkHead(run, snapshot);
+  const snapshot = await currentSnapshot(run);
   const latestReview = (snapshot.reviews || []).reduce((latest, review) =>
     review.user === snapshot.authenticated_user && review.commit_id === snapshot.head_sha
       ? Math.max(latest, review.id) : latest, 0);

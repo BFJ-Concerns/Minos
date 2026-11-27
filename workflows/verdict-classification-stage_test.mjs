@@ -162,7 +162,7 @@ function git(cwd, ...args) {
 // orientation naming one guidance document, a forge holding one earlier
 // thread and one review with a folded finding, and a stage that answers as
 // told.
-function fixtureRun(t, { answer, filing = { kind: "file", path: "ISSUES.md" } } = {}) {
+function fixtureRun(t, { answer, filing = { kind: "file", path: "ISSUES.md" }, otherReviews = [] } = {}) {
   const root = operationRoot(t, "minos-classify-");
   const workspace = join(root, "workspace");
   mkdirSync(workspace, { recursive: true });
@@ -170,7 +170,11 @@ function fixtureRun(t, { answer, filing = { kind: "file", path: "ISSUES.md" } } 
   writeFileSync(join(workspace, "README.md"), "A library.\n");
   writeFileSync(join(workspace, "ISSUES.md"), "- Use the shared parser.\n");
   git(workspace, "add", ".");
-  git(workspace, "commit", "-q", "-m", "target");
+  git(workspace, "commit", "-q", "-m", "default");
+  git(workspace, "branch", "-m", "default");
+  git(workspace, "checkout", "-qb", "maintenance");
+  writeFileSync(join(workspace, "ISSUES.md"), "- This advice is on the pull request target alone.\n");
+  git(workspace, "commit", "-qam", "target");
   const targetCommit = git(workspace, "rev-parse", "HEAD");
   const orientation = join(root, "orientation.json");
   writeFileSync(orientation, JSON.stringify({
@@ -180,6 +184,7 @@ function fixtureRun(t, { answer, filing = { kind: "file", path: "ISSUES.md" } } 
     misconfigurations: [],
   }));
   const snapshot = {
+    head_sha: head,
     authenticated_user: "minos",
     author: "alice",
     reviews: [{
@@ -187,20 +192,30 @@ function fixtureRun(t, { answer, filing = { kind: "file", path: "ISSUES.md" } } 
       user: "minos",
       commit_id: earlierHead,
       submitted_at: "2026-11-20T10:00:00Z",
-      body: "**Minos: changes need attention.**\n\n---\n\nFindings that could not be anchored inline:\n\nThese have no thread to resolve.\n\n#### `docs/a.md` line 3\n\n**Blocking · High: Stale claim**\n\nThe page says otherwise.\n",
-    }],
+      body: "**Minos: changes need attention.**\n\n---\n\nFindings that could not be anchored inline:\n\nThese have no thread to resolve.\n\n#### `docs/a.md` line 3\n\n**Blocking · High: Stale claim**\n\nThe page says otherwise.\n\nReviewed by: `claude-opus-5-5`.\n\n<!-- Minos: head=old target=base -->",
+    }, ...otherReviews],
   };
   const threads = [{ path: "src/parse.go", line: 9, resolved: false, comments: [{ user: "minos", body: "**Blocking · High: Old**", commit_id: earlierHead }] }];
   const asked = [];
   return {
-    asked,
+    asked, snapshot,
     run: {
-      env: { MINOS_REVIEW_THRESHOLD: "High", MINOS_FILING_DESTINATION: JSON.stringify(filing) },
+      env: { ...process.env, MINOS_REVIEW_THRESHOLD: "High", MINOS_FILING_DESTINATION: JSON.stringify(filing) },
       head,
       target: targetCommit,
+      runDir: root,
+      pullRequest: { owner: "owner", repository: "repo" },
       workspace,
       orientation,
-      forge: async (command) => ({ snapshot, threads })[command],
+      forge: async (command, ...args) => {
+        if (command === "repository-metadata" || command === "clone-credential")
+          assert.deepEqual(args, ["owner", filing.repository ? "plans" : "repo"]);
+        return {
+          snapshot, threads,
+          "repository-metadata": { clone_url: workspace, default_branch: "default" },
+          "clone-credential": { username: "fixture", password: "fixture" },
+        }[command];
+      },
       judge: async (judged, given) => {
         asked.push({ judged, given });
         return answer;
@@ -242,25 +257,37 @@ test("a run with no review classifies nothing, and one with no confirmed finding
   assert.deepEqual(settled.decisions, { main: { kind: DECISION_KIND, verdict: "clean", basis: "The review confirmed no findings.", findings: [] } });
 });
 
-test("a filing destination this run cannot read is said to be unread", (t) => {
-  const { run } = fixtureRun(t);
-  const orientation = { guidance: [] };
-
-  assert.match(filedEntries(run, { kind: "issue", repository: "owner/plans" }, orientation), /\(issue on owner\/plans\) could not be read/);
-  assert.match(filedEntries(run, { kind: "pull-request-comment" }, orientation), /could not be read/);
-  assert.match(filedEntries(run, { kind: "file", repository: "owner/plans", path: "ISSUES.md" }, orientation), /\(file on owner\/plans\) could not be read/);
-  assert.match(filedEntries(run, { kind: "none" }, orientation), /files nothing/);
-  assert.match(filedEntries(run, { kind: "file", path: "MISSING.md" }, orientation), /does not exist on the target branch/);
+test("an unread filing destination is distinguished from an empty or missing filing file", async (t) => {
+  const { run, snapshot } = fixtureRun(t);
+  assert.match(await filedEntries(run, { kind: "issue", repository: "owner/plans" }, snapshot), /could not be read/);
+  assert.match(await filedEntries(run, { kind: "pull-request-comment" }, snapshot), /filed no entries/);
+  assert.match(await filedEntries(run, { kind: "none" }, snapshot), /files nothing/);
+  assert.match(await filedEntries(run, { kind: "file", path: "MISSING.md" }, snapshot), /does not exist on the default branch/);
+  const offline = { ...run, forge: async () => { throw new Error("network unavailable"); } };
+  assert.match(await filedEntries(offline, { kind: "file", path: "ISSUES.md" }, snapshot), /could not be read/);
 });
 
-test("a file in a repository setup cloned for guidance is read from that clone", (t) => {
-  const { run } = fixtureRun(t);
-  const clone = join(operationRoot(t, "minos-classify-plans-"), "owner", "plans");
-  mkdirSync(clone, { recursive: true });
-  writeFileSync(join(clone, "README.md"), "Plans.\n");
-  writeFileSync(join(clone, "ISSUES.md"), "- Pause naming differs.\n");
-  const orientation = { guidance: [{ source: { repository: "owner/plans", path: "README.md" }, location: join(clone, "README.md"), origin: "configured" }] };
+test("an external file destination is read on its repository's default branch", async (t) => {
+  const filing = { kind: "file", repository: "owner/plans", path: "ISSUES.md" };
+  const { run, snapshot } = fixtureRun(t, { filing });
+  assert.equal(await filedEntries(run, filing, snapshot), "- Use the shared parser.\n");
+});
 
-  assert.equal(filedEntries(run, { kind: "file", repository: "owner/plans", path: "ISSUES.md" }, orientation), "- Pause naming differs.\n");
-  assert.match(filedEntries(run, { kind: "file", repository: "owner/plans", path: "TODO.md" }, orientation), /TODO\.md does not exist in owner\/plans/);
+test("classification receives marked filing comments from Minos, including on older heads", async (t) => {
+  const marker = "<!-- minos:WyJmaXh0dXJlIl0 -->";
+  const filedAdvice = `- Use the shared parser. ${marker}`;
+  const answer = {
+    main: { verdict: "clean", basis: "This advice was already filed.", findings: [disposition({ key: "logic-1", gating: false, class: "already-raised" })] },
+  };
+  const { run, asked } = fixtureRun(t, {
+    filing: { kind: "pull-request-comment" }, answer,
+    otherReviews: [
+      { id: 8, user: "minos", commit_id: earlierHead, body: `${filedAdvice}\n\n<!-- Minos: head=old target=base -->` },
+      { id: 9, user: "alice", commit_id: head, body: `Unrelated advice. ${marker}` },
+      { id: 10, user: "minos", commit_id: head, body: "No blocking finding remains at this head." },
+    ],
+  });
+  const { decisions } = await classify(run, { review: verdict });
+  assert.equal(asked[0].given.filedEntries, filedAdvice);
+  assert.equal(decisions.main.findings[0].class, "already-raised");
 });

@@ -17,7 +17,7 @@ func TestGitHubReviewThreadsCarryResolutionAndRepliesForTheServicesOwnThreads(t 
 	state := newGitHubFixtureState(t)
 	state.reviewThreadPages = []string{
 		`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[
-			{"isResolved":true,"isOutdated":false,"path":"src/code.txt","line":4,"originalLine":4,"comments":{"nodes":[
+			{"isResolved":true,"isOutdated":false,"path":"src/code.txt","line":7,"originalLine":4,"comments":{"nodes":[
 				{"body":"**Blocking · High: Lost update**","author":{"__typename":"Bot","login":"minos-review"},"originalCommit":{"oid":"old-head"},"pullRequestReview":{"databaseId":601}},
 				{"body":"Fixed in the next push.","author":{"__typename":"User","login":"author"},"originalCommit":{"oid":"old-head"},"pullRequestReview":{"databaseId":602}}]}},
 			{"isResolved":false,"isOutdated":false,"path":"src/code.txt","line":8,"originalLine":8,"comments":{"nodes":[

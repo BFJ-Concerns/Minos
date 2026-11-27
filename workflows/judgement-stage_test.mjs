@@ -86,24 +86,52 @@ test("a workflow input missing its stage, prompt, schema or routing fails before
   }
 });
 
-test("the runner prints a stage's answer and fails a stage that gave none with nothing on standard output", (t) => {
+test("the runner prints a stage's answer and fails a stage that gave none with nothing on standard output", async (t) => {
+  const stage = await loadStage("push-inspection");
   const root = installedTree(t, answeringLauncher);
   const argsFile = join(root, "args.json");
-  writeFileSync(argsFile, JSON.stringify(workflowArgs));
+  writeFileSync(argsFile, JSON.stringify(judgementArgs(stage, inspectionInput, { env: { MINOS_PROVISIONED_ENGINES: "claude" } })));
   const runner = (env) => spawnSync(
     join(root, "workflows", "run-judgement"),
     [join(root, "workflows", "judgement.js"), "--json-args", `@${argsFile}`],
     { encoding: "utf8", env: { ...process.env, ...env } },
   );
 
-  const answered = runner({ LAUNCHER_ANSWER: JSON.stringify({ choice: "this" }) });
+  const answer = { outcome: "full", reason: "The push changes a parser." };
+  const answered = runner({ LAUNCHER_ANSWER: JSON.stringify(answer) });
   assert.equal(answered.status, 0, answered.stderr);
-  assert.deepEqual(JSON.parse(answered.stdout), { stage: "sample-stage", answer: { choice: "this" } });
+  assert.deepEqual(JSON.parse(answered.stdout), { stage: "push-inspection", answer });
 
   const unanswered = runner({});
   assert.equal(unanswered.status, 1);
   assert.equal(unanswered.stdout, "");
-  assert.match(unanswered.stderr, /stage sample-stage gave no answer/);
+  assert.match(unanswered.stderr, /stage push-inspection gave no answer/);
+
+  const invalid = runner({ LAUNCHER_ANSWER: JSON.stringify({ ...answer, reason: " " }) });
+  assert.equal(invalid.status, 1);
+  assert.equal(invalid.stdout, "");
+  assert.match(invalid.stderr, /stage push-inspection gave an unusable answer: the reason is blank/);
+});
+
+test("dispatch records a failed stage and publishes no result for a semantically invalid answer", async (t) => {
+  const root = installedTree(t, answeringLauncher);
+  const stage = await loadStage("push-inspection");
+  const env = {
+    ...process.env,
+    MINOS_PROVISIONED_ENGINES: "claude",
+    MINOS_RUN_DIR: root,
+    MINOS_REVIEW_WORKFLOW: join(root, "workflows", "review.js"),
+    MINOS_SETUP_WORKSPACE: fileURLToPath(new URL("../scripts/run-body/setup-workspace", import.meta.url)),
+    LAUNCHER_ANSWER: JSON.stringify({ outcome: "full", reason: " " }),
+  };
+  writeFileSync(join(root, "push-inspection-args.json"), JSON.stringify(judgementArgs(stage, inspectionInput, { env })));
+  const dispatch = spawnSync(join(dirname(env.MINOS_SETUP_WORKSPACE), "dispatch-stage"),
+    ["push-inspection", "judgement.js", "run-judgement"], { encoding: "utf8", env });
+  assert.equal(dispatch.status, 1, dispatch.stderr);
+  assert.equal(existsSync(join(root, "push-inspection-result.json")), false);
+  assert.equal(existsSync(join(root, "push-inspection-result.done")), true);
+  assert.equal(JSON.parse(readFileSync(join(root, "timings.ndjson"), "utf8")).exit_status, 1);
+  assert.match(readFileSync(join(root, "push-inspection.log"), "utf8"), /gave an unusable answer/);
 });
 
 test("a stage's arguments carry its input, its complete prompt, the answer's schema and the judgement routing", async () => {
