@@ -145,7 +145,12 @@ Write `NAME.md` and `NAME.mjs` here, the step that gathers its input and
 carries out its answer under `workflows/run-steps/`, and a row in the
 table above.
 
-Add a representative input to `judgementSamples` in
-`workflows/runtime_bundle_compatibility_test.mjs`. The compatibility check
-uses that input to build the stage's arguments and validate them with the
-installed runtime.
+Add a sample to `judgementSamples` in
+`workflows/runtime_bundle_compatibility_test.mjs`: an `input` and an
+`answer` the stage could give to it. The input need hold only the fields
+the stage's `answerSchema` reads. The compatibility check builds the
+stage's answer schema from the input, compiles it under the installed
+runtime, as given and as a Codex output schema, and validates the answer
+against both, so a sample without an answer leaves the stage unchecked. A
+stage whose schema narrows with the input can be given a sample for each shape
+it can take.
