@@ -584,7 +584,7 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 		knobs.Review.Threshold = "High"
 	}
 	if knobs.Review.Depth == "" {
-		knobs.Review.Depth = "standard"
+		knobs.Review.Depth = defaultReviewDepth
 	}
 	if knobs.PushInspection.Outcomes == nil {
 		knobs.PushInspection.Outcomes = slices.Clone(pushInspectionOutcomes)
@@ -711,6 +711,8 @@ func validPushInspectionOutcomes(outcomes []string) error {
 	}
 	return nil
 }
+
+const defaultReviewDepth = "standard"
 
 // reviewDepths are the review depth presets, from the narrowest plan and
 // shallowest reading to the widest and deepest. Each names the passages
