@@ -66,7 +66,14 @@ if (argumentError) {
     guidance,
     routing,
     ...(pullRequest === undefined ? {} : { pullRequest }),
-    prompts: { repository: prompts.repository, merge: prompts.merge, verifier: prompts.verifier },
+    prompts: {
+      repository: prompts.repository,
+      briefRelevance: prompts.briefRelevance,
+      briefPartition: prompts.briefPartition,
+      assignment: prompts.assignment,
+      merge: prompts.merge,
+      verifier: prompts.verifier,
+    },
     contracts: reviewContracts(concerns.map(({ name }) => name)),
   };
 

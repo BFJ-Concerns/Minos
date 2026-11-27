@@ -21,6 +21,9 @@ export const STAGE_RUN_SLOTS = {
   exploration: [...REVIEWED_CHANGE_SLOTS, "concerns"],
   specialist: [...REVIEWED_CHANGE_SLOTS, "concern-name", "other-concerns", "planned-focus", "same-concern-units"],
   repository: [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "assignment"],
+  "brief-relevance": [...REVIEWED_CHANGE_SLOTS, "changed-paths", "relevance-conditions"],
+  "brief-partition": [...REVIEWED_CHANGE_SLOTS, "brief-path", "brief", "file-inventory"],
+  assignment: ["target", "head", "brief-directory", "unit-concern", "unit-files"],
   merge: ["target", "head", "findings"],
   verifier: [...REVIEWED_CHANGE_SLOTS, "findings"],
 };
@@ -95,6 +98,14 @@ export function reviewPrompts(repositoryRoot) {
       specialist: Object.fromEntries(concerns.map((concern) =>
         [concern.name, prompt("specialist", "specialist.md", { concern: concern.body })])),
       repository: prompt("repository", "repository.md"),
+      briefRelevance: prompt("brief-relevance", "brief-relevance.md"),
+      briefPartition: prompt("brief-partition", "brief-partition.md"),
+      assignment: {
+        changedPart: prompt("assignment", "assignment/changed-part.md"),
+        wholePart: prompt("assignment", "assignment/whole-part.md"),
+        unit: prompt("assignment", "assignment/unit.md"),
+        files: prompt("assignment", "assignment/files.md"),
+      },
       merge: prompt("merge", "merge.md"),
       verifier: prompt("verifier", "verifier.md"),
     },

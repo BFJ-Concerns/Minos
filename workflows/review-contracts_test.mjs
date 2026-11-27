@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { shippedContracts } from "./shipped-prompts-fixture.mjs";
+import { fileInventoryFromPrompt, relevanceConditionsFromPrompt } from "./brief-planner-prompt-fixture.mjs";
 import { findingsFromVerifierPrompt, verdictFor } from "./verifier-prompt-fixture.mjs";
 import { invokeWorkflow, loadWorkflow } from "./workflow-invocation-fixture.mjs";
 
@@ -86,11 +87,11 @@ function respond(label, prompt) {
     };
   }
   if (label === "brief-relevance") {
-    const concerns = JSON.parse(prompt.match(/Concerns: (\[[^\n]+\])/)[1]);
+    const concerns = relevanceConditionsFromPrompt(prompt);
     return { decisions: concerns.map((entry) => ({ brief: entry.brief, applicable: true, reason: "relevant" })) };
   }
   if (label.startsWith("brief-partition-")) {
-    const files = JSON.parse(prompt.match(/Assigned file inventory: (\[[^\n]+\])/)[1]);
+    const files = fileInventoryFromPrompt(prompt);
     return { units: [{ id: "complete-scope", concern: "complete assigned scope", files }] };
   }
   if (label === "merge" || label === "brief-merge" || label.includes("merge-round-")) {

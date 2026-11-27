@@ -25,6 +25,9 @@ test("every shipped prompt has its file slots filled and carries only its stage'
   const stages = [
     ["exploration", prompts.exploration],
     ["repository", prompts.repository],
+    ["brief-relevance", prompts.briefRelevance],
+    ["brief-partition", prompts.briefPartition],
+    ...Object.values(prompts.assignment).map((text) => ["assignment", text]),
     ["merge", prompts.merge],
     ["verifier", prompts.verifier],
     ...Object.values(prompts.specialist).map((text) => ["specialist", text]),
@@ -37,6 +40,9 @@ test("every shipped prompt has its file slots filled and carries only its stage'
   assert.match(prompts.specialist.security, /## Your concern: \{\{concern-name\}\}\n\n/);
   assert.doesNotMatch(prompts.specialist.security, /^---$/m, "a concern's front matter stays out of its prompt");
   assert.match(prompts.verifier, /- `Critical`: ordinary use loses or corrupts data/);
+  assert.deepEqual(Object.keys(prompts.assignment), ["changedPart", "wholePart", "unit", "files"]);
+  for (const text of [prompts.briefRelevance, prompts.briefPartition])
+    assert.match(text, /## The repository and the change\n/, "the brief-planner prompts open on the reviewed change");
 });
 
 test("a prompt carrying a slot no stage fills is refused when the input is built", (t) => {

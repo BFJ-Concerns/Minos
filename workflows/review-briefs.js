@@ -63,8 +63,13 @@ function briefsFromInput(input) {
 function promptsFromInput(input) {
   const prompts = input && input.prompts;
   if (!prompts || typeof prompts !== "object" || Array.isArray(prompts)) return null;
+  const assignment = prompts.assignment;
+  if (!assignment || typeof assignment !== "object" || Array.isArray(assignment)) return null;
   if (
     !promptFits(prompts.repository, "repository") ||
+    !promptFits(prompts.briefRelevance, "brief-relevance") ||
+    !promptFits(prompts.briefPartition, "brief-partition") ||
+    !["changedPart", "wholePart", "unit", "files"].every((part) => promptFits(assignment[part], "assignment")) ||
     !promptFits(prompts.merge, "merge") ||
     !promptFits(prompts.verifier, "verifier")
   ) return null;
@@ -214,11 +219,12 @@ if (relevanceCandidates.length > 0) {
   phase("Relevance");
   addLeg("brief-relevance", "relevance", routing["brief-planner"].model);
   const relevanceResult = await agent(
-    `${projectGuidanceSection(guidance)}\n\n` +
-      `Judge which repository concerns ${target}...${head} gives work to. Inspect the actual diff when paths alone do not settle it. ` +
-      `Mark a concern inapplicable only when the diff clearly gives it nothing to judge. Return one decision for every entry and preserve each brief path.\n` +
-      `Changed paths: ${JSON.stringify(input.changedPaths)}\n` +
-      `Concerns: ${JSON.stringify(relevanceCandidates.map(({ brief, front }) => ({ brief: brief.path, relevance: front.relevance })))}`,
+    fillPrompt(prompts.briefRelevance, {
+      ...reviewedChangeValues,
+      "changed-paths": JSON.stringify(input.changedPaths, null, 2),
+      "relevance-conditions": JSON.stringify(
+        relevanceCandidates.map(({ brief, front }) => ({ brief: brief.path, relevance: front.relevance })), null, 2),
+    }),
     {
       engine: routing["brief-planner"].engine,
       schema: relevanceSchema,
@@ -286,12 +292,12 @@ if (partitionRequests.length > 0) {
   for (const request of partitionRequests)
     addLeg(request.label, "partition", routing["brief-planner"].model);
   const partitionResults = await parallel(partitionRequests.map((request) => () => agent(
-    `${projectGuidanceSection(guidance)}\n\n` +
-      `<repository-brief path="${request.candidate.brief.path}">\n${request.candidate.brief.content}\n</repository-brief>\n\n` +
-      `Create a lossless partition of the assigned file inventory into coherent review units for this brief. Group paths by module, directory, or concern, whichever reflects the repository's actual structure. ` +
-      `Each dispatched unit has a real cost, so the partition is the minimal one whose units each need a genuinely distinct reading for this brief's concern — merge groups one reading covers, and never split a unit to mirror directory structure for its own sake. ` +
-      `Assign every listed path to exactly one unit; include no unlisted paths. Use no skills for this planning judgement.\n` +
-      `Assigned file inventory: ${JSON.stringify(request.inventory.map((entry) => entry.path))}`,
+    fillPrompt(prompts.briefPartition, {
+      ...reviewedChangeValues,
+      "brief-path": request.candidate.brief.path,
+      brief: request.candidate.brief.content,
+      "file-inventory": JSON.stringify(request.inventory.map((entry) => entry.path), null, 2),
+    }),
     {
       engine: routing["brief-planner"].engine,
       schema: partitionSchema,
@@ -344,14 +350,20 @@ function wholeScopeOf(unit) {
 // What a brief's reviewer is given to judge: the change within the brief's
 // directory, or for a whole-scope brief all of that directory as it stands,
 // narrowed to a partition unit's files where the scope was partitioned.
+// Each applicable part is filled in a pass of its own, so a value is never
+// itself read for slots, and the parts are joined in their shipped order.
 function assignment(unit) {
-  const scope = unit.scope ? `\`${unit.scope}/\`` : "the whole repository";
-  const lines = [unit.extent === "full"
-    ? `All of ${scope} as it stands at the head commit, \`${head}\`, whether or not the change touched it.`
-    : `What \`git diff ${target}...${head}\` changed within ${scope}.`];
-  if (unit.concern) lines.push(`Within that, this review unit: ${unit.concern}`);
-  if (unit.files.length > 0) lines.push(`The files of this unit:\n\n${unit.files.map((path) => `- \`${path}\``).join("\n")}`);
-  return lines.join("\n\n");
+  const values = {
+    target,
+    head,
+    "brief-directory": wholeScopeOf(unit),
+    "unit-concern": unit.concern || "",
+    "unit-files": unit.files.map((path) => `- \`${path}\``).join("\n"),
+  };
+  const parts = [unit.extent === "full" ? prompts.assignment.wholePart : prompts.assignment.changedPart];
+  if (unit.concern) parts.push(prompts.assignment.unit);
+  if (unit.files.length > 0) parts.push(prompts.assignment.files);
+  return parts.map((part) => fillPrompt(part, values)).join("\n\n");
 }
 
 phase("Review");

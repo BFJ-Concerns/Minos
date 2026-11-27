@@ -11,6 +11,9 @@ export const shippedConcerns = shipped.concerns;
 export const shippedPrompts = shipped.prompts;
 export const shippedBriefPrompts = {
   repository: shipped.prompts.repository,
+  briefRelevance: shipped.prompts.briefRelevance,
+  briefPartition: shipped.prompts.briefPartition,
+  assignment: shipped.prompts.assignment,
   merge: shipped.prompts.merge,
   verifier: shipped.prompts.verifier,
 };
