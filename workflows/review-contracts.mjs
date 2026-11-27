@@ -55,7 +55,9 @@ export const applicabilityShape = {
 // `outsideConcernFindings`, whatever the applicability, and is a proposed
 // finding like any in `findings`: merged and verified the same way. An
 // out-of-scope observation is a defect the change did not introduce; it is
-// recorded and never verified.
+// recorded and never verified. A whole-scope repository brief's own
+// finding in code the change never touched is not one: it stays in
+// `findings`.
 export const specialistSchema = {
   type: "object",
   additionalProperties: false,
