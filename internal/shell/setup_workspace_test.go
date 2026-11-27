@@ -66,10 +66,6 @@ func TestSetupWorkspaceClonesHeadCapturesGroundingAndInstallsProtection(t *testi
 
 }
 
-// The forge's clone credential is the only thing that authorises the clones:
-// a git server demanding HTTPS Basic authorisation serves the reviewed and
-// guidance repositories, and the credential the forge reports — GitHub's
-// x-access-token form here — is what setup must present.
 func TestSetupWorkspacePreservesALongPullRequestDescription(t *testing.T) {
 	repository, head := createGitRepository(t, "README.md", "Repository guidance\n")
 	server := newSetupForge(t, head, repository, "")
@@ -112,6 +108,10 @@ func TestSetupWorkspacePreservesALongPullRequestDescription(t *testing.T) {
 	}
 }
 
+// The forge's clone credential is the only thing that authorises the clones:
+// a git server demanding HTTPS Basic authorisation serves the reviewed and
+// guidance repositories, and the credential the forge reports — GitHub's
+// x-access-token form here — is what setup must present.
 func TestSetupWorkspaceClonesWithTheForgesCloneCredential(t *testing.T) {
 	repository, head := createGitRepository(t, "AGENTS.md", "reviewed guidance\n")
 	secondary := createGitRepositoryAtHead(t, "README.md", "# Commission\n")
