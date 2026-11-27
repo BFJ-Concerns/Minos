@@ -19,6 +19,14 @@ nothing else.
   runs around them, and their Node tests.
 - `workflows/review-briefs/` — the Markdown prompts the review legs
   receive; its `README.md` maps each file to its stage and slots.
+- `workflows/run-driver.mjs` and `workflows/run-steps/` — the scripted run
+  driver and its steps, one module each. It judges nothing: a step that
+  needs a judgement asks a judgement stage. `run-body` starts the lead and
+  nothing starts the driver, whose steps are unbuilt but for push
+  inspection.
+- `workflows/judgements/` — the one-shot judgement stages, each a prompt
+  and a definition of one name; its `README.md` says what a stage is, how
+  one runs and how one is replayed on a recorded input.
 - `runtime/` — the vendored Ensemble runtime (below).
 - `scripts/adaptations/` — one directory of forge scripts per forge
   (`forgejo`, `github`).
