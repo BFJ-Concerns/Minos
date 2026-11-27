@@ -15,6 +15,7 @@ export const meta = {
 // proposing, merge and verification stages every review runs.
 const { contractsFromInput } = await import("./review-contracts.mjs");
 const { routingFromInput } = await import("./role-routing.mjs");
+const { concernRoutingFromInput } = await import("./concern-routing.mjs");
 const { projectGuidanceFromInput, projectGuidanceSection } = await import("./orientation-guidance.mjs");
 const { pullRequestFromInput, pullRequestSection } = await import("./pull-request-description.mjs");
 const { promptFits, fillPrompt, concernsFromInput, concernLine } = await import("./review-prompts.mjs");
@@ -75,6 +76,8 @@ const projectGuidance = projectGuidanceFromInput(input);
 if (!projectGuidance) throw new Error("deterministic input omitted reviewed-project guidance");
 const routing = routingFromInput(input);
 if (!routing) throw new Error("deterministic input omitted the role routing");
+const concernRouting = concernRoutingFromInput(input, concerns);
+if (!concernRouting) throw new Error("deterministic input omitted or malformed the concern routing");
 const reviewedChangeValues = {
   target,
   head,
@@ -141,13 +144,19 @@ const exploration = {
     reason: explorationResult.applicability.reason,
   },
 };
-const specialistUnits = exploration.plan.map((unit, index) => ({
-  ...unit,
-  kind: "planned",
-  family: routing.proposer.engine,
-  roleBrief: `workflows/review-briefs/concerns/${unit.specialistType}.md`,
-  label: `specialist-${index + 1}-${unit.specialistType}-${routing.proposer.engine}`,
-}));
+// Each specialist proposes on its concern's route: the proposer's, unless
+// the operator routed that concern on its own.
+const specialistUnits = exploration.plan.map((unit, index) => {
+  const route = concernRouting[unit.specialistType];
+  return {
+    ...unit,
+    kind: "planned",
+    route,
+    family: route.engine,
+    roleBrief: `workflows/review-briefs/concerns/${unit.specialistType}.md`,
+    label: `specialist-${index + 1}-${unit.specialistType}-${route.engine}`,
+  };
+});
 
 phase("Specialise");
 
@@ -186,7 +195,7 @@ for (const { unit, completed, output: result } of specialistResults) {
     concern: unit.concern,
     scope: unit.scope,
     family: unit.family,
-    pinnedModel: routing.proposer.model,
+    pinnedModel: unit.route.model,
     status: completed ? "done" : "no-result",
   });
   if (!result) continue;
@@ -196,6 +205,7 @@ for (const { unit, completed, output: result } of specialistResults) {
     reportedBy: unit.specialistType,
     outsideConcern,
     proposingLabel: unit.label,
+    proposedOn: unit.route.engine,
   }));
   // A specialist with nothing of its own kind to judge may still have met
   // another concern's problem on the way.
