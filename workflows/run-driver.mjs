@@ -54,9 +54,13 @@ import { settleEarlierFindings } from "./run-steps/settle-earlier-findings.mjs";
 import { showReviewing } from "./run-steps/show-reviewing.mjs";
 import { withdraw } from "./run-steps/withdraw.mjs";
 import { writeReport } from "./run-steps/write-report.mjs";
+import { writeWalkthrough } from "./run-steps/write-walkthrough.mjs";
 
 export const COURSE = [claim, markWorking, inspectPush, showReviewing, review, reviewBriefs, classify, settleEarlierFindings, publish, conclude];
-export const CLOSING = [recordFailure, withdraw, writeReport];
+// The walkthrough is written after `withdraw`, once nothing of the head's
+// result waits on it, and before the report, which lists what went wrong
+// with it.
+export const CLOSING = [recordFailure, withdraw, writeWalkthrough, writeReport];
 
 const pressureBoundaries = new Map([
   [claim, "claim"], [inspectPush, "push-inspection"], [review, "review"],
