@@ -3,6 +3,7 @@ package shell
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/BFJ-Concerns/Minos/internal/forge"
@@ -104,16 +105,15 @@ func TestForgeApproveTriesAgainWhileTheWriteIsUncertain(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		dropped    int
+		wantPosts  int
 		wantWrites int
 		wantErr    bool
 	}{
-		{name: "one lost write", dropped: 1, wantWrites: 1},
-		{name: "every attempt lost", dropped: 3, wantWrites: 0, wantErr: true},
+		{name: "one lost write", dropped: 1, wantPosts: 2, wantWrites: 1},
+		{name: "every attempt lost", dropped: 3, wantPosts: 3, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			attempts, delay := approvalAttempts, approvalRetryDelay
-			approvalAttempts, approvalRetryDelay = 3, 0
-			t.Cleanup(func() { approvalAttempts, approvalRetryDelay = attempts, delay })
+			skipApprovalRetryDelay(t)
 			state := newForgejoFixtureState(t)
 			cfg, _, _ := state.service(t)
 			writeServiceConfig(t, cfg)
@@ -131,6 +131,9 @@ func TestForgeApproveTriesAgainWhileTheWriteIsUncertain(t *testing.T) {
 			err := ForgeCommand(t.Context(), []string{"approve", state.headSHA(), state.targetSHA()}, &out)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("forge approve error = %v, want error %t; printed %q", err, tc.wantErr, out.String())
+			}
+			if posts := state.reviewPostCount(); posts != tc.wantPosts {
+				t.Fatalf("review POST attempts = %d, want %d", posts, tc.wantPosts)
 			}
 			if writes, _ := state.reviewWriteFacts(); writes != tc.wantWrites {
 				t.Fatalf("review writes = %d, want %d", writes, tc.wantWrites)
@@ -150,4 +153,27 @@ func TestForgeApproveTriesAgainWhileTheWriteIsUncertain(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestForgeApproveStopsAfterARejectedWrite(t *testing.T) {
+	skipApprovalRetryDelay(t)
+	state := newGitHubFixtureState(t)
+	state.mu.Lock()
+	state.refuseReviewPosts = http.StatusUnprocessableEntity
+	state.mu.Unlock()
+
+	result, err := postApproval(t.Context(), state.adapter(t), state.guard())
+	if err != nil || result.Outcome != forge.WriteRejected {
+		t.Fatalf("post approval = %#v, %v, want forge rejection", result, err)
+	}
+	if posts, _ := state.reviewWriteFacts(); posts != 1 {
+		t.Fatalf("review POST attempts = %d, want 1", posts)
+	}
+}
+
+func skipApprovalRetryDelay(t *testing.T) {
+	t.Helper()
+	delay := approvalRetryDelay
+	approvalRetryDelay = 0
+	t.Cleanup(func() { approvalRetryDelay = delay })
 }
