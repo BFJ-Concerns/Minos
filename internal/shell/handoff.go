@@ -17,6 +17,7 @@ type runHandoff struct {
 	Head        string           `json:"head"`
 	RunDir      string           `json:"runDir"`
 	StoppedAt   string           `json:"stoppedAt"`
+	Stalled     bool             `json:"stalled,omitempty"`
 	WrittenAt   string           `json:"writtenAt"`
 	Predecessor *handoffProgress `json:"predecessorProgress,omitempty"`
 	Progress    *handoffProgress `json:"progress,omitempty"`

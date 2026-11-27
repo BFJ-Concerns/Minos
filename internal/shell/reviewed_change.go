@@ -26,10 +26,11 @@ import (
 // already judged. The record is a cache beside the runs: losing it costs a
 // full review and nothing else.
 type reviewedChange struct {
-	Head    string            `json:"head"`
-	Target  string            `json:"target"`
-	Outcome string            `json:"outcome"`
-	Files   map[string]string `json:"files"`
+	Head        string            `json:"head"`
+	Target      string            `json:"target"`
+	Outcome     string            `json:"outcome"`
+	Files       map[string]string `json:"files"`
+	FromSummary bool              `json:"from_summary,omitempty"`
 }
 
 // earlierHead is the answer to `minos forge earlier`. ChangedPaths lists the
@@ -191,7 +192,7 @@ func changedPaths(earlier, current map[string]string) []string {
 // it would name an older head than the one just finished and answer the
 // next earlier-head search ahead of the summary comment, which names the
 // right one.
-func recordReviewedChange(ctx context.Context, guard forge.Guard, outcome string) {
+func recordReviewedChange(ctx context.Context, guard forge.Guard, outcome string, fromSummary bool) {
 	workspace := os.Getenv("MINOS_WORKSPACE")
 	if workspace == "" {
 		return
@@ -207,7 +208,7 @@ func recordReviewedChange(ctx context.Context, guard forge.Guard, outcome string
 		if err != nil {
 			return err
 		}
-		record, err := json.Marshal(reviewedChange{Head: guard.HeadSHA, Target: guard.TargetSHA, Outcome: outcome, Files: files})
+		record, err := json.Marshal(reviewedChange{Head: guard.HeadSHA, Target: guard.TargetSHA, Outcome: outcome, Files: files, FromSummary: fromSummary})
 		if err != nil {
 			return err
 		}
@@ -230,17 +231,11 @@ func recordReviewedChange(ctx context.Context, guard forge.Guard, outcome string
 }
 
 // findEarlierHead names the head Minos last finished on before this one.
-// The kept record answers first, whatever became of its commit: both the
-// scripted run's finished summary comment and the resident lead's terminal
-// status write it, so it is the newest of the two when both have written.
-// Without it, the summary comment's record names the last finished head,
-// which it carries while a later head is under way. A pull request with
-// neither, finished only by statuses and reviews before the summary
-// comment, has the pull request's own commits asked, newest first: a
-// commit carrying the service's request-changes review finished as
-// attention, and one whose latest service status is clean finished clean.
-// An attention status alone is not enough, because the service also sets
-// it on a head whose review never completed.
+// A summary-backed cache preserves file fingerprints across rewritten
+// commits. Without it, the summary gives the previous finished head, or
+// the walk finds the newest commit with a terminal review or an enabled
+// clean status. A historic cache without known summary provenance can
+// still supply fingerprints when the forge confirms its outcome.
 func findEarlierHead(ctx context.Context, adapter *forge.Adapter, guard forge.Guard) (earlierHead, error) {
 	none := earlierHead{Outcome: "none"}
 	workspace := os.Getenv("MINOS_WORKSPACE")
@@ -258,20 +253,30 @@ func findEarlierHead(ctx context.Context, adapter *forge.Adapter, guard forge.Gu
 	ancestor := func(sha string) bool {
 		return exec.CommandContext(ctx, "git", "-C", workspace, "merge-base", "--is-ancestor", sha, guard.HeadSHA).Run() == nil
 	}
+	var cached reviewedChange
 	if raw, readErr := os.ReadFile(reviewedChangePath(cfg, os.Getenv("MINOS_FORGE"), guard)); readErr == nil {
-		var record reviewedChange
-		if json.Unmarshal(raw, &record) == nil && record.Head != "" && record.Head != guard.HeadSHA &&
-			(record.Outcome == "clean" || record.Outcome == "attention") && record.Files != nil {
-			return earlierHead{Head: record.Head, Outcome: record.Outcome, Ancestor: ancestor(record.Head), ChangedPaths: changedPaths(record.Files, current)}, nil
+		if json.Unmarshal(raw, &cached) != nil || cached.Head == guard.HeadSHA ||
+			(cached.Outcome != "clean" && cached.Outcome != "attention") || cached.Files == nil {
+			cached = reviewedChange{}
 		}
 	}
-	snapshot, err := adapter.Snapshot(ctx, guard.Repository, guard.PullRequest)
+	commitStatus := runCommitStatus()
+	fromCache := func() earlierHead {
+		return earlierHead{Head: cached.Head, Outcome: cached.Outcome, Ancestor: ancestor(cached.Head), ChangedPaths: changedPaths(cached.Files, current)}
+	}
+	if cached.Head != "" && (cached.FromSummary || commitStatus) {
+		return fromCache(), nil
+	}
+	snapshot, err := pullRequestSnapshot(ctx, adapter, guard.Repository, guard.PullRequest, commitStatus)
 	if err != nil {
 		return none, err
 	}
 	if summary, found := snapshot.SummaryRecord(); found {
 		if head, state, finished := summary.LastFinished(); finished && head != guard.HeadSHA {
 			completion, _ := state.Completion()
+			if head == cached.Head && completion.Name() == cached.Outcome {
+				return fromCache(), nil
+			}
 			earlier := earlierHead{Head: head, Outcome: completion.Name(), Ancestor: ancestor(head)}
 			// The head may be gone from the clone, rewritten away; its
 			// changed paths are then null, as for any pair not compared.
@@ -285,26 +290,34 @@ func findEarlierHead(ctx context.Context, adapter *forge.Adapter, guard forge.Gu
 	if err != nil {
 		return none, fmt.Errorf("list the pull request's commits: %w", err)
 	}
-	requestedChanges := map[string]bool{}
+	reviews := make(map[string]forge.Review)
 	for _, review := range snapshot.Reviews {
-		if review.User == snapshot.AuthenticatedUser && review.State == "REQUEST_CHANGES" {
-			requestedChanges[review.CommitID] = true
+		if _, terminal := terminalState(review); terminal && review.User == snapshot.AuthenticatedUser && review.ID > reviews[review.CommitID].ID {
+			reviews[review.CommitID] = review
 		}
 	}
 	for _, sha := range strings.Fields(string(out)) {
 		if sha == guard.HeadSHA {
 			continue
 		}
-		outcome := "attention"
-		if !requestedChanges[sha] {
+		var outcome string
+		if state, terminal := terminalState(reviews[sha]); terminal {
+			outcome = state.Name()
+		} else if commitStatus {
 			recorded, err := recordedOutcome(ctx, adapter, guard.Repository, sha)
 			if err != nil {
 				return none, err
 			}
-			if recorded != "clean" {
-				continue
+			// Admission can set attention without a finished review.
+			if recorded == "clean" {
+				outcome = recorded
 			}
-			outcome = "clean"
+		}
+		if outcome == "" {
+			continue
+		}
+		if sha == cached.Head && outcome == cached.Outcome {
+			return fromCache(), nil
 		}
 		found := earlierHead{Head: sha, Outcome: outcome, Ancestor: true}
 		if files, err := changeFingerprints(ctx, workspace, guard.TargetSHA, sha); err == nil {

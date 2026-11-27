@@ -470,6 +470,67 @@ func TestSettingsIndexNamesLoaderRefusalAfterSavingAnotherFile(t *testing.T) {
 	}
 }
 
+func TestSettingsIndexShowsEachConfigurationFaultOnce(t *testing.T) {
+	root, read, write := configurationRoot(t)
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	path := filepath.Join(root, "repos", "missing-owner.toml")
+	if err := os.WriteFile(path, []byte("forge = \"forgejo\"\nrepo = \"missing-owner\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index := visit(site, "/settings", session)
+	if count := strings.Count(index.Body.String(), path); index.Code != http.StatusOK || count != 1 {
+		t.Fatalf("index answered %d and listed the repository fault %d times", index.Code, count)
+	}
+
+	servicePath := filepath.Join(root, "service.toml")
+	if err := os.WriteFile(servicePath, []byte(fileText(t, servicePath)+"max-concurrent = -1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	refused := submit(site, "/settings", url.Values{"setting": {"runs.recent-timings-cache-seconds"}, "value": {"2"}}, session)
+	page := refused.Body.String()
+	row := settingRowHTML(t, page, "runs.recent-timings-cache-seconds")
+	const fault = "runs max-concurrent must be"
+	if count := strings.Count(page, fault); refused.Code != http.StatusUnprocessableEntity || count != 1 || !strings.Contains(row, fault) {
+		t.Fatalf("settings refusal answered %d and listed the fault %d times, row %q", refused.Code, count, row)
+	}
+}
+
+func TestSettingsPagesSaveAndInheritReviewPublicationSettings(t *testing.T) {
+	root, read, write := configurationRoot(t)
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	const repository = "/repositories/forgejo/bfj/estate/settings"
+	service := visit(site, "/settings", session)
+	assertMonitoringPage(t, service.Code, service.Body.String(), "review.commit-status", "review.request-changes-rounds")
+
+	for _, test := range []struct{ page, key, value string }{
+		{"/settings", "review.commit-status", "true"},
+		{"/settings", "review.request-changes-rounds", "5"},
+		{repository, "review.commit-status", "false"},
+	} {
+		saved := submit(site, test.page, url.Values{"setting": {test.key}, "value": {test.value}}, session)
+		if saved.Code != http.StatusSeeOther {
+			t.Fatalf("saving %s answered %d: %s", test.key, saved.Code, saved.Body)
+		}
+	}
+	cfg, err := shell.LoadServiceConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := shell.FindRepoConfig(cfg, shell.Facts{Forge: "forgejo", Owner: "bfj", Repo: "estate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Repositories.Review.CommitStatus || repo.Review.CommitStatus || repo.Review.RequestChangesRounds == nil || *repo.Review.RequestChangesRounds != 5 {
+		t.Fatalf("service and repository settings loaded as %#v and %#v", cfg.Repositories.Review, repo.Review)
+	}
+	bad := submit(site, repository, url.Values{"setting": {"review.request-changes-rounds"}, "value": {"0"}}, session)
+	if bad.Code != http.StatusUnprocessableEntity || !strings.Contains(bad.Body.String(), "review.request-changes-rounds must be positive") {
+		t.Fatalf("zero threshold answered %d: %s", bad.Code, bad.Body)
+	}
+}
+
 func TestReviewModeIsChosenOnTheRepositoryPage(t *testing.T) {
 	root, read, write := configurationRoot(t)
 	site, _ := testSite(t, read, write)

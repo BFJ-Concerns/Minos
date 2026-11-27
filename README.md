@@ -61,8 +61,8 @@ author, and the forge's own CI remains the build evidence.
    filed as a safeguard request, marked apart from defects.
 
 If any reviewer fails to finish, or any finding lacks a complete verifier
-verdict, the run is incomplete: Minos publishes no review and sets no clean
-status, and the sweep picks the pull request up again on a later pass.
+verdict, the run is incomplete. Minos publishes no review, and the sweep
+can pick the pull request up on a later pass.
 
 With both engines available, specialists propose findings on Codex
 (`gpt-6.2-astra`) and the verifier checks them on Claude (`claude-opus-5-5`),
@@ -95,17 +95,22 @@ The comment lists earlier blocking findings that still stand, with their
 original locations, heads and any titles from the earlier review. Those
 findings can keep the result at changes requested even when inspection
 called for no new review. A request-changes review carries the round's new
-blocking findings.
+blocking findings. Starting with the third distinct head that receives a
+request for changes, the review also states the round number and suggests
+reconsidering the approach. Set `review.request-changes-rounds` to choose
+another threshold.
 
-Minos also reports through a commit status (`Minos` by default), a reaction
-or label on the pull request, and a review when it has new blocking
-findings or needs to supersede a previous request for changes. Installations
-using the resident lead report through these surfaces.
+Both run modes record the verdict in the summary comment and use reactions
+or labels as additional signals. The resident lead uses a short summary.
+An optional commit status uses the context `Minos` by default. After an
+update it is off until enabled with `review.commit-status = true` in
+the repository's configuration or the service-wide review settings. The
+status is informational. Keep it out of required branch protection checks.
 
-| Outcome | Status | On the pull request |
+| Outcome | Status when enabled | On the pull request |
 |---------|--------|---------------------|
-| Under review | `pending` — Reviewing changes | The in-flight marker (an `eyes` reaction by default) |
-| Continuing | `pending` — Review continuing in a fresh run | The in-flight marker stays while a fresh run carries on the review |
+| Under review | — | The in-flight marker (an `eyes` reaction by default) |
+| Continuing | — | The in-flight marker stays while a fresh run carries on the review |
 | Changes needed | `failure` — Changes need attention | New blockers go in a request-changes review, inline where they can be anchored to the diff and in the review body otherwise. Minos adds the attention marker if one is configured |
 | Clean | `success` — Changes approved | The clean marker (a `+1` reaction by default), and an approving review where Minos's latest verdict on the pull request had requested changes |
 | Incomplete | `error` — Review incomplete | The next sweep can retry an eligible head. A run that fails during setup writes no status |

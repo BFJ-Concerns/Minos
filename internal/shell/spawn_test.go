@@ -771,6 +771,9 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 	repo := RepoConfig{}
 	repo.Adaptation.RunBody = "/opt/minos/run-body/run-body"
 	repo.Review.Threshold = "Medium"
+	repo.Review.CommitStatus = true
+	rounds := 5
+	repo.Review.RequestChangesRounds = &rounds
 	repo.Review.FileSafeguardRequests = true
 	repo.Review.Depth = "thorough"
 	repo.Review.Mode = "quick"
@@ -825,6 +828,8 @@ func TestSpawnRunExportsRunContractAndHardTimeout(t *testing.T) {
 		"MINOS_CREDENTIAL_FILE=/etc/minos/forge.token",
 		"MINOS_RUN_BODY=/opt/minos/run-body/run-body",
 		"MINOS_REVIEW_THRESHOLD=Medium",
+		"MINOS_COMMIT_STATUS=true",
+		"MINOS_REQUEST_CHANGES_ROUNDS=5",
 		"MINOS_FILE_SAFEGUARD_REQUESTS=true",
 		"MINOS_REVIEW_DEPTH=thorough",
 		"MINOS_REVIEW_MODE=quick",

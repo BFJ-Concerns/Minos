@@ -307,7 +307,9 @@ type RepositoryKnobs struct {
 	Admission                    AdmissionRules `toml:"admission"`
 	WorkInProgressBranchPrefixes []string       `toml:"work-in-progress-branch-prefixes"`
 	Review                       struct {
-		Threshold string `toml:"threshold"`
+		Threshold            string `toml:"threshold"`
+		CommitStatus         bool   `toml:"commit-status"`
+		RequestChangesRounds *int   `toml:"request-changes-rounds"`
 		// FileSafeguardRequests sends the confirmed findings the lead classes
 		// as requests for a safeguard against a failure nobody has observed
 		// to the filing destination, each marked as such. Off, they are
@@ -568,7 +570,7 @@ func readRepoConfigFile(path string) (RepoConfig, toml.MetaData, error) {
 	}
 	repo.Path = path
 	if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
-		return RepoConfig{}, metadata, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
+		return RepoConfig{}, metadata, missingRepositoryIdentity(path)
 	}
 	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
 		return RepoConfig{}, metadata, err
@@ -577,6 +579,10 @@ func readRepoConfigFile(path string) (RepoConfig, toml.MetaData, error) {
 		return RepoConfig{}, metadata, err
 	}
 	return repo, metadata, nil
+}
+
+func missingRepositoryIdentity(path string) error {
+	return fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
 }
 
 // resolveRepositoryKnobs layers a repository file's knobs over the service
@@ -591,6 +597,12 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if defined("work-in-progress-branch-prefixes") {
 		knobs.WorkInProgressBranchPrefixes = own.WorkInProgressBranchPrefixes
+	}
+	if defined("review", "commit-status") {
+		knobs.Review.CommitStatus = own.Review.CommitStatus
+	}
+	if defined("review", "request-changes-rounds") {
+		knobs.Review.RequestChangesRounds = own.Review.RequestChangesRounds
 	}
 	if defined("review", "threshold") {
 		knobs.Review.Threshold = own.Review.Threshold
@@ -647,6 +659,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 // leave a knob unset, so a threshold or filing kind is checked only when
 // present; the resolved repository level always carries both.
 func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
+	if rounds := knobs.Review.RequestChangesRounds; rounds != nil && *rounds < 1 {
+		return fmt.Errorf("%s: review.request-changes-rounds must be positive", where)
+	}
 	if err := knobs.Admission.validate(); err != nil {
 		return fmt.Errorf("%s: admission.%w", where, err)
 	}
@@ -755,6 +770,15 @@ func validPushInspectionOutcomes(outcomes []string) error {
 		return errors.New("must include full, the outcome every head can take")
 	}
 	return nil
+}
+
+const defaultRequestChangesRounds = 3
+
+func (knobs RepositoryKnobs) requestChangesRounds() int {
+	if knobs.Review.RequestChangesRounds == nil {
+		return defaultRequestChangesRounds
+	}
+	return *knobs.Review.RequestChangesRounds
 }
 
 const defaultReviewDepth = "standard"

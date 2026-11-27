@@ -15,7 +15,10 @@ base_ref="$(printf '%s' "$pr_json" | jq -r '.base.ref')"
 base_json="$(api GET "/repos/${owner}/${repo}/branches/$(urlencode "$base_ref")")"
 head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
 
-statuses="$(commit_statuses "$owner" "$repo" "$head_sha")"
+statuses='[]'
+if [ "${4:-}" != without-statuses ]; then
+  statuses="$(commit_statuses "$owner" "$repo" "$head_sha")"
+fi
 reviews="$(collect "/repos/${owner}/${repo}/pulls/${pr}/reviews")"
 # One listing of the conversation comments gives both the comments, which
 # admission reads commands from, and the summary comment among them.
