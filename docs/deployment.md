@@ -502,10 +502,13 @@ attempts to append the failure to `runs.failure-log`; when the log path is
 unset or unwritable, stderr carries the evidence instead. The run exits after
 recording the failure. A run whose lead ends with a failing exit and no
 terminal marker is appended to the same log as a `lead-supervision` failure.
-When workspace
-setup cannot fetch the admitted target SHA because the forge no longer
-advertises it (typically because the base branch moved), the failure cause
-carries that refusal; the next sweep pass re-derives from current forge state.
+When the forge
+no longer advertises the admitted target SHA (typically because the base
+branch moved), workspace setup re-pins to the target's current tip from its
+own snapshot, and the run reviews against and guards its writes with that
+commit. Only when the current tip is the refused SHA, or is refused too,
+does setup fail; the failure cause carries the refusal, and the next sweep
+pass re-derives from current forge state.
 Workspace setup resolves clone URLs and credentials through the forge-neutral
 `minos forge repository-metadata OWNER REPO` and
 `minos forge clone-credential OWNER REPO` operations. Git reads the

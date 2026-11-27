@@ -475,6 +475,21 @@ if [ "$setup_status" -ne 0 ]; then
   fi
   exit "$setup_status"
 fi
+# Setup re-pins the target when the forge no longer serves the admitted
+# one; the run reviews against, and guards its writes with, that commit.
+if [ -f "$MINOS_RUN_DIR/target-sha" ]; then
+  failure_cause="setup recorded an unreadable re-pinned target"
+  IFS= read -r repinned_target <"$MINOS_RUN_DIR/target-sha" || repinned_target=""
+  case "$repinned_target" in
+    ''|*[!0-9a-f]*)
+      echo "run-body: $failure_cause" >&2
+      exit 1
+      ;;
+  esac
+  echo "run-body: target re-pinned from $MINOS_TARGET_SHA to $repinned_target"
+  MINOS_TARGET_SHA="$repinned_target"
+  export MINOS_TARGET_SHA
+fi
 
 trap 'exit 129' 1
 trap 'exit 130' 2

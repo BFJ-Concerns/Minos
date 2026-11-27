@@ -841,7 +841,7 @@ func TestRunBodyStopsEverythingADriverStartedWhenTheDriverOutlivesItsStoppedStag
 	fixture := scriptedDriverFixture(t, silentStageDriver+`
 process.on("SIGTERM", () => {});
 const helper = spawn("sleep", ["300"], { stdio: "ignore" });
-writeFileSync(join(runDir, "helper-pid"), ` + "`${helper.pid}\n`" + `);
+writeFileSync(join(runDir, "helper-pid"), `+"`${helper.pid}\n`"+`);
 setInterval(() => {}, 1000);
 `)
 	output, err := fixture.execute(map[string]string{"MINOS_LEAD_SILENCE_TIMEOUT": "1"})
@@ -853,6 +853,37 @@ setInterval(() => {}, 1000);
 		"cause=scripted driver did not end within 1 seconds of its silent stage being stopped")
 	pids := recordedPIDs(t, filepath.Join(fixture.runDir, "driver-pids"))
 	assertProcessesGone(t, append(pids, recordedPIDs(t, filepath.Join(fixture.runDir, "helper-pid"))...))
+}
+
+func TestRunBodyCarriesARepinnedTargetIntoTheRun(t *testing.T) {
+	repinned := strings.Repeat("c", 40)
+	fixture := scriptedDriverFixture(t, `
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+const runDir = process.env.MINOS_RUN_DIR;
+writeFileSync(join(runDir, "driver-target"), process.env.MINOS_TARGET_SHA + "\n");
+writeFileSync(join(runDir, "lead-complete"), "clean\n");
+`)
+	writeScript(t, fixture.setupStub, "#!/usr/bin/env sh\nset -eu\nprintf '%s\\n' "+repinned+" >\"$MINOS_RUN_DIR/target-sha\"\n")
+	output, err := fixture.execute(nil)
+	if err != nil {
+		t.Fatalf("scripted run: %v\n%s", err, output)
+	}
+	assertContainsFile(t, filepath.Join(fixture.runDir, "driver-target"), repinned)
+	if !strings.Contains(string(output), "target re-pinned from target-sha to "+repinned) {
+		t.Fatalf("missing re-pin line:\n%s", output)
+	}
+}
+
+func TestRunBodyRefusesAMalformedRepinnedTarget(t *testing.T) {
+	fixture := scriptedDriverFixture(t, "throw new Error('driver started');\n")
+	writeScript(t, fixture.setupStub, "#!/usr/bin/env sh\nset -eu\nprintf 'not-a-sha\\n' >\"$MINOS_RUN_DIR/target-sha\"\n")
+	output, err := fixture.execute(nil)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("run-body exit = %v, want 1\n%s", err, output)
+	}
+	assertFailureLine(t, fixture.failureLog, "stage=workspace-setup", "cause=setup recorded an unreadable re-pinned target")
 }
 
 func assertProcessesGone(t *testing.T, pids []int) {
