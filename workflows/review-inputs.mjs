@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
 import { pullRequestFromOrientation } from "./pull-request-description.mjs";
+import { descriptionFromOrientation } from "./repository-description.mjs";
 import { reviewContracts } from "./review-contracts.mjs";
 import { promptSettingsFromEnvironment } from "./prompt-settings.mjs";
 import { reviewPrompts } from "./review-prompts.mjs";
@@ -25,6 +26,7 @@ if (!target || !head || process.argv.length > 4) {
   const guidance = guidanceFromOrientation(orientation);
   const routing = routingFromEnvironment();
   const pullRequest = pullRequestFromOrientation(orientation);
+  const repositoryDescription = descriptionFromOrientation(orientation);
   const { concerns, prompts } = reviewPrompts(repositoryRoot, promptSettingsFromEnvironment());
   const concernRouting = concernRoutingFromEnvironment({
     concerns: concerns.map(({ name }) => name),
@@ -37,6 +39,7 @@ if (!target || !head || process.argv.length > 4) {
     routing,
     concernRouting,
     ...(pullRequest === undefined ? {} : { pullRequest }),
+    ...(repositoryDescription === undefined ? {} : { repositoryDescription }),
     concerns,
     prompts,
     contracts: reviewContracts(concerns.map(({ name }) => name)),

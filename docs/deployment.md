@@ -256,18 +256,19 @@ digest=$(curl -fsSL "https://api.github.com/repos/BFJ-Concerns/Minos/releases/ta
    shipped example comments an illustrative value of 4).
 
    `[routing]` maps each workflow role — `exploration`, `proposer`,
-   `verifier`, `brief-planner`, `judgement` — to an
+   `verifier`, `brief-planner`, `judgement`, `description` — to an
    engine, model and effort. A role left unset defaults at run time: with
    both engines provisioned, proposing and planning roles (`exploration`,
    `proposer`, `brief-planner`) run on Codex, and the
-   `verifier` and `judgement` on Claude. With one engine provisioned, every
+   `verifier`, `judgement` and `description` on Claude. With one engine provisioned, every
    role runs on it. A role on
    Claude defaults to `claude-opus-5-5`; on Codex the `proposer` defaults to
    `gpt-6.2-astra` and every other role to `gpt-6.1-sol`. Default effort is `high` for
    `exploration` and `brief-planner`, and `medium` for `proposer`,
-   `verifier` and `judgement`. `judgement` is the role
+   `verifier`, `judgement` and `description`. `judgement` is the role
    of the run driver's one-shot judgement stages
-   (`workflows/judgements/`). An effort is one of the Ensemble
+   (`workflows/judgements/`), and `description` the role of the stage
+   that writes the description Minos keeps of a repository. An effort is one of the Ensemble
    runtime's levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
    or `max`. The verifier's routing also carries
    the leg that merges findings one fix would resolve before they are

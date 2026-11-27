@@ -163,12 +163,13 @@ type Routing struct {
 	Proposer     RoleRouting            `toml:"proposer"`
 	Verifier     RoleRouting            `toml:"verifier"`
 	Judgement    RoleRouting            `toml:"judgement"`
+	Description  RoleRouting            `toml:"description"`
 	BriefPlanner RoleRouting            `toml:"brief-planner"`
 	Concerns     map[string]RoleRouting `toml:"concerns"`
 }
 
 // routingRoles names the workflow roles in the order they are listed.
-var routingRoles = []string{"exploration", "proposer", "verifier", "brief-planner", "judgement"}
+var routingRoles = []string{"exploration", "proposer", "verifier", "brief-planner", "judgement", "description"}
 
 // role is the named role's routing field, for reading and replacing it.
 func (r *Routing) role(name string) *RoleRouting {
@@ -183,6 +184,8 @@ func (r *Routing) role(name string) *RoleRouting {
 		return &r.BriefPlanner
 	case "judgement":
 		return &r.Judgement
+	case "description":
+		return &r.Description
 	}
 	panic("unknown routing role " + name)
 }

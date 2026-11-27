@@ -8,6 +8,7 @@
 
 import { projectGuidanceFromInput, projectGuidanceSection } from "../orientation-guidance.mjs";
 import { pullRequestFromInput, pullRequestSection } from "../pull-request-description.mjs";
+import { repositoryDescriptionFromInput, repositoryDescriptionSection } from "../repository-description.mjs";
 import { REVIEWED_CHANGE_SLOTS } from "../review-prompts.mjs";
 
 // The three outcomes, in the order a prompt lists them.
@@ -45,7 +46,8 @@ export const stage = {
 
   // {
   //   target, head            the commits bounding the pull request
-  //   guidance, pullRequest   as a review's input builder attaches them
+  //   guidance, pullRequest,  as a review's input builder attaches them
+  //   repositoryDescription
   //   earlier                 { outcome: "none" }, or { head, outcome,
   //                           ancestor, changedPaths } with the outcome
   //                           clean or attention
@@ -77,6 +79,7 @@ export const stage = {
       target: input.target,
       head: input.head,
       "project-documents": projectGuidanceSection(projectGuidanceFromInput(input)),
+      "repository-description": repositoryDescriptionSection(repositoryDescriptionFromInput(input)),
       "pull-request": pullRequestSection(pullRequestFromInput(input)),
       earlier: JSON.stringify(earlierForPrompt(input.earlier), null, 2),
       outcomes: OUTCOMES.filter((outcome) => input.outcomes.includes(outcome)).map((outcome) => `- \`${outcome}\``).join("\n"),
