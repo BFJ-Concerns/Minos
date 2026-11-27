@@ -46,17 +46,15 @@ archive_name="${archive_stem}.tar.zst"
 # promoted by the far side's reading of end-of-file.
 archive_transport_open "run-$$" 30
 
-# The timing record is presentation-class telemetry: assemble it from the
-# run's event log and Ensemble records before the tarball is built, so the
-# archive carries it too, but never let its failure fail the archive. The
-# closing memory snapshot lands first so the record can carry the run's
-# stall and thrash deltas against the baseline run-body took at start.
-"$script_dir/memory-telemetry" \
-  "$run_dir/memory-final.json" || true
+# Only the live run can sample its cgroup. A sweep recovering or retrying
+# an archive runs in the service's cgroup.
 timing_record="$run_dir/timing-record.json"
 summary=""
 salvaged=false
 if [ "$label" = "$run_name" ]; then salvaged=true; fi
+if [ "$salvaged" = false ] && [ -n "${MINOS_RUN_STARTED_AT:-}" ]; then
+  "$script_dir/memory-telemetry" "$run_dir/memory-final.json" || true
+fi
 retry=false
 if [ "$salvaged" = false ] && [ -z "${MINOS_RUN_STARTED_AT:-}" ] && [ -r "$timing_record" ]; then
   # A terminal archive retry keeps the summary from the live invocation.
@@ -73,7 +71,7 @@ fi
 if [ -z "$summary" ]; then
   summary="$("$script_dir/archive-run-summary" "$run_dir" "$salvaged")" || summary=""
 fi
-if ! "$script_dir/collect-timings" "$run_dir" "$timing_record" &&
+if ! MINOS_TIMINGS_SALVAGED="$salvaged" "$script_dir/collect-timings" "$run_dir" "$timing_record" &&
    [ "$retry" = false ]; then
   # A failed collection must not deliver an earlier invocation's sidecar.
   rm -f -- "$timing_record"

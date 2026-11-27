@@ -311,6 +311,10 @@ type RepositoryKnobs struct {
 		// to the filing destination, each marked as such. Off, they are
 		// published and filed nowhere.
 		FileSafeguardRequests bool `toml:"file-safeguard-requests"`
+		// Depth is the review depth preset: how wide exploration plans and
+		// how deeply the specialists read, one of reviewDepths. It never
+		// bounds the findings a review returns.
+		Depth string `toml:"depth"`
 	} `toml:"review"`
 	PushInspection struct {
 		// Outcomes are the push-inspection outcomes a run may choose
@@ -495,17 +499,13 @@ func loadServiceConfigFile(root, path string) (ServiceConfig, error) {
 // root and resolves its knobs against the service-level values, so a
 // returned RepoConfig carries the values a run will honour.
 func LoadRepoConfigs(cfg ServiceConfig) ([]RepoConfig, error) {
-	dir := filepath.Join(cfg.Root, "repos")
-	entries, err := os.ReadDir(dir)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("read repository enrolment: %w", err)
+	paths, err := repoConfigPaths(cfg.Root)
+	if err != nil {
+		return nil, err
 	}
-	repos := make([]RepoConfig, 0, len(entries))
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".toml") {
-			continue
-		}
-		repo, err := loadRepoConfigFile(cfg, filepath.Join(dir, entry.Name()))
+	repos := make([]RepoConfig, 0, len(paths))
+	for _, path := range paths {
+		repo, err := loadRepoConfigFile(cfg, path)
 		if err != nil {
 			return nil, err
 		}
@@ -514,32 +514,54 @@ func LoadRepoConfigs(cfg ServiceConfig) ([]RepoConfig, error) {
 	return repos, nil
 }
 
-// loadRepoConfigFile loads one repository file, an enrolled one or a
-// candidate about to replace it, and resolves its knobs against cfg.
+func repoConfigPaths(root string) ([]string, error) {
+	dir := filepath.Join(root, "repos")
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read repository enrolment: %w", err)
+	}
+	var paths []string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".toml") {
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return paths, nil
+}
+
+// loadRepoConfigFile reads an enrolled repository and resolves its knobs against cfg.
 func loadRepoConfigFile(cfg ServiceConfig, path string) (RepoConfig, error) {
-	var repo RepoConfig
-	metadata, err := decodeStrictTOML(path, &repo)
+	repo, metadata, err := readRepoConfigFile(path)
 	if err != nil {
-		return RepoConfig{}, err
-	}
-	repo.Path = path
-	if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
-		return RepoConfig{}, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
-	}
-	// The file's own values are validated before resolution fills a
-	// default, so an incomplete table is an error, never a silent default.
-	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
 		return RepoConfig{}, err
 	}
 	repo.RepositoryKnobs = resolveRepositoryKnobs(cfg.Repositories, repo.RepositoryKnobs, metadata.IsDefined)
 	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
 		return RepoConfig{}, err
 	}
-	if err := validateRouting(path, repo.Routing); err != nil {
-		return RepoConfig{}, err
-	}
 	repo.Routing = resolveRouting(cfg.Routing, repo.Routing, metadata.IsDefined)
 	return repo, nil
+}
+
+// readRepoConfigFile validates the values the file owns before applying
+// inherited values and defaults.
+func readRepoConfigFile(path string) (RepoConfig, toml.MetaData, error) {
+	var repo RepoConfig
+	metadata, err := decodeStrictTOML(path, &repo)
+	if err != nil {
+		return RepoConfig{}, metadata, err
+	}
+	repo.Path = path
+	if repo.Forge == "" || repo.Owner == "" || repo.Repo == "" || repo.Adaptation.RunBody == "" {
+		return RepoConfig{}, metadata, fmt.Errorf("%s: forge, owner, repo and adaptation.run-body are required", path)
+	}
+	if err := validateRepositoryKnobs(path, repo.RepositoryKnobs); err != nil {
+		return RepoConfig{}, metadata, err
+	}
+	if err := validateRouting(path, repo.Routing); err != nil {
+		return RepoConfig{}, metadata, err
+	}
+	return repo, metadata, nil
 }
 
 // resolveRepositoryKnobs layers a repository file's knobs over the service
@@ -561,6 +583,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	if defined("review", "file-safeguard-requests") {
 		knobs.Review.FileSafeguardRequests = own.Review.FileSafeguardRequests
 	}
+	if defined("review", "depth") {
+		knobs.Review.Depth = own.Review.Depth
+	}
 	if defined("push-inspection", "outcomes") {
 		knobs.PushInspection.Outcomes = own.PushInspection.Outcomes
 	}
@@ -575,6 +600,9 @@ func resolveRepositoryKnobs(defaults, own RepositoryKnobs, defined func(...strin
 	}
 	if knobs.Review.Threshold == "" {
 		knobs.Review.Threshold = "High"
+	}
+	if knobs.Review.Depth == "" {
+		knobs.Review.Depth = defaultReviewDepth
 	}
 	if knobs.PushInspection.Outcomes == nil {
 		knobs.PushInspection.Outcomes = slices.Clone(pushInspectionOutcomes)
@@ -600,6 +628,9 @@ func validateRepositoryKnobs(where string, knobs RepositoryKnobs) error {
 	}
 	if knobs.Review.Threshold != "" && !validReviewThreshold(knobs.Review.Threshold) {
 		return fmt.Errorf("%s: review.threshold must be Critical, High, Medium or Low", where)
+	}
+	if knobs.Review.Depth != "" && !slices.Contains(reviewDepths, knobs.Review.Depth) {
+		return fmt.Errorf("%s: review.depth must be one of %s", where, strings.Join(reviewDepths, ", "))
 	}
 	if knobs.PushInspection.Outcomes != nil {
 		if err := validPushInspectionOutcomes(knobs.PushInspection.Outcomes); err != nil {
@@ -698,6 +729,14 @@ func validPushInspectionOutcomes(outcomes []string) error {
 	}
 	return nil
 }
+
+const defaultReviewDepth = "standard"
+
+// reviewDepths are the review depth presets, from the narrowest plan and
+// shallowest reading to the widest and deepest. Each names the passages
+// workflows/review-briefs/exploration-depth/ and specialist-depth/ hold for
+// it, and workflows/prompt-settings.mjs lists the same values.
+var reviewDepths = []string{"light", "standard", "thorough"}
 
 func validReviewThreshold(value string) bool {
 	switch value {

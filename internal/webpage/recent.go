@@ -77,10 +77,12 @@ func describeArchivedRun(run shell.RecentRun) archivedRunView {
 	}
 	if json.Unmarshal(run.Timings, &summary) == nil && json.Unmarshal(summary.Summary, &details) == nil {
 		view.Outcome = archivedOutcome(details.Outcome)
-		view.Skipped = details.Skipped
-		view.SkipReason = details.SkipReason
 		view.Failure = archiveFailureLabel(details.Failure)
-		view.Report = details.Report
+		if !details.Salvaged {
+			view.Skipped = details.Skipped
+			view.SkipReason = details.SkipReason
+			view.Report = details.Report
+		}
 		if seconds := details.DurationSeconds; seconds != nil && *seconds >= 0 && *seconds <= int64((1<<63-1)/time.Second) {
 			view.Duration = duration(time.Duration(*seconds) * time.Second)
 		}

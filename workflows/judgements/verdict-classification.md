@@ -2,7 +2,7 @@
 
 A review of this pull request has finished. Reviewers read the change and proposed findings, and verifiers checked each one against the code. The findings below are the ones that were confirmed. You decide what becomes of each: whether it blocks the pull request, is filed as advice on a defect, or takes a class that makes it neither. That settles the verdict, which is `request-changes` when any finding blocks and `clean` when none does.
 
-Your answer is acted on as you give it, by a script that makes no judgement of its own. A finding you mark as gating is posted on the pull request in a review that requests changes, and the author is expected to deal with it before merging. A finding that neither gates nor takes a class is advisory: it is filed where the project keeps such advice and is never posted on the pull request, which carries only what blocks it. A finding you give a class neither blocks the pull request nor is filed as that advice. What else becomes of it follows from its class, as the classes below say, and this run's record keeps it whichever it takes.
+Your answer is acted on as you give it, by a script that makes no judgement of its own. A finding you mark as gating is posted in the review that requests changes, and the author is expected to deal with it before merging. That review carries only what blocks the pull request. A finding that neither gates nor takes a class is advisory: it is filed where the project keeps such advice and is never part of the review. Where the project keeps it may be a file, an issue or a comment on this pull request, and such a comment is filing all the same: it stands apart from the review and blocks nothing. A finding you give a class neither blocks the pull request nor is filed as that advice. What else becomes of it follows from its class, as the classes below say, and this run's record keeps it whichever it takes.
 
 {{reviewed-change}}
 
@@ -66,7 +66,7 @@ This is what the project's filing destination already holds, where this run coul
 {{filed-entries}}
 </filed-entries>
 
-A finding below the threshold that restates an entry there takes `already-raised` too, since the advice is already on file. A finding at or above the threshold never takes the class on that ground: a filed entry is not something the author has been shown on this pull request. When the block says the entries could not be read, classify without them.
+A finding below the threshold that restates an entry there takes `already-raised` too, since the advice is already on file. A finding at or above the threshold never takes the class on that ground: a filed entry has never been put to the author as something that blocks this pull request. When the block says the entries could not be read, classify without them.
 
 ## A finding graded too low
 

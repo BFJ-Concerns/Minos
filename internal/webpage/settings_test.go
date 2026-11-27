@@ -56,19 +56,7 @@ run-body = "/opt/minos/run-body/run-body"
 			t.Fatal(err)
 		}
 	}
-	read := Readings{
-		Configuration: func() (shell.ServiceConfig, []shell.RepoConfig, error) {
-			cfg, err := shell.LoadServiceConfig(root)
-			if err != nil {
-				return shell.ServiceConfig{}, nil, err
-			}
-			repos, err := shell.LoadRepoConfigs(cfg)
-			return cfg, repos, err
-		},
-		ServiceSettings:    func() ([]shell.SettingState, error) { return shell.ServiceSettings(root) },
-		RepositorySettings: func(repo shell.RepoConfig) ([]shell.SettingState, error) { return shell.RepositorySettings(root, repo) },
-	}
-	return root, read, SettingsAt(root)
+	return root, readingsFrom(shell.NewStateReader(root)), SettingsAt(root)
 }
 
 // followed is where a redirect sends the browser, as the browser asks for it:
@@ -276,7 +264,7 @@ func TestChoiceSetEmptyOpensOnTheDefaultItResolvesTo(t *testing.T) {
 	site, _ := testSite(t, read, write)
 	session := signIn(t, site)
 	row := settingRowHTML(t, visit(site, "/repositories/forgejo/bfj/estate/settings", session).Body.String(), "review.threshold")
-	if !strings.Contains(row, "<option selected>High</option>") || strings.Contains(row, "<option selected>Critical</option>") {
+	if !strings.Contains(row, "<option selected>High</option>") || !strings.Contains(row, `<span class="muted">High</span></summary>`) {
 		t.Errorf("an empty threshold, which the loader resolves to High, does not open on High:\n%s", row)
 	}
 }
@@ -299,15 +287,146 @@ func TestSwitchSetOnThePageIsWrittenAsABoolean(t *testing.T) {
 }
 
 func TestOneEngineConcurrencySetFromTheDefaultsIsSaved(t *testing.T) {
+	for _, engine := range []string{"claude", "codex"} {
+		t.Run(engine, func(t *testing.T) {
+			root, read, write := configurationRoot(t)
+			site, _ := testSite(t, read, write)
+			session := signIn(t, site)
+			response := submit(site, "/settings", url.Values{"setting": {"ensemble.concurrency-" + engine}, "value": {"3"}, "action": {"set"}}, session)
+			if response.Code != http.StatusSeeOther {
+				t.Fatalf("setting %s's concurrency alone answered %d:\n%s", engine, response.Code, response.Body)
+			}
+			cfg, err := shell.LoadServiceConfig(root)
+			wantClaude, wantCodex := 2, 3
+			if engine == "claude" {
+				wantClaude, wantCodex = 3, 2
+			}
+			if err != nil || cfg.Ensemble.ConcurrencyClaude != wantClaude || cfg.Ensemble.ConcurrencyCodex != wantCodex {
+				t.Fatalf("concurrency = %d/%d (%v), want %d/%d", cfg.Ensemble.ConcurrencyClaude, cfg.Ensemble.ConcurrencyCodex, err, wantClaude, wantCodex)
+			}
+		})
+	}
+}
+
+func TestSettingsPagesCanRepairInvalidConfiguration(t *testing.T) {
 	root, read, write := configurationRoot(t)
 	site, _ := testSite(t, read, write)
 	session := signIn(t, site)
-	response := submit(site, "/settings", url.Values{"setting": {"ensemble.concurrency-claude"}, "value": {"3"}, "action": {"set"}}, session)
-	if response.Code != http.StatusSeeOther {
-		t.Fatalf("setting Claude's concurrency alone answered %d:\n%s", response.Code, response.Body)
+	servicePath := filepath.Join(root, "service.toml")
+	repoPath := filepath.Join(root, "repos", "estate.toml")
+
+	// Another file with unreadable enrolment must not block either editor.
+	if err := os.WriteFile(filepath.Join(root, "repos", "broken.toml"), []byte("["), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	cfg, err := shell.LoadServiceConfig(root)
-	if err != nil || cfg.Ensemble.ConcurrencyClaude != 3 || cfg.Ensemble.ConcurrencyCodex != 2 {
-		t.Fatalf("concurrency = %d/%d (%v), want 3 and the default 2", cfg.Ensemble.ConcurrencyClaude, cfg.Ensemble.ConcurrencyCodex, err)
+	if err := os.WriteFile(repoPath, []byte(strings.Replace(fileText(t, repoPath), `threshold = "Low"`, `threshold = "Hgh"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	const page = "/repositories/forgejo/bfj/estate/settings"
+	service := visit(site, "/settings", session)
+	assertMonitoringPage(t, service.Code, service.Body.String(), `href="`+page+`"`, "broken.toml")
+	repository := visit(site, page, session)
+	assertMonitoringPage(t, repository.Code, repository.Body.String(), "Invalid value", "Hgh")
+	saved := submit(site, page, url.Values{"setting": {"review.threshold"}, "value": {"High"}}, session)
+	if saved.Code != http.StatusSeeOther || !strings.Contains(fileText(t, repoPath), `threshold = "High"`) {
+		t.Fatalf("correcting the repository answered %d:\n%s", saved.Code, saved.Body)
+	}
+
+	if err := os.Remove(filepath.Join(root, "repos", "broken.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(servicePath, []byte(fileText(t, servicePath)+"max-concurrent = -1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service = visit(site, "/settings", session)
+	assertMonitoringPage(t, service.Code, service.Body.String(), `value="-1"`)
+	saved = submit(site, "/settings", url.Values{"setting": {"runs.max-concurrent"}, "value": {"0"}}, session)
+	if saved.Code != http.StatusSeeOther {
+		t.Fatalf("correcting the service answered %d:\n%s", saved.Code, saved.Body)
+	}
+	service = visit(site, followed(saved), session)
+	row := settingRowHTML(t, service.Body.String(), "runs.max-concurrent")
+	if !strings.Contains(row, `<span class="muted">1</span></summary>`) || !strings.Contains(row, `value="0"`) {
+		t.Errorf("effective and written concurrency values were not both shown:\n%s", row)
+	}
+}
+
+func TestSettingsRefusalHidesAPreviousSaveNotice(t *testing.T) {
+	_, read, write := configurationRoot(t)
+	site, _ := testSite(t, read, write)
+	session := signIn(t, site)
+	saved := submit(site, "/settings", url.Values{"setting": {"runs.max-concurrent"}, "value": {"2"}}, session)
+	get := visit(site, followed(saved), session)
+	assertMonitoringPage(t, get.Code, get.Body.String(), "Saved runs.max-concurrent", `action="/settings#setting-runs.max-concurrent"`)
+	refused := submit(site, followed(saved), url.Values{"setting": {"runs.max-concurrent"}, "value": {"-1"}}, session)
+	if refused.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(refused.Body.String(), "runs max-concurrent must be between") ||
+		strings.Contains(refused.Body.String(), "Saved runs.max-concurrent") {
+		t.Fatalf("refusal answered %d:\n%s", refused.Code, refused.Body)
+	}
+}
+
+func TestSettingsPagesCanRepairTwoInvalidFilesInEitherOrder(t *testing.T) {
+	for _, first := range []string{"service", "repository"} {
+		t.Run(first+" first", func(t *testing.T) {
+			root, read, write := configurationRoot(t)
+			site, _ := testSite(t, read, write)
+			session := signIn(t, site)
+			servicePath := filepath.Join(root, "service.toml")
+			repoPath := filepath.Join(root, "repos", "estate.toml")
+			badService := fileText(t, servicePath) + "max-concurrent = -1\n"
+			badRepo := strings.Replace(fileText(t, repoPath), `threshold = "Low"`, `threshold = "Hgh"`, 1)
+			for path, content := range map[string]string{servicePath: badService, repoPath: badRepo} {
+				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			const repoPage = "/repositories/forgejo/bfj/estate/settings"
+			// Each edited file still has to pass its own validation.
+			bad := submit(site, "/settings", url.Values{"setting": {"runs.max-concurrent"}, "value": {"-2"}}, session)
+			if bad.Code != http.StatusUnprocessableEntity || !strings.Contains(refusalText(bad.Body.String()), "runs max-concurrent") || fileText(t, servicePath) != badService {
+				t.Fatalf("invalid service edit answered %d or reached the file", bad.Code)
+			}
+			bad = submit(site, repoPage, url.Values{"setting": {"adaptation.run-body"}, "value": {""}}, session)
+			if bad.Code != http.StatusUnprocessableEntity || !strings.Contains(refusalText(bad.Body.String()), "adaptation.run-body are required") || fileText(t, repoPath) != badRepo {
+				t.Fatalf("invalid repository edit answered %d or reached the file", bad.Code)
+			}
+
+			repairService := func() {
+				response := submit(site, "/settings", url.Values{"setting": {"runs.max-concurrent"}, "value": {"2"}}, session)
+				if response.Code != http.StatusSeeOther {
+					t.Errorf("correcting service.toml answered %d: %s", response.Code, refusalText(response.Body.String()))
+				}
+			}
+			repairRepo := func() {
+				response := submit(site, repoPage, url.Values{"setting": {"review.threshold"}, "value": {"High"}}, session)
+				if response.Code != http.StatusSeeOther {
+					t.Errorf("correcting repository settings answered %d: %s", response.Code, refusalText(response.Body.String()))
+				}
+			}
+			if first == "service" {
+				repairService()
+				repairRepo()
+			} else {
+				repairRepo()
+				repairService()
+			}
+			cfg, err := shell.LoadServiceConfig(root)
+			if err != nil || cfg.MaxConcurrentRuns() != 2 {
+				t.Fatalf("service did not load the correction: %v", err)
+			}
+			repos, err := shell.LoadRepoConfigs(cfg)
+			if err != nil || len(repos) != 1 || repos[0].Review.Threshold != "High" {
+				t.Fatalf("repository did not load the correction: %v", err)
+			}
+		})
+	}
+}
+
+// refusalText extracts the operator-facing loader error from the page.
+func refusalText(body string) string {
+	_, message, _ := strings.Cut(body, `role="alert">`)
+	message, _, _ = strings.Cut(message, "</p>")
+	return message
 }

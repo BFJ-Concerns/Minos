@@ -160,10 +160,8 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		progressDecision = continuationProgressUnknown
 	}
 	if adopted {
-		for _, stale := range []string{"lead-complete", "memory-pressure"} {
-			if err := os.Remove(filepath.Join(runDir, stale)); err != nil && !os.IsNotExist(err) {
-				return SpawnResult{}, fmt.Errorf("clear predecessor %s before continuation: %w", stale, err)
-			}
+		if err := clearPredecessorAttempt(runDir); err != nil {
+			return SpawnResult{}, err
 		}
 	}
 	if !adopted {
@@ -242,6 +240,7 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		"MINOS_RUN_BODY":                   repo.Adaptation.RunBody,
 		"MINOS_REVIEW_THRESHOLD":           repo.Review.Threshold,
 		"MINOS_FILE_SAFEGUARD_REQUESTS":    strconv.FormatBool(repo.Review.FileSafeguardRequests),
+		"MINOS_REVIEW_DEPTH":               repo.Review.Depth,
 		"MINOS_COMMIT_AUTHOR_NAME":         cfg.Service.CommitAuthorName,
 		"MINOS_COMMIT_AUTHOR_EMAIL":        cfg.Service.CommitAuthorEmail,
 		"MINOS_STATUS_CONTEXT":             cfg.Service.StatusContext,
@@ -307,6 +306,27 @@ func SpawnRun(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Fac
 		return SpawnResult{Outcome: SpawnContinued}, nil
 	}
 	return SpawnResult{Outcome: SpawnStarted}, nil
+}
+
+// A continuation reuses work in progress. Its terminal evidence and memory
+// readings belong to the new invocation.
+func clearPredecessorAttempt(runDir string) error {
+	root, err := os.OpenRoot(runDir)
+	if err != nil {
+		return fmt.Errorf("open continuation workspace: %w", err)
+	}
+	defer root.Close()
+	for _, stale := range []string{
+		"lead-complete", appliedStatusFile, "memory-pressure",
+		"report.md", "failure.log", "failures.log", "judgements/push-inspection.json",
+		"memory-baseline.json", "memory-final.json", "memory-peak",
+		archivePendingFile, "timing-record.json",
+	} {
+		if err := root.Remove(stale); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clear predecessor %s before continuation: %w", stale, err)
+		}
+	}
+	return nil
 }
 
 func nonNilSources(sources []GuidanceSource) []GuidanceSource {

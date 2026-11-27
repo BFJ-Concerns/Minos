@@ -253,6 +253,19 @@ test("a repository that files safeguard requests gets each classed one filed as 
   }
 });
 
+test("a safeguard request filed with no blocker beside it leaves the round clean", (t) => {
+  const { result, plan, readJson } = compose(t, {
+    main: verdict([finding("a", { severity: "High", title: "Guard the retry" })]),
+    mainDecision: decision("clean", [{ key: "a", gating: false, class: "speculative-hardening" }]),
+    environment: { MINOS_FILE_SAFEGUARD_REQUESTS: "true" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(plan.posts, []);
+  assert.deepEqual(readJson(plan.triage.entries).map(({ kind, title }) => ({ kind, title })),
+    [{ kind: "safeguard-request", title: "Guard the retry" }]);
+  assert.equal(plan.triage.safeguardRequests, 1);
+});
+
 test("a safeguard-request setting that is neither true nor false stops the composer with nothing written", (t) => {
   const { result, scratch } = compose(t, {
     main: verdict([finding("a")]),

@@ -19,7 +19,7 @@
 {{end}}
 <h3>Dispatched workers</h3>
 {{if not $.Status.TimingsConfigured}}
-<p class="empty">Worker timings are disabled.</p>
+<p class="empty">Live worker timings are disabled.</p>
 {{else if .TimingsError}}
 <p class="refusal">Worker timing records could not be read.</p>
 {{else if .Workers}}

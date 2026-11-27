@@ -26,7 +26,7 @@ func TestFindingHistoryReadsGitHubPullRequestsInEveryState(t *testing.T) {
 		CredentialFile: state.credentialPath, WebhookSecretFile: "/etc/minos/webhook.secret",
 	}
 	writeMonitoringConfig(t, cfg)
-	reader := newStateReader(cfg.Root)
+	reader := NewStateReader(cfg.Root)
 	repo := RepoConfig{Forge: "github", Owner: "acme", Repo: "widgets"}
 	first, more, err := reader.FindingHistoryPullRequests(t.Context(), repo, 1)
 	if err != nil || len(first) != 10 || !more || first[0].Number != 11 {
@@ -44,7 +44,7 @@ func TestFindingHistoryReadsGitHubPullRequestsInEveryState(t *testing.T) {
 
 func TestFindingHistoryReadsNewForgejoEnrolment(t *testing.T) {
 	cfg := statusTestConfig(t)
-	reader := newStateReader(cfg.Root)
+	reader := NewStateReader(cfg.Root)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		want := "/api/v1/repos/acme/widgets/pulls?state=all&sort=newest&limit=10&page=2"
 		if r.Method != http.MethodGet || r.URL.RequestURI() != want || r.Header.Get("Authorization") != "token fixture-token" {

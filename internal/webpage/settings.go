@@ -40,6 +40,8 @@ type settingsView struct {
 	// service's page, which lists Repositories instead.
 	Repository   *shell.RepoConfig
 	Repositories []shell.RepoConfig
+	Unavailable  []string
+	Path         string
 	Saved        string
 	Groups       []settingsGroup
 }
@@ -60,15 +62,16 @@ type settingRow struct {
 	Fallback string
 	// Field is what the form's field holds: the value that applies, or what
 	// was just submitted and refused.
-	Field   string
-	Refused bool
+	Field         string
+	InvalidChoice string
+	Refused       bool
 }
 
 // Anchor is the row's fragment, which a saved change returns to.
 func (row settingRow) Anchor() string { return "setting-" + row.Name() }
 
 func showServiceSettings(r *http.Request, read Readings) (any, error) {
-	_, repos, err := read.Configuration()
+	repos, unavailable, err := read.SettingsRepositories()
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +79,7 @@ func showServiceSettings(r *http.Request, read Readings) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	view := settingsView{Repositories: repos}
+	view := settingsView{Repositories: repos, Unavailable: unavailable}
 	for _, state := range states {
 		row := settingRow{SettingState: state, Own: state.Level == shell.SetServiceWide, Fallback: "the default"}
 		switch {
@@ -158,20 +161,23 @@ func (view *settingsView) add(title string, row settingRow) {
 // finish fills each form's field, with what was just submitted where a
 // change was refused, and says what a change just saved did.
 func (view settingsView) finish(r *http.Request) settingsView {
+	view.Path = r.URL.EscapedPath()
 	submitted := r.PostFormValue("setting")
 	for g := range view.Groups {
 		for s := range view.Groups[g].Settings {
 			row := &view.Groups[g].Settings[s]
 			row.Field = row.Typed
-			if len(row.Choices) > 0 && !slices.Contains(row.Choices, row.Field) {
-				// Unset, or set to a value the loader resolves to the
-				// default (an empty threshold is High): the choice that
-				// applies is the default, so the select opens on it and
-				// saving it unchanged writes what is in force.
+			if row.UsesDefault() && len(row.Choices) > 0 {
 				row.Field = row.Default
 			}
 			if submitted != "" && row.Name() == submitted {
 				row.Field, row.Refused = r.PostFormValue("value"), true
+			}
+			if len(row.Choices) > 0 && !slices.Contains(row.Choices, row.Field) {
+				row.InvalidChoice = fmt.Sprintf("Invalid value %q. Choose a replacement.", row.Field)
+			}
+			if r.Method != http.MethodGet {
+				continue
 			}
 			if name := r.URL.Query().Get("saved"); name == row.Name() {
 				view.Saved = fmt.Sprintf("Saved %s in %s. %s", name, row.File, takesEffect(row.Setting))
@@ -214,7 +220,7 @@ func changeRepositorySetting(r *http.Request, read Readings, write Settings) (st
 	if err != nil {
 		return "", err
 	}
-	return changeSetting(r, states, r.URL.Path, func(state shell.SettingState, value any) error {
+	return changeSetting(r, states, r.URL.EscapedPath(), func(state shell.SettingState, value any) error {
 		return write.Repository(repo, state.Key, value)
 	})
 }
@@ -250,7 +256,7 @@ func changeSetting(r *http.Request, states []shell.SettingState, page string, wr
 
 // enrolledRepository is the enrolled repository the request's path names.
 func enrolledRepository(r *http.Request, read Readings) (shell.RepoConfig, error) {
-	_, repos, err := read.Configuration()
+	repos, _, err := read.SettingsRepositories()
 	if err != nil {
 		return shell.RepoConfig{}, err
 	}

@@ -54,7 +54,7 @@ func ReceiveCommand(ctx context.Context, args []string, surfaces ...Surface) err
 // independently. The pages and the status routes use the same StateReader.
 func receiverRoutes(ctx context.Context, cfg ServiceConfig, surfaces ...Surface) *http.ServeMux {
 	mux := http.NewServeMux()
-	state := newStateReader(cfg.Root)
+	state := NewStateReader(cfg.Root)
 	mux.HandleFunc("POST /hooks/", func(w http.ResponseWriter, r *http.Request) {
 		deliveryConfig, err := LoadServiceConfig(cfg.Root)
 		if err != nil {
