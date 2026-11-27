@@ -20,6 +20,9 @@ const execFileAsync = promisify(execFile);
 
 export const FILING_KINDS = ["file", "issue", "pull-request-comment", "none"];
 
+// Entry kinds nobody confirmed.
+const UNVERIFIED_KINDS = ["out-of-scope-observation", "unsettled-finding"];
+
 // One entry is filed once: a repeat run over a later head that raises the
 // same defect at the same site finds its marker already at the destination
 // and skips it, so a destination never fills with one defect per push. The
@@ -292,9 +295,11 @@ export async function deliverFilingEntries({
 }) {
   if (!validFilingDestination(destination)) throw new Error("filing destination is malformed");
   const kind = destination.kind;
-  // An observation is about code outside the change, so it never goes onto
-  // the pull request, whatever the destination.
-  if (kind === "pull-request-comment") entries = entries.filter((entry) => entry.kind !== "out-of-scope-observation");
+  // Unverified material, an out-of-scope observation or an unsettled
+  // finding, never reaches the pull request: for a pull-request-comment
+  // destination it stays in the run record.
+  if (kind === "pull-request-comment")
+    entries = entries.filter((entry) => !UNVERIFIED_KINDS.includes(entry.kind));
   if (entries.length === 0) return { kind, outcome: "nothing-to-file", written: 0 };
   if (kind === "none") return { kind, outcome: "discarded", written: 0 };
   if ([source && source.owner, source && source.repo, source && source.pr, source && source.date]

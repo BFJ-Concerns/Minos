@@ -175,6 +175,16 @@ const observation = {
   line: 12,
   explanation: "A nil map write outside the reviewed range.",
 };
+const unsettled = {
+  kind: "unsettled-finding",
+  title: "Stream lookup treats a 404 as empty",
+  severity: "Medium",
+  path: "pkg/stream.go",
+  line: 30,
+  explanation: "A missing stream reads as one with no messages.",
+  outsideFact: "The service answers 404 for a stream with no messages.",
+  wouldSettle: "The service's API documentation.",
+};
 const misconfiguration = {
   kind: "review-brief-misconfiguration",
   brief: ".review/security.md",
@@ -603,7 +613,7 @@ if (args.join(" ") === "forge snapshot") {
 
   await t.test("first delivery posts both marked renderings once and repeat delivery posts nothing", async (t) => {
     const f = await fixture(t);
-    const first = await f.deliver([advisory, misconfiguration, advisory, observation], true);
+    const first = await f.deliver([advisory, misconfiguration, advisory, observation, unsettled], true);
     assert.equal(first.outcome, "filed");
     assert.equal(first.kind, "pull-request-comment");
     assert.equal(first.written, 2);
@@ -617,7 +627,7 @@ if (args.join(" ") === "forge snapshot") {
       assert.ok(calls[0].body.includes(`${issueLogEntry(entry, attribution)} ${filingMarker(entry, reviewedRepository)}`));
       assert.equal(calls[0].body.split(filingMarker(entry, reviewedRepository)).length - 1, 1);
     }
-    assert.doesNotMatch(calls[0].body, /Unrelated nil deref|all.clear/i);
+    assert.doesNotMatch(calls[0].body, /Unrelated nil deref|Stream lookup|all.clear/i, "unverified material stays off the pull request");
     const again = await f.deliver();
     assert.equal(again.outcome, "nothing-to-file");
     assert.equal(again.written, 0);
