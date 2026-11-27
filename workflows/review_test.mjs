@@ -767,9 +767,12 @@ test("the lifecycle sizes the review to what the author changed since the head M
 
 test("the lifecycle keeps an answered finding from being raised again", () => {
   assert.match(lifecycle, /`"\$MINOS_BIN" forge threads` prints every inline\s+thread Minos opened on this pull request/);
-  assert.match(lifecycle, /\(`already-raised`\)[\s\S]*restates a finding in a thread `forge threads` printed,\s+and the code it cites has not changed[\s\S]*a finding at or above the\s+threshold never takes it on that ground/);
+  assert.match(lifecycle, /Ask the forge on every run,\s+whatever step 2's `earlier` printed/);
+  assert.match(lifecycle, /"\$MINOS_BIN" forge snapshot` prints every review with its `body`:\s+Minos's are the ones whose `user` is the snapshot's\s+`authenticated_user`/);
+  assert.match(lifecycle, /\(`already-raised`\)[\s\S]*restates an earlier finding, in a thread or in a review\s+body alike, and the code it cites has not changed[\s\S]*a finding at or above\s+the threshold never takes it on that ground/);
   assert.match(lifecycle, /\(`speculative-hardening`\)[\s\S]*such a finding is published and filed nowhere/);
-  assert.match(lifecycle, /One is settled when the author resolved its\s+thread or answered it with a rejection, or when you read the code it\s+cites at this head and the defect it describes is no longer there/);
+  assert.match(lifecycle, /One is settled when the pull request's author answered it, or when you\s+read the code it cites at this head and the defect it describes is no\s+longer there/);
+  assert.match(lifecycle, /A finding in a review\s+body has no thread to resolve or reply in, so the author answers it in\s+a comment on the pull request that rejects it[\s\S]*?`"\$MINOS_BIN" forge comments` prints the pull request's comments/);
   assert.match(lifecycle, /"gating": false, "class": "already-raised"/);
 });
 
@@ -782,7 +785,10 @@ test("the lifecycle prescribes the verdict-classification seam", () => {
   assert.match(lifecycle, /The one upward exception\s+is judging a below-threshold finding's severity an undergrade that\s+genuinely belongs at or above the threshold, named as such/);
   assert.match(lifecycle, /`\$MINOS_RUN_DIR\/verdict-decision\.json` \(`verdict-decision-brief\.json`\s+for the brief verdict\)[\s\S]*?"kind": "minos-verdict-decision-v1"[\s\S]*?"basis":[\s\S]*?"gating": false, "class": "declared-out-of-scope"[\s\S]*?"gating": true, "undergrade":/);
   assert.match(lifecycle, /Validate each decision before any forge write[\s\S]*?verdict-classification\.mjs" \\\s+--validate VERDICT_FILE DECISION_FILE "\$MINOS_REVIEW_THRESHOLD"/);
-  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition, a blank `defect` label or one whose findings gate or are\s+classed differently — is corrected and re-validated rather than worked\s+around; nothing has touched the forge yet/);
+  assert.match(lifecycle, /fails validation — a missing basis, an unnamed\s+declassification, an unnamed undergrade, a finding with no\s+disposition, a `class` on a gating finding, a blank `defect` label or\s+one whose findings gate or are classed differently — is corrected and\s+re-validated rather than worked around; nothing has touched the forge\s+yet/);
+  assert.match(lifecycle, /A gating disposition carries no `class` at all/);
+  assert.match(lifecycle, /a brief finding at the same line and under the same title\s+as a main-review finding even where you gave them no label, because\s+the composer merges the two as one finding/);
+  assert.match(lifecycle, /It refuses, with nothing written,\s+a label whose findings gate differently across the two decisions, and\s+an advisory defect the two decisions class differently/);
   assert.match(lifecycle, /The run's overall verdict is\s+`request-changes` when either validated decision is; `clean` only when\s+every validated decision is clean/);
   assert.match(lifecycle, /take the same `defect`\s+label on their dispositions[\s\S]*?they gate\s+alike — so a below-threshold restatement of a gating defect gates too,\s+and carries an `undergrade`[\s\S]*?publishes a labelled defect once, at its highest-severity\s+site[\s\S]*?Distinct\s+defects at one\s+line take no label/);
 });

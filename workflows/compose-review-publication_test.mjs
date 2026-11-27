@@ -399,6 +399,65 @@ test("a labelled brief twin merged by site and title still pulls its labelled si
   assert.match(comments[0].body, /Also at: `internal\/review\.go:90`\./);
 });
 
+for (const className of ["declared-out-of-scope", "speculative-hardening", "already-raised"])
+  for (const classedGroup of ["main", "brief"])
+    test(`a gating finding is posted though its ${classedGroup} twin was classed ${className}`, (t) => {
+      const classed = { gating: false, class: className };
+      const gating = { gating: true };
+      const { result, plan, readJson } = compose(t, {
+        main: verdict([finding("a", { title: "Lost update" })]),
+        mainDecision: decision(classedGroup === "main" ? "clean" : "request-changes", [{ key: "a", ...(classedGroup === "main" ? classed : gating) }]),
+        brief: verdict([finding("b", { title: "Lost update", source: "Money safety" })]),
+        briefDecision: decision(classedGroup === "brief" ? "clean" : "request-changes", [{ key: "b", ...(classedGroup === "brief" ? classed : gating) }]),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(posts(plan), [{ review: "main", verdict: "request-changes" }]);
+      const comments = readJson(plan.posts[0].comments);
+      assert.equal(comments.length, 1);
+      assert.match(comments[0].body, /Blocking · High: Lost update/);
+      assert.equal(plan.alreadyRaised, 0);
+      assert.equal(plan.speculativeHardening, 0);
+      assert.deepEqual(readJson(plan.triage.entries), []);
+    });
+
+test("advisory twins sharing a class keep it", (t) => {
+  const { result, plan, readJson } = compose(t, {
+    main: verdict([finding("a", { title: "Lost update" })]),
+    mainDecision: decision("clean", [{ key: "a", gating: false, class: "already-raised" }]),
+    brief: verdict([finding("b", { title: "Lost update", source: "Money safety" })]),
+    briefDecision: decision("clean", [{ key: "b", gating: false, class: "already-raised" }]),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(plan.posts, []);
+  assert.equal(plan.alreadyRaised, 1);
+  assert.deepEqual(readJson(plan.triage.entries), []);
+});
+
+for (const [mainClass, briefClass] of [["already-raised", undefined], [undefined, "speculative-hardening"], ["already-raised", "declared-out-of-scope"]])
+  test(`advisory twins classed ${mainClass ?? "unclassed"} and ${briefClass ?? "unclassed"} stop the composer with nothing written`, (t) => {
+    const { result, scratch } = compose(t, {
+      main: verdict([finding("a", { severity: "Medium", title: "Lost update" })]),
+      mainDecision: decision("clean", [{ key: "a", gating: false, ...(mainClass ? { class: mainClass } : {}) }]),
+      brief: verdict([finding("b", { severity: "Medium", title: "Lost update", source: "Money safety" })]),
+      briefDecision: decision("clean", [{ key: "b", gating: false, ...(briefClass ? { class: briefClass } : {}) }]),
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(`classed differently across the decisions: ${mainClass ?? "unclassed"} and ${briefClass ?? "unclassed"}`));
+    assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
+  });
+
+test("a label whose findings are classed differently across the two decisions stops the composer with nothing written", (t) => {
+  const { result, scratch } = compose(t, {
+    main: verdict([finding("a", { severity: "Medium", title: "MinInt64 overflows Split", line: 83 })]),
+    mainDecision: decision("clean", [{ key: "a", gating: false, class: "already-raised", defect: "minint-overflow" }]),
+    brief: verdict([finding("b", { severity: "Low", title: "Split rejects the minimum value", line: 75, source: "Conservation" })]),
+    briefDecision: decision("clean", [{ key: "b", gating: false, defect: "minint-overflow" }]),
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /labelled one defect are classed differently across the decisions: minint-overflow/);
+  assert.equal(existsSync(join(scratch, "out", "publication-plan.json")), false);
+});
+
 test("site-and-title twins carrying two different labels stop the composer", (t) => {
   const { result } = compose(t, {
     main: verdict([finding("a", { title: "Lost update" })]),

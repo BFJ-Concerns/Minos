@@ -32,6 +32,9 @@ func ReceiveCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	defer func() { _ = listener.Close() }()
+	if err := checkRunsSliceMemory(ctx, cfg); err != nil {
+		log.Printf("warning: %v", err)
+	}
 	if err := publishReceiverHeartbeat(cfg, "listening", "", listener.Addr().String()); err != nil {
 		log.Printf("publish receiver heartbeat: %v", err)
 	}

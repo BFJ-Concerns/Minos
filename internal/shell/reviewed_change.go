@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/BFJ-Concerns/Minos/internal/forge"
@@ -44,8 +47,65 @@ type earlierHead struct {
 const earlierHeadWalk = 20
 
 func reviewedChangePath(cfg ServiceConfig, forgeName string, guard forge.Guard) string {
-	name := fmt.Sprintf("%s-%s-%d.json", forgeName, url.PathEscape(guard.Repository.Owner+"/"+guard.Repository.Name), guard.PullRequest)
+	name := reviewedChangePrefix(forgeName, guard.Repository) + strconv.FormatInt(guard.PullRequest, 10) + ".json"
 	return filepath.Join(cfg.Runs.Dir, ".reviewed", name)
+}
+
+func reviewedChangePrefix(forgeName string, repo forge.Repository) string {
+	return forgeName + "-" + url.PathEscape(repo.Owner+"/"+repo.Name) + "-"
+}
+
+func removeReviewedChange(cfg ServiceConfig, forgeName string, guard forge.Guard) error {
+	err := os.Remove(reviewedChangePath(cfg, forgeName, guard))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove reviewed change: %w", err)
+	}
+	return nil
+}
+
+func readReviewedChangeEntries(cfg ServiceConfig) []fs.DirEntry {
+	entries, err := os.ReadDir(filepath.Join(cfg.Runs.Dir, ".reviewed"))
+	if err != nil && !os.IsNotExist(err) {
+		log.Printf("read reviewed changes: %v", err)
+	}
+	return entries
+}
+
+// A pull request missing from the open list is a candidate for cleanup.
+// Confirm closure on the forge so pagination or a concurrent reopen does
+// not spend the record.
+func pruneClosedReviewedChanges(ctx context.Context, cfg ServiceConfig, repo RepoConfig, entries []fs.DirEntry, open []Facts) {
+	openNumbers := make(map[string]bool, len(open))
+	for _, facts := range open {
+		openNumbers[facts.PR] = true
+	}
+	repository := forge.Repository{Owner: repo.Owner, Name: repo.Repo}
+	prefix := reviewedChangePrefix(repo.Forge, repository)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		pr := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), prefix), ".json")
+		if openNumbers[pr] {
+			continue
+		}
+		number, err := strconv.ParseInt(pr, 10, 64)
+		if err != nil || number <= 0 || strconv.FormatInt(number, 10) != pr {
+			continue
+		}
+		facts := Facts{Forge: repo.Forge, Owner: repo.Owner, Repo: repo.Repo, PR: pr}
+		snapshot, err := currentSnapshot(ctx, cfg, facts)
+		if err == nil && pullRequestClosed(snapshot) {
+			err = removeReviewedChange(cfg, repo.Forge, forge.Guard{Repository: repository, PullRequest: number})
+		}
+		if err != nil {
+			log.Printf("%s#%s: prune reviewed change: %v", facts.RepoSlug(), pr, err)
+		}
+	}
+}
+
+func pullRequestClosed(snapshot forge.Snapshot) bool {
+	return snapshot.State == "closed" || snapshot.State == "merged" || snapshot.Merged
 }
 
 // changeFingerprints maps every path the pull request's own diff touches at

@@ -1,0 +1,7 @@
+[Unit]
+Description=Watch for a Minos reconciliation sweep request
+Documentation=file:/opt/minos/docs/deployment.md
+
+[Path]
+PathExists=%t/minos-sweep.request
+Unit=minos-sweep.service

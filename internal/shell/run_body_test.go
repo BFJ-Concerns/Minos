@@ -858,7 +858,7 @@ func TestRunBodyStopsFailedAndStoppedLeads(t *testing.T) {
 			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.peak]\n987654321")
 			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "[memory.pressure]")
 			assertContainsFile(t, filepath.Join(fixture.runDir, "cgroup-death-evidence"), "some avg10=0.01")
-			assertFileEmpty(t, fixture.failureLog)
+			assertFailureLine(t, fixture.failureLog, "stage=lead-supervision", "lead ended without a verdict (last state: "+state+", driver exit: 75)")
 			assertContainsFile(t, fixture.record+".calls", "stop abcdef12")
 			fixture.assertProcessesStopped(t)
 		})
@@ -1237,6 +1237,8 @@ func TestRunBodyArchiveFailureIsNonFatalAndReportedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run-body failed because archiving failed: %v\n%s", err, out)
 	}
+	assertRegularFile(t, filepath.Join(fixture.runDir, archivePendingFile))
+
 	if got := strings.Count(string(out), "minos: could not archive run evidence"); got != 1 {
 		t.Fatalf("archive diagnostics = %d, want one\n%s", got, out)
 	}
@@ -1886,11 +1888,14 @@ func TestRunBodyCodexTerminalState(t *testing.T) {
 		t.Run(test.state, func(t *testing.T) {
 			fixture := newCodexRunBodyFixture(t)
 			fixture.trace = true
+			if err := os.Remove(filepath.Join(fixture.runDir, appliedStatusFile)); err != nil {
+				t.Fatal(err)
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			output, err := fixture.executeContext(ctx, map[string]string{"MINOS_TEST_CODEX_EXIT": test.code})
-			if err != nil {
-				t.Fatalf("run-body failed handling terminal Codex: %v\n%s", err, output)
+			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 75 {
+				t.Fatalf("run-body exit = %v after terminal Codex, want 75\n%s", err, output)
 			}
 			// Shell tracing observes the supervisor's actual state assignment, not
 			// a state invented by the CLI fixture. Terminal state alone retains the
@@ -1903,6 +1908,7 @@ func TestRunBodyCodexTerminalState(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(fixture.runDir, "lead-complete")); !os.IsNotExist(err) {
 				t.Fatalf("terminal CLI exit manufactured completion: %v", err)
 			}
+			assertFailureLine(t, fixture.failureLog, "stage=lead-supervision", "lead ended without a verdict (last state: "+test.state+", driver exit: 75)")
 			fixture.assertProcessesStopped(t)
 		})
 	}

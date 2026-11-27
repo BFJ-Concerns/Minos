@@ -195,13 +195,18 @@ write, matching the target rule above.)
    that head and this one. The comparison is of file content, not of
    commits, so a rebase, a squash, a reworded history or a merge of the
    target reads as no change wherever it left the pull request's files as
-   they were. An `outcome` of `none` means this is the first head Minos
-   reviews. A null `changed_paths` means the two could not be compared;
-   treat the whole pull request as changed.
+   they were. An `outcome` of `none` means no earlier finished head was
+   found, and nothing more. That is the answer on a pull request's first
+   head, and equally on one Minos has reviewed whose earlier heads it can
+   no longer name: its record of them may be gone, and a rebase takes the
+   commits Minos finished on out of the pull request. Whether Minos has
+   reviewed this pull request before is a different question, which steps
+   5 and 7 put to the forge. A null `changed_paths` means the two could
+   not be compared; treat the whole pull request as changed.
 
-   **What the author changed** is what the choice is made over. On a first
-   head it is the whole pull request, `$MINOS_TARGET_SHA...HEAD`. On a
-   later head it is the `changed_paths`, and nothing else needs reading:
+   **What the author changed** is what the choice is made over. With no
+   earlier head it is the whole pull request, `$MINOS_TARGET_SHA...HEAD`.
+   With one it is the `changed_paths`, and nothing else needs reading:
    whatever arrived by merging the target in or rebasing onto it is not
    the author's. When the earlier head is an ancestor and nothing was
    merged in from the target since, read those files as `EARLIER..HEAD`.
@@ -232,21 +237,20 @@ write, matching the target rule above.)
      nothing merged in from the target since, and whose new commits can be
      judged as a change in their own right. The review runs over
      `EARLIER...HEAD` alone.
-   - **Full.** Everything else: a first head with something to judge, a
-     later head whose changes cannot be isolated as a range, or an
-     increment that reworks so much of the pull request that reading it
-     alone would mislead.
+   - **Full.** Everything else: a head with no earlier head and something
+     to judge, a later head whose changes cannot be isolated as a range,
+     or an increment that reworks so much of the pull request that
+     reading it alone would mislead.
 
    The choice sets `REVIEW_BASE` for the rest of the run: the earlier head
    for an increment, `$MINOS_TARGET_SHA` for a full review. Only the input
    builders in steps 3 and 4 take it. Every `minos forge` command keeps the
    run's real head and target, whatever was reviewed.
 
-   **No review** skips steps 3 to 6 and ends at step 7 with the outcome
-   this head has earned. On a first head that is clean. On a later head it
-   is the earlier head's outcome carried forward: clean stays clean, and
-   an earlier request for changes stands unless every blocking finding
-   behind it is settled, as step 7 defines.
+   **No review** skips steps 3 to 6 and ends at step 7 with no verdict of
+   its own. The outcome is then clean unless an earlier blocking finding
+   is still unsettled, which step 7 decides from the forge whatever
+   `outcome` was printed here.
 3. Run every Ensemble workflow in this lifecycle from this accountable
    lead session. Never delegate its invocation to an agent or subagent;
    responsibility for orchestration remains with the lead.
@@ -500,17 +504,30 @@ write, matching the target rule above.)
    set `"$MINOS_BIN" forge status HEAD TARGET incomplete`, remove the in-flight
    marker with `"$MINOS_BIN" forge marker HEAD TARGET in-flight remove`, write the
    non-clean terminal marker, and stop.
-5. Classify the completed review. First, on a pull request Minos has
-   reviewed before, learn what the author already has from Minos and how
-   they answered it. `"$MINOS_BIN" forge threads` prints every inline
+5. Classify the completed review. First learn what the author already
+   has from Minos on this pull request. Ask the forge on every run,
+   whatever step 2's `earlier` printed: the pull request has earlier
+   findings exactly when one of the two reads below shows one. An earlier
+   finding sits in one of two places.
+
+   Most are inline threads. `"$MINOS_BIN" forge threads` prints every inline
    thread Minos opened on this pull request: its `path` and `line`,
    whether it is `resolved`, and its `comments` oldest first. The first
    comment is Minos's finding, and its `commit_id` is the head it was
-   raised on; any later comment is a reply. On any pull request, also
-   read what the filing destination already carries for this repository,
-   where a clone this run already has holds it;
-   `$MINOS_FILING_DESTINATION` names the destination. Classify without
-   whatever these do not readily give.
+   raised on; any later comment is a reply.
+
+   A finding the forge could not anchor inline has no thread. It sits in
+   the body of the review that raised it, under "Findings that could not
+   be anchored inline", beneath a heading that gives its path and line.
+   `"$MINOS_BIN" forge snapshot` prints every review with its `body`:
+   Minos's are the ones whose `user` is the snapshot's
+   `authenticated_user`, and a review's `commit_id` is the head its
+   findings were raised on.
+
+   On any pull request, also read what the filing destination already
+   carries for this repository, where a clone this run already has holds
+   it; `$MINOS_FILING_DESTINATION` names the destination. Classify
+   without whatever these do not readily give.
 
    For each complete verdict the run
    holds — the main review's, and the brief stage's where it ran — read
@@ -547,13 +564,13 @@ write, matching the target rule above.)
    fail, behaviour the change adds and leaves unproved, and a document
    the code contradicts are real gaps, not hardening. The third objects
    to saying it again (`already-raised`), and takes a finding at any
-   severity: it restates a finding in a thread `forge threads` printed,
-   and the code it cites has not changed since the head that thread was
-   raised on. Such a finding is published and filed nowhere, because the
-   author has it; whether it still blocks is step 7's question. A
-   below-threshold finding that restates an entry the filing destination
-   already carries takes the class too; a finding at or above the
-   threshold never takes it on that ground. A verifier's reason may say
+   severity: it restates an earlier finding, in a thread or in a review
+   body alike, and the code it cites has not changed since the head that
+   finding was raised on. Such a finding is published and filed nowhere,
+   because the author has it; whether it still blocks is step 7's
+   question. A below-threshold finding that restates an entry the filing
+   destination already carries takes the class too; a finding at or above
+   the threshold never takes it on that ground. A verifier's reason may say
    that the delivered behaviour is correct and the finding is a gap; that
    is advice for your gating call, never grounds for a class. The one upward exception
    is judging a below-threshold finding's severity an undergrade that
@@ -588,13 +605,26 @@ write, matching the target rule above.)
    label on their dispositions: a short slug you choose for this run,
    compared exactly. Each still gets its own disposition, and they gate
    alike — so a below-threshold restatement of a gating defect gates too,
-   and carries an `undergrade` naming the sibling it restates. The
-   composer publishes a labelled defect once, at its highest-severity
-   site, naming the other sites and the groups that also raised it, and
-   refuses a label whose findings gate differently across the two
-   decisions; an advisory one is filed as one entry. Distinct defects at one
-   line take no label — the composer cross-references them. The label is
-   this run's vocabulary only; a later run over a new head names its own.
+   and carries an `undergrade` naming the sibling it restates. They are
+   classed alike too: left advisory, they all carry the same `class` or
+   all carry none. A gating disposition carries no `class` at all. A
+   class is the reason a finding does not gate, so where one finding of a
+   defect gates, the others gate with it and none of them keeps a class.
+
+   One defect gets one call across the two decisions as much as within
+   one, so write the brief decision with the main decision beside it.
+   That covers a brief finding at the same line and under the same title
+   as a main-review finding even where you gave them no label, because
+   the composer merges the two as one finding.
+
+   The composer publishes a labelled defect once, at its highest-severity
+   site, naming the other sites and the groups that also raised it; an
+   advisory one is filed as one entry. It refuses, with nothing written,
+   a label whose findings gate differently across the two decisions, and
+   an advisory defect the two decisions class differently. Distinct
+   defects at one line take no label — the composer cross-references
+   them. The label is this run's vocabulary only; a later run over a new
+   head names its own.
 
    Validate each decision before any forge write:
 
@@ -605,9 +635,10 @@ write, matching the target rule above.)
 
    A decision that fails validation — a missing basis, an unnamed
    declassification, an unnamed undergrade, a finding with no
-   disposition, a blank `defect` label or one whose findings gate or are
-   classed differently — is corrected and re-validated rather than worked
-   around; nothing has touched the forge yet. The run's overall verdict is
+   disposition, a `class` on a gating finding, a blank `defect` label or
+   one whose findings gate or are classed differently — is corrected and
+   re-validated rather than worked around; nothing has touched the forge
+   yet. The run's overall verdict is
    `request-changes` when either validated decision is; `clean` only when
    every validated decision is clean.
 6. Publish. Reviews talk about the code, never about Minos or its
@@ -637,9 +668,10 @@ write, matching the target rule above.)
      "$MINOS_RUN_DIR/review-brief-result.json" "$MINOS_RUN_DIR/verdict-decision-brief.json"
    ```
 
-   It re-validates every decision against its verdict and writes nothing
-   from one that fails; a failure here is a decision to correct at step
-   5, never a payload to hand-assemble. Its plan,
+   It re-validates every decision against its verdict, checks that the
+   two decisions call each defect alike, and writes nothing when either
+   check fails; a failure here is a decision to correct at step 5, never
+   a payload to hand-assemble. Its plan,
    `$MINOS_RUN_DIR/publication/publication-plan.json`, lists the posts in
    order — each with its `verdict` argument and the body and comments
    files it wrote — and names the triage entries file under `triage`.
@@ -705,22 +737,33 @@ write, matching the target rule above.)
 7. End at the earned terminal outcome. On a pull request Minos has
    reviewed before, this run's verdict is not the whole of it: a blocking
    finding from an earlier Minos review still counts until it is settled.
-   `"$MINOS_BIN" forge threads` lists them: the threads whose first
-   comment opens `**Blocking`. A blocking finding the forge could not
-   anchor inline has no thread: it sits in the body of its review, under
-   "Findings that could not be anchored inline", and
-   `"$MINOS_BIN" forge snapshot` prints each review's body.
-   One is settled when the author resolved its
-   thread or answered it with a rejection, or when you read the code it
-   cites at this head and the defect it describes is no longer there.
-   That the cited lines changed is not enough, and neither is this run's
-   review not raising it again: read the finding, read the code, and
-   decide. It is a minute's reading for each, not a review.
-   The outcome is request-changes when this run's verdict is,
-   or when an earlier blocking finding is not settled; otherwise it is
-   clean. A run that reaches request-changes only through earlier
-   findings posts nothing new for them: the review that raised them is
-   still on the pull request.
+   Earlier findings sit where step 5 says, in threads and in review
+   bodies, and a run that skipped step 5 reads both now. The blocking
+   ones open `**Blocking`: a thread's first comment, or an entry under
+   "Findings that could not be anchored inline".
+
+   One is settled when the pull request's author answered it, or when you
+   read the code it cites at this head and the defect it describes is no
+   longer there. The author answers a finding in a thread by resolving
+   the thread or replying in it with a rejection. A finding in a review
+   body has no thread to resolve or reply in, so the author answers it in
+   a comment on the pull request that rejects it and says which finding
+   it means, by its title or its path and line.
+   `"$MINOS_BIN" forge comments` prints the pull request's comments
+   oldest first, each with its `user` and `body`; the author is the
+   snapshot's `author`. Read them only when a review body holds a
+   blocking finding.
+
+   Only the reading shows that a defect is gone. That the cited lines
+   changed is not enough, and neither is this run's review not raising it
+   again: read the finding, read the code, and decide. It is a minute's
+   reading for each, not a review.
+
+   The outcome is request-changes when this run's verdict is, or when an
+   earlier blocking finding is not settled; otherwise it is clean. A run
+   that reaches request-changes only through earlier findings posts
+   nothing new for them: the review that raised them is still on the
+   pull request.
 
    **Clean:** post no review of your own (a pull-request-comment filing
    destination may already have posted the advisory entries as one

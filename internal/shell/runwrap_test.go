@@ -42,6 +42,8 @@ func TestRunCommandRemovesOwnedRunDirectory(t *testing.T) {
 	}{
 		{name: "body succeeds", body: "#!/bin/sh\nexit 0\n"},
 		{name: "body fails", body: "#!/bin/sh\nexit 1\n", wantError: true},
+		{name: "archive refused", body: "#!/bin/sh\necho archive-label >.archive-pending\n", wantKept: true},
+		{name: "archive marker cannot be written", body: "#!/bin/sh\nexit 74\n", wantError: true, wantKept: true},
 		{name: "continuation with handoff", body: "#!/bin/sh\nexit 0\n", marker: "continuation\n", handoff: true, wantKept: true},
 		{name: "continuation without handoff", body: "#!/bin/sh\nexit 0\n", marker: "continuation\n"},
 		{name: "clean with handoff", body: "#!/bin/sh\nexit 0\n", marker: "clean\n", handoff: true},

@@ -114,19 +114,19 @@ func reconcilePullRequest(ctx context.Context, cfg ServiceConfig, repo RepoConfi
 }
 
 func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo RepoConfig, facts Facts, adapter *forge.Adapter, snapshot forge.Snapshot) (ReconcileResult, error) {
-	if snapshot.State != "open" || snapshot.Merged {
-		return ReconcileResult{Decision: ReconcileNothing}, nil
-	}
-	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
-	if snapshot.Draft {
-		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "draft", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
-	}
 	guard := forge.Guard{
 		Repository:  forge.Repository{Owner: facts.Owner, Name: facts.Repo},
 		PullRequest: snapshot.PullRequest,
 		HeadSHA:     snapshot.HeadSHA,
 		TargetSHA:   snapshot.TargetSHA,
 	}
+	if pullRequestClosed(snapshot) {
+		return ReconcileResult{Decision: ReconcileNothing}, removeReviewedChange(cfg, facts.Forge, guard)
+	}
+	if snapshot.State != "open" {
+		return ReconcileResult{Decision: ReconcileNothing}, nil
+	}
+	eligibility := assessPullRequestAdmission(cfg, repo, snapshot)
 	for _, terminal := range []struct {
 		role   string
 		marker *forge.Marker
@@ -141,6 +141,9 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		if result := adapter.RemoveMarker(ctx, guard, *terminal.marker); result.Outcome != forge.WriteApplied {
 			return ReconcileResult{}, fmt.Errorf("remove stale %s marker: %s: %s", terminal.role, result.Outcome, result.Reason)
 		}
+	}
+	if snapshot.Draft {
+		return ReconcileResult{Decision: ReconcileNothing, DeferralReason: "draft", DeferralReasons: eligibility.reasons, TerminalOutcome: eligibility.terminalOutcome}, nil
 	}
 	facts.HeadSHA = snapshot.HeadSHA
 	facts.BaseSHA = snapshot.TargetSHA
