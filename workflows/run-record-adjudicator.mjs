@@ -1,6 +1,9 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { CONFIRMED, NO_VERDICT, UNSETTLED, findingDisposition } from "./finding-disposition.mjs";
+import { SEVERITIES } from "./review-contracts.mjs";
+
 const LOW_COMBINED_CONFIDENCE = 70;
 
 async function jsonAt(path) {
@@ -38,6 +41,7 @@ function emptyVerdict(envelope, reason) {
     incomplete: [reason],
     infrastructureFailure: null,
     confirmedFindings: [],
+    unsettledFindings: [],
     operatorAttention: [],
     ran: [],
     skipped: [],
@@ -171,7 +175,7 @@ function validProposedFinding(finding) {
     typeof finding.id === "string" && finding.id !== "" &&
     typeof finding.source === "string" && finding.source !== "" &&
     typeof finding.title === "string" && finding.title !== "" &&
-    ["Critical", "High", "Medium", "Low"].includes(finding.severity) &&
+    SEVERITIES.includes(finding.severity) &&
     Number.isInteger(finding.confidence) && finding.confidence >= 0 && finding.confidence <= 100 &&
     typeof finding.path === "string" && finding.path !== "" &&
     Number.isInteger(finding.line) && finding.line >= 1 &&
@@ -180,6 +184,20 @@ function validProposedFinding(finding) {
     typeof finding.explanation === "string" && finding.explanation !== "" &&
     typeof finding.proposingLabel === "string" && finding.proposingLabel !== "" &&
     typeof finding.verifyLabel === "string" && finding.verifyLabel !== ""
+  );
+}
+
+function validUncheckedFinding(finding) {
+  return Boolean(
+    finding &&
+    typeof finding.id === "string" && finding.id !== "" &&
+    typeof finding.source === "string" && finding.source !== "" &&
+    typeof finding.title === "string" && finding.title !== "" &&
+    SEVERITIES.includes(finding.severity) &&
+    typeof finding.path === "string" && finding.path !== "" &&
+    Number.isInteger(finding.line) && finding.line >= 1 &&
+    typeof finding.explanation === "string" && finding.explanation !== "" &&
+    typeof finding.proposingLabel === "string" && finding.proposingLabel !== ""
   );
 }
 
@@ -316,29 +334,28 @@ export async function adjudicate({ envelope, recordDir }) {
     const verifyEvidence = evidenceByLabel.get(proposed.verifyLabel);
     const rawVerifier = proposed.rawVerifier;
     let verification = "verifier returned no result";
-    let verdict = "no-verdict";
+    let verdict = NO_VERDICT;
     if (!reviewEvidence || reviewEvidence.status !== "complete" || !verifyEvidence || verifyEvidence.status !== "complete") {
       const failed = [reviewEvidence, verifyEvidence].filter((entry) => !entry || entry.status !== "complete");
       verification = `leg completion did not confirm ${failed.map((entry) => entry ? entry.label : "a referenced leg").join(" and ")}`;
-    } else if (
-      !rawVerifier ||
-      (rawVerifier.verdict !== "upheld" && rawVerifier.verdict !== "refuted") ||
-      !Number.isInteger(rawVerifier.confidence) ||
-      typeof rawVerifier.reason !== "string"
-    ) {
-      verification = "verifier returned no valid result";
     } else {
-      verdict = rawVerifier.verdict === "upheld" ? "confirmed" : "refuted";
-      verification = rawVerifier.reason;
+      verdict = findingDisposition(rawVerifier);
+      verification = verdict === NO_VERDICT ? "verifier returned no valid result" : rawVerifier.reason;
     }
-    if (verdict === "no-verdict")
+    if (verdict === NO_VERDICT)
       incomplete.push(`finding "${proposed.title || proposed.id || index + 1}" has no complete verdict (${verification})`);
     const combinedConfidence = Number.isInteger(proposed.confidence) && rawVerifier && Number.isInteger(rawVerifier.confidence)
       ? Math.round((proposed.confidence + rawVerifier.confidence) / 2)
       : null;
     const { proposingLabel, verifyLabel, rawVerifier: omittedVerifier, ...finding } = proposed;
+    // A finding left standing carries the verifier's own grade; the
+    // proposer's is kept beside it for the record.
+    const graded = verdict === CONFIRMED || verdict === UNSETTLED
+      ? { severity: rawVerifier.severity, proposedSeverity: proposed.severity }
+      : {};
     return {
       ...finding,
+      ...graded,
       proposingModel: reviewEvidence && {
         pinnedModel: reviewEvidence.pinnedModel,
         resolvedModel: reviewEvidence.resolvedModel,
@@ -351,9 +368,21 @@ export async function adjudicate({ envelope, recordDir }) {
       combinedConfidence,
       verdict,
       verification,
-      operatorAttention: verdict === "confirmed" && combinedConfidence < LOW_COMBINED_CONFIDENCE,
+      ...(verdict === UNSETTLED ? { outsideFact: rawVerifier.outsideFact, wouldSettle: rawVerifier.wouldSettle } : {}),
+      operatorAttention: verdict === CONFIRMED && combinedConfidence < LOW_COMBINED_CONFIDENCE,
     };
   }).filter(Boolean);
+
+  // A finding a verifier raised in the last round of verification was
+  // never verified: like any finding without a verdict, it leaves the run
+  // incomplete.
+  if (envelope.uncheckedFindings !== undefined) {
+    if (!Array.isArray(envelope.uncheckedFindings)) incomplete.push("envelope uncheckedFindings is unreadable");
+    else envelope.uncheckedFindings.forEach((finding, index) => {
+      if (!validUncheckedFinding(finding)) incomplete.push(`unchecked finding ${index + 1} is malformed`);
+      else incomplete.push(`finding "${finding.title}" has no complete verdict (raised in the last round of verification and never verified)`);
+    });
+  }
 
   const briefs = Array.isArray(envelope.briefs) ? envelope.briefs : [];
   const { ran, skipped } = dispositionsFrom(briefs, incomplete);
@@ -362,7 +391,8 @@ export async function adjudicate({ envelope, recordDir }) {
     incomplete,
   );
   const complete = incomplete.length === 0;
-  const confirmedFindings = complete ? adjudicated.filter((finding) => finding.verdict === "confirmed") : [];
+  const confirmedFindings = complete ? adjudicated.filter((finding) => finding.verdict === CONFIRMED) : [];
+  const unsettledFindings = complete ? adjudicated.filter((finding) => finding.verdict === UNSETTLED) : [];
   const operatorAttention = confirmedFindings
     .filter((finding) => finding.operatorAttention)
     .map((finding) => ({
@@ -379,6 +409,7 @@ export async function adjudicate({ envelope, recordDir }) {
     incomplete,
     infrastructureFailure: null,
     confirmedFindings,
+    unsettledFindings,
     operatorAttention,
     ran,
     skipped,

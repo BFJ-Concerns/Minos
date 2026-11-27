@@ -9,18 +9,21 @@ test("both engines provisioned and nothing configured is the cross-family pairin
   assert.deepEqual(Object.keys(routing), ROLES);
   assert.deepEqual(routing, {
     exploration: { engine: "codex", model: "gpt-6.1-sol", effort: "high" },
-    proposer: { engine: "codex", model: "gpt-6.1-sol", effort: "high" },
+    proposer: { engine: "codex", model: "gpt-6.2-astra", effort: "medium" },
     verifier: { engine: "claude", model: "claude-opus-5-5", effort: "medium" },
     "engagement-gate": { engine: "codex", model: "gpt-6.1-sol", effort: "medium" },
     "brief-planner": { engine: "codex", model: "gpt-6.1-sol", effort: "high" },
   });
 });
 
-test("one provisioned engine routes every role to it, on that engine's default model", () => {
+test("one provisioned engine routes every role to it, on the model each role takes there", () => {
   for (const engine of ENGINES) {
     const routing = resolveRouting({ provisioned: [engine] });
     assert.ok(ROLES.every((role) => routing[role].engine === engine), engine);
-    assert.ok(ROLES.every((role) => routing[role].model === (engine === "claude" ? "claude-opus-5-5" : "gpt-6.1-sol")));
+    for (const role of ROLES) {
+      const expected = engine === "claude" ? "claude-opus-5-5" : role === "proposer" ? "gpt-6.2-astra" : "gpt-6.1-sol";
+      assert.equal(routing[role].model, expected, `${engine} ${role}`);
+    }
   }
 });
 
@@ -30,7 +33,7 @@ test("a configured role overrides only the fields it sets, the model defaulting 
     configured: { verifier: { engine: "codex", effort: "low" }, proposer: { engine: "claude", model: "claude-sonnet-5-5" } },
   });
   assert.deepEqual(routing.verifier, { engine: "codex", model: "gpt-6.1-sol", effort: "low" });
-  assert.deepEqual(routing.proposer, { engine: "claude", model: "claude-sonnet-5-5", effort: "high" });
+  assert.deepEqual(routing.proposer, { engine: "claude", model: "claude-sonnet-5-5", effort: "medium" });
   assert.deepEqual(routing.exploration, { engine: "codex", model: "gpt-6.1-sol", effort: "high" });
 });
 

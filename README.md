@@ -33,9 +33,12 @@ author, and the forge's own CI remains the build evidence.
    commits, so a rebase, squash or reworded history that leaves the files
    as they were is not reviewed again; rewritten history that also changes
    files gets a full review.
-4. An exploration pass plans the review and hands each part of the diff that
-   needs attention to correctness, security, testing or design specialists.
-   A verifier checks every finding they propose. The repository's own
+4. An exploration pass plans the review and dispatches the specialists the
+   change gives work to: logic, failure handling, security, tests, and fit
+   with the project. Findings that one fix would resolve are merged, and a
+   verifier checks each of the rest against the code and finds it confirmed,
+   refuted or unsettled. Only a confirmed finding is treated as a defect; an
+   unsettled one is filed as an open question. The repository's own
    [review briefs](#review-briefs) then run the same way.
 5. The lead classifies the verdict, guided by the repository's severity
    threshold, and publishes the result. A finding Minos has already posted
@@ -52,9 +55,10 @@ If any reviewer fails to finish, or any finding lacks a complete verifier
 verdict, the run is incomplete: Minos publishes no review and sets no clean
 status, and the sweep picks the pull request up again on a later pass.
 
-With both engines available, the proposing and planning roles run on Codex
-(`gpt-6.1-sol`) and the verifier on Claude (`claude-opus-5-5`), so every finding
-is checked by the family that did not propose it. `[routing]` in
+With both engines available, specialists propose findings on Codex
+(`gpt-6.2-astra`) and the verifier checks them on Claude (`claude-opus-5-5`),
+both at medium effort, so every finding is checked by the family that did
+not propose it; the planning roles run on Codex (`gpt-6.1-sol`). `[routing]` in
 `service.toml` moves any role to another engine, model or effort, and a box
 with only one engine runs every role on it.
 

@@ -28,7 +28,7 @@ const envelope = {
     explanation: "The changed branch accepts an invalid state.",
     proposingLabel: "specialist-1",
     verifyLabel: "verify-1",
-    rawVerifier: { verdict: "upheld", confidence: 94, reason: "The invalid state is reachable." },
+    rawVerifier: { verdict: "confirmed", confidence: 94, severity: "High", reason: "The invalid state is reachable.", outsideFact: "", wouldSettle: "" },
   }],
   briefs: [{ brief: ".review/errors.md", title: "Error handling", status: "run", reason: "applicable concern reviewed" }],
   misconfigurations: [],
@@ -158,7 +158,7 @@ test("a refuted verifier completes the run without publishing a finding", async 
     ...envelope,
     proposedFindings: [{
       ...envelope.proposedFindings[0],
-      rawVerifier: { verdict: "refuted", confidence: 94, reason: "The invalid state is not reachable." },
+      rawVerifier: { verdict: "refuted", confidence: 94, severity: "None", reason: "The invalid state is not reachable.", outsideFact: "", wouldSettle: "" },
     }],
   };
   const adapterVerdict = await adjudicate({ envelope: refutedEnvelope, recordDir: fixtureArchiveDir });
@@ -166,6 +166,111 @@ test("a refuted verifier completes the run without publishing a finding", async 
   assert.equal(adapterVerdict.status, "complete");
   assert.equal(adapterVerdict.complete, true);
   assert.deepEqual(adapterVerdict.confirmedFindings, []);
+  assert.deepEqual(adapterVerdict.unsettledFindings, []);
+});
+
+test("a confirmed finding carries the verifier's severity, keeping the proposer's beside it", async (t) => {
+  const regraded = {
+    ...envelope,
+    proposedFindings: [{
+      ...envelope.proposedFindings[0],
+      rawVerifier: { ...envelope.proposedFindings[0].rawVerifier, severity: "Low" },
+    }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: regraded, recordDir: fixtureArchive(t) });
+
+  assert.equal(adapterVerdict.status, "complete");
+  assert.equal(adapterVerdict.confirmedFindings[0].severity, "Low");
+  assert.equal(adapterVerdict.confirmedFindings[0].proposedSeverity, "High");
+});
+
+test("an unsettled finding completes the run and is never among the confirmed findings", async (t) => {
+  const unsettled = {
+    ...envelope,
+    proposedFindings: [{
+      ...envelope.proposedFindings[0],
+      rawVerifier: {
+        verdict: "unsettled", confidence: 40, severity: "Medium", reason: "The client's retry depends on the server.",
+        outsideFact: "", wouldSettle: "Run the retry against a stalled server.",
+      },
+    }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: unsettled, recordDir: fixtureArchive(t) });
+
+  assert.equal(adapterVerdict.status, "complete", adapterVerdict.incomplete.join("\n"));
+  assert.deepEqual(adapterVerdict.confirmedFindings, []);
+  assert.deepEqual(adapterVerdict.operatorAttention, []);
+  assert.equal(adapterVerdict.unsettledFindings.length, 1);
+  assert.deepEqual(
+    (({ id, verdict, severity, proposedSeverity, outsideFact, wouldSettle }) =>
+      ({ id, verdict, severity, proposedSeverity, outsideFact, wouldSettle }))(adapterVerdict.unsettledFindings[0]),
+    {
+      id: "specialist-1:1", verdict: "unsettled", severity: "Medium", proposedSeverity: "High",
+      outsideFact: "", wouldSettle: "Run the retry against a stalled server.",
+    },
+  );
+});
+
+test("a verdict naming an outside fact is unsettled whatever it calls itself", async (t) => {
+  const sureOfTheService = {
+    ...envelope,
+    proposedFindings: [{
+      ...envelope.proposedFindings[0],
+      rawVerifier: {
+        ...envelope.proposedFindings[0].rawVerifier,
+        confidence: 95,
+        outsideFact: "The remote endpoint answers 404 for a missing stream.",
+        wouldSettle: "The service's API documentation for the stream endpoint.",
+      },
+    }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: sureOfTheService, recordDir: fixtureArchive(t) });
+
+  assert.equal(adapterVerdict.status, "complete");
+  assert.deepEqual(adapterVerdict.confirmedFindings, []);
+  assert.equal(adapterVerdict.unsettledFindings[0].verdict, "unsettled");
+  assert.equal(adapterVerdict.unsettledFindings[0].outsideFact, "The remote endpoint answers 404 for a missing stream.");
+});
+
+test("a verdict outside confirmed, refuted and unsettled is no usable verdict and withholds the run", async (t) => {
+  const legacy = {
+    ...envelope,
+    proposedFindings: [{
+      ...envelope.proposedFindings[0],
+      rawVerifier: { verdict: "upheld", confidence: 94, reason: "The invalid state is reachable." },
+    }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: legacy, recordDir: fixtureArchive(t) });
+
+  assertWithheld(adapterVerdict, /has no complete verdict \(verifier returned no valid result\)/);
+  assert.deepEqual(adapterVerdict.unsettledFindings, []);
+});
+
+test("a finding raised in the last verification round has no verdict and withholds the run", async (t) => {
+  const withUnchecked = {
+    ...envelope,
+    uncheckedFindings: [{
+      id: "verify-1:raised:1",
+      source: "verification",
+      title: "Second defect the verifier traced",
+      severity: "Medium",
+      confidence: 80,
+      path: "internal/review.go",
+      line: 50,
+      explanation: "The loop never exits on an empty page.",
+      dependsOn: "",
+      proposingLabel: "verify-1",
+    }],
+  };
+  const adapterVerdict = await adjudicate({ envelope: withUnchecked, recordDir: fixtureArchive(t) });
+  assertWithheld(adapterVerdict, 'finding "Second defect the verifier traced" has no complete verdict (raised in the last round of verification and never verified)');
+  assert.deepEqual(adapterVerdict.unsettledFindings, []);
+
+  const malformed = await adjudicate({
+    envelope: { ...withUnchecked, uncheckedFindings: [{ id: "verify-1:raised:1" }] },
+    recordDir: fixtureArchive(t),
+  });
+  assertWithheld(malformed, "unchecked finding 1 is malformed");
 });
 
 test("operator attention follows the combined-confidence threshold", async (t) => {
@@ -175,7 +280,7 @@ test("operator attention follows the combined-confidence threshold", async (t) =
     proposedFindings: [{
       ...envelope.proposedFindings[0],
       confidence: 40,
-      rawVerifier: { verdict: "upheld", confidence: 50, reason: "The invalid state is reachable." },
+      rawVerifier: { verdict: "confirmed", confidence: 50, severity: "High", reason: "The invalid state is reachable.", outsideFact: "", wouldSettle: "" },
     }],
   };
   const lowVerdict = await adjudicate({ envelope: lowConfidenceEnvelope, recordDir: lowFixtureArchiveDir });
@@ -219,7 +324,7 @@ test("adjudication retains every confirmed finding regardless of severity", asyn
     confidence: 71,
     proposingLabel: "specialist-2",
     verifyLabel: "verify-2",
-    rawVerifier: { verdict: "upheld", confidence: 74, reason: "The wording reaches operators." },
+    rawVerifier: { verdict: "confirmed", confidence: 74, severity: "Low", reason: "The wording reaches operators.", outsideFact: "", wouldSettle: "" },
   };
   const mixedVerdict = await adjudicate({
     envelope: {

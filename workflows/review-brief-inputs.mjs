@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 import { reviewBriefsFromWorkspace } from "./review-brief-files.mjs";
 import { briefRecords } from "./brief-dispositions.mjs";
 import { guidanceFromOrientation } from "./orientation-guidance.mjs";
+import { pullRequestFromOrientation } from "./pull-request-description.mjs";
 import { reviewContracts } from "./review-contracts.mjs";
+import { reviewPrompts } from "./review-prompts.mjs";
 import { routingFromEnvironment } from "./role-routing.mjs";
 
 const [target, head, ...rest] = process.argv.slice(2);
@@ -46,15 +48,8 @@ if (argumentError) {
     trackedFiles.push({ path });
   }
 
-  const instructionPaths = [
-    "workflows/review-briefs/repository.md",
-    "workflows/review-briefs/verifier.md",
-  ];
-  const instructionBriefs = instructionPaths.map((path) => ({
-    path,
-    readPath: resolve(workflowRoot, path),
-    content: readFileSync(resolve(workflowRoot, path), "utf8"),
-  }));
+  const pullRequest = pullRequestFromOrientation(orientation);
+  const { concerns, prompts } = reviewPrompts(workflowRoot);
 
   const workflowInput = {
     target,
@@ -66,8 +61,9 @@ if (argumentError) {
     briefs: briefRecords(briefs, occasion, changedPaths),
     guidance,
     routing,
-    instructionBriefs,
-    contracts: reviewContracts(),
+    ...(pullRequest === undefined ? {} : { pullRequest }),
+    prompts: { repository: prompts.repository, merge: prompts.merge, verifier: prompts.verifier },
+    contracts: reviewContracts(concerns.map(({ name }) => name)),
   };
 
   process.stdout.write(JSON.stringify(workflowInput) + "\n");

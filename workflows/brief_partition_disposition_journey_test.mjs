@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { executableVerdict as wrapperVerdict } from "./executable-verdict-fixture.mjs";
 import { briefRecords } from "./brief-dispositions.mjs";
-import { reviewContracts } from "./review-contracts.mjs";
+import { shippedBriefPrompts, shippedContracts } from "./shipped-prompts-fixture.mjs";
 import { resolveRouting } from "./role-routing.mjs";
 
 const workflowsDir = dirname(fileURLToPath(import.meta.url));
@@ -55,19 +55,8 @@ function workflowInput(files) {
     }], "release", files),
     guidance: [{ repository: null, path: "AGENTS.md", origin: "checked-in", content: "PARTITION-DISPOSITION-GUIDANCE-0728" }],
     routing: resolveRouting({ provisioned: ["claude", "codex"] }),
-    instructionBriefs: [
-      {
-        path: "workflows/review-briefs/repository.md",
-        readPath: "/minos/workflows/review-briefs/repository.md",
-        content: "PARTITION-REPOSITORY-BRIEF-0728",
-      },
-      {
-        path: "workflows/review-briefs/verifier.md",
-        readPath: "/minos/workflows/review-briefs/verifier.md",
-        content: "PARTITION-VERIFIER-BRIEF-0728",
-      },
-    ],
-    contracts: reviewContracts(),
+    prompts: shippedBriefPrompts,
+    contracts: shippedContracts(),
   };
 }
 
@@ -92,6 +81,7 @@ function specialistResult(applicable, reason = "the assigned concern applies") {
       reason,
     },
     findings: [],
+    outsideConcernFindings: [],
     outOfScopeObservations: [],
   };
 }

@@ -10,7 +10,7 @@ import test from "node:test";
 
 import { invokeWorkflow } from "./workflow-invocation-fixture.mjs";
 import { adjudicateEnvelope } from "./archive-fixture.mjs";
-import { findingsFromVerifierPrompt } from "./verifier-prompt-fixture.mjs";
+import { findingsFromVerifierPrompt, verdictFor } from "./verifier-prompt-fixture.mjs";
 
 const scriptPath = fileURLToPath(new URL("./review.js", import.meta.url));
 const inputScriptPath = fileURLToPath(new URL("./review-inputs.mjs", import.meta.url));
@@ -88,7 +88,7 @@ test("a review input carries no grouped member or loop record", () => {
   assert.equal(ARGS.priorFindings, undefined);
 });
 
-function unit(id = "logic", specialistType = "correctness", scope = ["internal/x.go"]) {
+function unit(id = "logic", specialistType = "logic", scope = ["internal/x.go"]) {
   return { id, concern: `${specialistType} concern ${id}`, scope, specialistType };
 }
 
@@ -108,6 +108,7 @@ function finding(overrides = {}) {
     path: "internal/x.go",
     line: 3,
     explanation: "the new branch admits an invalid state",
+    dependsOn: "",
     ...overrides,
   };
 }
@@ -126,22 +127,30 @@ function specialistResult(
   findings = [finding()],
   applicability = { status: "applicable", reason: "the assigned change exercises the concern" },
   outOfScopeObservations = [],
+  outsideConcernFindings = [],
 ) {
-  return { applicability, findings, outOfScopeObservations };
+  return { applicability, findings, outsideConcernFindings, outOfScopeObservations };
 }
 
-function verifierResult(prompt, verdictFor = () => ({ verdict: "upheld", confidence: 91, reason: "reproduced" })) {
+function verifierResult(prompt, verdictOverrides = () => ({})) {
   return {
-    verdicts: findingsFromVerifierPrompt(prompt).map((entry) => ({
-      findingId: entry.id,
-      ...verdictFor(entry),
-    })),
+    verdicts: findingsFromVerifierPrompt(prompt).map((entry) => verdictFor(entry.id, verdictOverrides(entry))),
+    newFindings: [],
+    outOfScopeObservations: [],
   };
 }
 
-function responder({ exploration = explorationFixture(), specialist, verify } = {}) {
+// Groups of one, so that no finding is merged unless a test says so.
+function separateGroups(prompt) {
+  return {
+    groups: findingsFromVerifierPrompt(prompt).map((entry) => ({ findingIds: [entry.id], primary: entry.id, sharedCause: "" })),
+  };
+}
+
+function responder({ exploration = explorationFixture(), specialist, merge, verify } = {}) {
   return (label, prompt, opts) => {
     if (label === "exploration") return typeof exploration === "function" ? exploration(label, prompt, opts) : exploration;
+    if (label === "merge" || label.startsWith("merge-round-")) return merge ? merge(label, prompt, opts) : separateGroups(prompt);
     if (label.startsWith("verify-"))
       return verify ? verify(label, prompt, opts) : verifierResult(prompt);
     if (specialist) return specialist(label, prompt, opts);
@@ -153,30 +162,27 @@ function specialistCalls(calls) {
   return calls.filter((call) => call.opts.label?.startsWith("specialist-"));
 }
 
-function orientationPacketFromPrompt(prompt) {
-  const match = prompt.match(/Orientation packet: ([^\n]+)\n/);
-  assert.ok(match, "specialist prompt carries a serialised orientation packet");
-  return match[1];
-}
-
 test("the script emits an envelope with every routed leg and raw verifier output", async () => {
-  const plan = [unit("correct", "correctness"), unit("secure", "security")];
+  const plan = [unit("correct", "logic"), unit("secure", "security")];
   const { result, calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
 
   assert.deepEqual(Object.keys(result).sort(), [
     "briefs", "dispatches", "exploration", "misconfigurations", "outOfScopeObservations", "proposedFindings",
-    "requiredModelEvidence", "reviewed", "reviewers", "stage",
+    "requiredModelEvidence", "reviewed", "reviewers", "stage", "uncheckedFindings",
   ]);
   assert.equal(result.stage, "present");
   assert.equal(result.proposedFindings.length, 2);
-  assert.deepEqual(result.proposedFindings[0].rawVerifier, { verdict: "upheld", confidence: 91, reason: "reproduced" });
+  const { findingId, ...rawVerifier } = verdictFor(result.proposedFindings[0].id);
+  assert.deepEqual(result.proposedFindings[0].rawVerifier, rawVerifier);
+  assert.deepEqual(result.uncheckedFindings, []);
   assert.ok(result.proposedFindings.every((entry) => entry.proposingLabel && entry.verifyLabel));
   assert.deepEqual(
     result.requiredModelEvidence.map(({ role, pinnedModel }) => ({ role, pinnedModel })),
     [
       { role: "exploration", pinnedModel: "gpt-6.1-sol" },
-      { role: "specialist", pinnedModel: "gpt-6.1-sol" },
-      { role: "specialist", pinnedModel: "gpt-6.1-sol" },
+      { role: "specialist", pinnedModel: "gpt-6.2-astra" },
+      { role: "specialist", pinnedModel: "gpt-6.2-astra" },
+      { role: "merge", pinnedModel: "claude-opus-5-5" },
       { role: "verifier", pinnedModel: "claude-opus-5-5" },
     ],
   );
@@ -188,11 +194,11 @@ test("malformed exploration scope entries fail closed before specialist dispatch
   for (const malformedScope of [
     ["internal/group_execution.rs],"],
     ["specialistType"],
-    ["correctness"],
+    ["logic"],
   ]) {
     const exploration = explorationFixture({
       files: [{ path: "internal/group_execution.rs", added: 4, deleted: 1 }],
-      plan: [unit("group-execution", "correctness", malformedScope)],
+      plan: [unit("group-execution", "logic", malformedScope)],
     });
     const { result, calls } = await runScript(ARGS, responder({ exploration }));
 
@@ -207,6 +213,7 @@ test("malformed exploration scope entries fail closed before specialist dispatch
         pinnedModel: "gpt-6.1-sol",
       }],
       proposedFindings: [],
+      uncheckedFindings: [],
       outOfScopeObservations: [],
       briefs: [],
       misconfigurations: [],
@@ -230,7 +237,7 @@ test("malformed exploration scope entries fail closed before specialist dispatch
 
 test("a well-formed exploration scope reaches specialists unchanged", async () => {
   const scope = ["internal/group_execution.rs", "internal/group_execution_test.rs"];
-  const plan = [unit("group-execution", "correctness", scope)];
+  const plan = [unit("group-execution", "logic", scope)];
   const exploration = explorationFixture({
     files: scope.map((path) => ({ path, added: 4, deleted: 1 })),
     plan,
@@ -240,8 +247,7 @@ test("a well-formed exploration scope reaches specialists unchanged", async () =
 
   assert.deepEqual(result.exploration.plan, plan);
   assert.deepEqual(result.dispatches[0].scope, scope);
-  assert.deepEqual(JSON.parse(orientationPacketFromPrompt(specialist.prompt)).ownership[0].scope, scope);
-  assert.match(specialist.prompt, /Assigned scope: internal\/group_execution\.rs, internal\/group_execution_test\.rs/);
+  assert.ok(specialist.prompt.includes("logic concern group-execution\n\n- `internal/group_execution.rs`\n- `internal/group_execution_test.rs`"));
 });
 
 test("an out-of-scope observation leaves the specialist without entering finding verification", async () => {
@@ -252,17 +258,16 @@ test("an out-of-scope observation leaves the specialist without entering finding
   assert.deepEqual(result.proposedFindings, []);
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
   assert.deepEqual(result.outOfScopeObservations, [{
-    id: "specialist-1-correctness-codex:observation:1",
-    source: "correctness concern logic",
+    id: "specialist-1-logic-codex:observation:1",
+    source: "logic concern logic",
     title: "pre-existing defect",
     path: "internal/legacy.go",
     line: 9,
     explanation: "Unverified observation: the unchanged branch admits an invalid state.",
-    observingLabel: "specialist-1-correctness-codex",
+    observingLabel: "specialist-1-logic-codex",
     verified: false,
   }]);
   const schema = specialistCalls(calls)[0].opts.schema;
-  assert.ok(!schema.required.includes("outOfScopeObservations"));
   assert.ok(schema.properties.outOfScopeObservations);
   assert.deepEqual(
     schema.properties.outOfScopeObservations.items.required,
@@ -281,18 +286,16 @@ test("a specialist may omit an empty observation array", async () => {
   assert.deepEqual(result.outOfScopeObservations, []);
   assert.deepEqual(result.proposedFindings, []);
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
-  const schema = specialistCalls(calls)[0].opts.schema;
-  assert.ok(!schema.required.includes("outOfScopeObservations"));
 });
 
-test("all findings are proposed on Sol and verified cross-family on Claude", async () => {
-  const plan = [unit("correct", "correctness"), unit("secure", "security")];
+test("all findings are proposed on Astra and verified cross-family on Claude", async () => {
+  const plan = [unit("correct", "logic"), unit("secure", "security")];
   const { calls } = await runScript(ARGS, responder({ exploration: explorationFixture({ plan }) }));
-  const correctness = calls.find((call) => call.opts.label === "specialist-1-correctness-codex");
+  const correctness = calls.find((call) => call.opts.label === "specialist-1-logic-codex");
   const security = calls.find((call) => call.opts.label === "specialist-2-security-codex");
   const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
-  assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-6.1-sol"]);
-  assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-6.1-sol"]);
+  assert.deepEqual([correctness.opts.engine, correctness.opts.model], ["codex", "gpt-6.2-astra"]);
+  assert.deepEqual([security.opts.engine, security.opts.model], ["codex", "gpt-6.2-astra"]);
   assert.ok(verifiers.length > 0);
   assert.ok(verifiers.every((call) => call.opts.engine === "claude" && call.opts.model === "claude-opus-5-5"));
   assert.ok(specialistCalls(calls).every((call) => call.opts.engine !== "claude"));
@@ -318,7 +321,6 @@ test("a verifier observation reaches the result alongside its verdicts", async (
     verified: false,
   }]);
   const schema = calls.find((call) => call.opts.label === "verify-1-claude").opts.schema;
-  assert.ok(!schema.required.includes("outOfScopeObservations"));
   assert.deepEqual(
     schema.properties.outOfScopeObservations.items.required,
     ["title", "path", "line", "explanation"],
@@ -328,7 +330,7 @@ test("a verifier observation reaches the result alongside its verdicts", async (
 test("a verifier observation survives a verdict set discarded as malformed", async () => {
   const { result } = await runScript(ARGS, responder({
     verify: () => ({
-      verdicts: [{ findingId: "not-a-proposed-finding", verdict: "upheld", confidence: 90, reason: "misaddressed" }],
+      verdicts: [verdictFor("not-a-proposed-finding")],
       outOfScopeObservations: [observation()],
     }),
   }));
@@ -359,6 +361,19 @@ test("every leg runs on the routing the input carries, and labels follow the rou
   );
 });
 
+test("a single-engine deployment verifies a verifier's own findings on the one engine it has", async () => {
+  const args = enumeratedArgs("aaa111", "bbb222", { provisioned: "claude" });
+  let raised = false;
+  const { calls } = await runScript(args, responder({
+    verify: (label, prompt) => ({
+      ...verifierResult(prompt),
+      newFindings: raised ? [] : [finding({ title: "raised once", line: 70 }), (raised = true)].slice(0, 1),
+    }),
+  }));
+  assert.deepEqual(calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => call.opts.label),
+    ["verify-1-claude", "verify-round-2-1-claude"]);
+});
+
 test("a single-engine deployment routes every role to the one provisioned engine", async () => {
   const args = enumeratedArgs("aaa111", "bbb222", { provisioned: "claude" });
   const { calls } = await runScript(args, responder());
@@ -385,10 +400,10 @@ test("the input builder refuses routing it cannot honour, and the workflow refus
   assert.deepEqual(calls, []);
 });
 
-test("exploration and specialists run at high effort while verifiers stay at medium", async () => {
+test("exploration runs at high effort while specialists and verifiers run at medium", async () => {
   const { calls } = await runScript(ARGS, responder());
   assert.equal(calls.find((call) => call.opts.label === "exploration").opts.effort, "high");
-  assert.ok(specialistCalls(calls).every((call) => call.opts.effort === "high"));
+  assert.ok(specialistCalls(calls).every((call) => call.opts.effort === "medium"));
   assert.ok(calls.filter((call) => call.opts.label?.startsWith("verify-"))
     .every((call) => call.opts.effort === "medium"));
 });
@@ -407,7 +422,7 @@ test("a missing specialist result remains visible as a required leg", async () =
   assert.ok(result.requiredModelEvidence.some((leg) => leg.role === "specialist"));
 });
 
-test("specialist inapplicability is a skip-like disposition and never reaches a verifier", async () => {
+test("specialist inapplicability is a skip-like disposition whose own findings never reach a verifier", async () => {
   const { result, calls } = await runScript(ARGS, responder({
     specialist: () => specialistResult(
       [finding({ title: "must not escape" })],
@@ -417,8 +432,8 @@ test("specialist inapplicability is a skip-like disposition and never reaches a 
   assert.equal(result.proposedFindings.length, 0);
   assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
   assert.deepEqual(result.briefs, [{
-    brief: "workflows/review-briefs/correctness.md",
-    title: "correctness concern logic",
+    brief: "workflows/review-briefs/concerns/logic.md",
+    title: "logic concern logic",
     status: "skipped",
     skipKind: "inapplicable",
     reason: "the assigned scope contains no relevant behaviour",
@@ -480,12 +495,12 @@ test("every specialist finding reaches its opposite-family verifier batch", asyn
   assert.deepEqual(result.proposedFindings.map((entry) => entry.title), ["one", "two", "three survives", "four survives"]);
   const verifier = calls.find((call) => call.opts.label === "verify-1-claude");
   assert.ok(verifier);
-  assert.match(verifier.prompt, /"title":"four survives"/);
+  assert.match(verifier.prompt, /"title": "four survives"/);
 });
 
 test("verifier dispatch pools findings globally and caps batches at six", async () => {
   const counts = [7, 1, 2, 3, 4, 5, 6];
-  const types = ["correctness", "security", "testing", "design", "correctness", "security", "testing"];
+  const types = ["logic", "security", "tests", "fit", "logic", "security", "tests"];
   const plan = counts.map((_, index) => unit(`unit-${index + 1}`, types[index], [`pkg/f${index + 1}.go`]));
   const files = plan.map((entry) => ({ path: entry.scope[0], added: 1, deleted: 0 }));
   const { result, calls } = await runScript(ARGS, responder({
@@ -513,7 +528,7 @@ test("verifier dispatch pools findings globally and caps batches at six", async 
 });
 
 test("findings distributed across several units share one verifier leg", async () => {
-  const plan = [unit("one", "correctness"), unit("two", "security"), unit("three", "testing")];
+  const plan = [unit("one", "logic"), unit("two", "security"), unit("three", "tests")];
   const { result, calls } = await runScript(ARGS, responder({
     exploration: explorationFixture({ plan }),
     specialist: (label) => specialistResult([finding({ title: `finding from ${label}` })]),
@@ -524,7 +539,7 @@ test("findings distributed across several units share one verifier leg", async (
   assert.equal(verifierCalls[0].opts.label, "verify-1-claude");
   assert.equal(findingsFromVerifierPrompt(verifierCalls[0].prompt).length, 3);
   assert.deepEqual(new Set(result.proposedFindings.map((entry) => entry.proposingLabel)), new Set([
-    "specialist-1-correctness-codex", "specialist-2-security-codex", "specialist-3-testing-codex",
+    "specialist-1-logic-codex", "specialist-2-security-codex", "specialist-3-tests-codex",
   ]));
   assert.ok(result.proposedFindings.every((entry) => entry.verifyLabel === "verify-1-claude"));
 });
@@ -534,7 +549,7 @@ for (const responseCase of [
     name: "missing ids",
     response(findings) {
       return { verdicts: [findings[0], findings[2]].map((entry) => ({
-        findingId: entry.id, verdict: "upheld", confidence: 91, reason: "checked",
+        ...verdictFor(entry.id, { reason: "checked" }),
       })) };
     },
     present: [true, false, true],
@@ -543,7 +558,7 @@ for (const responseCase of [
     name: "duplicate ids",
     response(findings) {
       return { verdicts: [findings[0], findings[0], findings[1], findings[2]].map((entry) => ({
-        findingId: entry.id, verdict: "upheld", confidence: 91, reason: "checked",
+        ...verdictFor(entry.id, { reason: "checked" }),
       })) };
     },
     present: [false, true, true],
@@ -552,7 +567,7 @@ for (const responseCase of [
     name: "unknown ids",
     response(findings) {
       return { verdicts: [...findings, { id: "unknown-finding" }].map((entry) => ({
-        findingId: entry.id, verdict: "upheld", confidence: 91, reason: "checked",
+        ...verdictFor(entry.id, { reason: "checked" }),
       })) };
     },
     present: [false, false, false],
@@ -574,101 +589,30 @@ for (const responseCase of [
 test("a full synthetic batched run preserves per-finding adjudication", async (t) => {
   const { result } = await runScript(ARGS, responder({
     specialist: () => specialistResult([
-      finding({ title: "upheld one" }),
+      finding({ title: "confirmed one" }),
       finding({ title: "refuted", line: 4 }),
-      finding({ title: "upheld two", line: 5 }),
+      finding({ title: "confirmed two", line: 5 }),
     ]),
     verify: (_label, prompt) => verifierResult(prompt, (entry) => entry.title === "refuted"
-      ? { verdict: "refuted", confidence: 84, reason: "caller rejects the state" }
-      : { verdict: "upheld", confidence: 93, reason: "path remains reachable" }),
+      ? { verdict: "refuted", confidence: 84, severity: "None", reason: "caller rejects the state" }
+      : { confidence: 93, reason: "path remains reachable" }),
   }));
 
-  assert.deepEqual(result.proposedFindings.map(({ id, rawVerifier }) => ({ id, rawVerifier })), [
-    {
-      id: "specialist-1-correctness-codex:1",
-      rawVerifier: { verdict: "upheld", confidence: 93, reason: "path remains reachable" },
-    },
-    {
-      id: "specialist-1-correctness-codex:2",
-      rawVerifier: { verdict: "refuted", confidence: 84, reason: "caller rejects the state" },
-    },
-    {
-      id: "specialist-1-correctness-codex:3",
-      rawVerifier: { verdict: "upheld", confidence: 93, reason: "path remains reachable" },
-    },
+  assert.deepEqual(result.proposedFindings.map(({ id, rawVerifier }) => ({ id, verdict: rawVerifier.verdict, reason: rawVerifier.reason })), [
+    { id: "specialist-1-logic-codex:1", verdict: "confirmed", reason: "path remains reachable" },
+    { id: "specialist-1-logic-codex:2", verdict: "refuted", reason: "caller rejects the state" },
+    { id: "specialist-1-logic-codex:3", verdict: "confirmed", reason: "path remains reachable" },
   ]);
   const verdict = await adjudicateEnvelope(t, result);
   assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
   assert.deepEqual(verdict.confirmedFindings.map((entry) => entry.id), [
-    "specialist-1-correctness-codex:1",
-    "specialist-1-correctness-codex:3",
+    "specialist-1-logic-codex:1",
+    "specialist-1-logic-codex:3",
   ]);
   assert.deepEqual(
     verdict.modelEvidence.find((entry) => entry.role === "verifier").findingIds,
     result.proposedFindings.map((entry) => entry.id),
   );
-});
-
-test("every specialist prompt carries the compact exploration orientation packet", async () => {
-  const exploration = explorationFixture({
-    files: [
-      { path: "cmd/minos/main.go", added: 12, deleted: 3 },
-      { path: "internal/review.go", added: 7, deleted: 11 },
-    ],
-    plan: [
-      unit("entrypoint", "correctness", ["cmd/minos/main.go"]),
-      unit("review", "design", ["internal/review.go"]),
-    ],
-  });
-  const { calls } = await runScript(enumeratedArgs("target-orientation", "head-orientation"), responder({ exploration }));
-  for (const call of specialistCalls(calls)) {
-    assert.match(call.prompt, /"commitRange":"target-orientation\.\.\.head-orientation"/);
-    assert.match(call.prompt, /"path":"cmd\/minos\/main\.go","added":12,"deleted":3/);
-    assert.match(call.prompt, /"path":"internal\/review\.go","added":7,"deleted":11/);
-    assert.match(call.prompt, /"unit":"entrypoint"/);
-    assert.match(call.prompt, /"unit":"review"/);
-  }
-});
-
-test("large exploration results keep every orientation packet within 32 KiB", async () => {
-  const files = Array.from({ length: 166 }, (_, index) => ({
-    path: `packages/${String(index).padStart(3, "0")}-${"changed-component-".repeat(9)}.js`,
-    added: index + 1,
-    deleted: index,
-  }));
-  const plan = Array.from({ length: 20 }, (_, index) => unit(
-    `unit-${index + 1}`,
-    ["correctness", "security", "testing", "design"][index % 4],
-    files.filter((_, fileIndex) => fileIndex % 20 === index).map((file) => file.path),
-  ));
-  const { calls } = await runScript(ARGS, responder({
-    exploration: explorationFixture({ files, plan }),
-    specialist: () => specialistResult([]),
-  }));
-
-  for (const call of specialistCalls(calls)) {
-    const packet = orientationPacketFromPrompt(call.prompt);
-    assert.ok(Buffer.byteLength(packet, "utf8") <= 32 * 1024, `packet is ${Buffer.byteLength(packet, "utf8")} bytes`);
-    assert.match(packet, /\+\d+ more files/);
-    assert.match(packet, /"scopeCount":\d+/);
-    assert.doesNotMatch(packet, /"scope":\[/);
-  }
-});
-
-test("specialist and verifier briefs pin the review-stage discipline", async () => {
-  const specialistBriefs = ["correctness", "security", "testing", "design", "repository"];
-  for (const brief of specialistBriefs) {
-    const content = await readFile(fileURLToPath(new URL(`./review-briefs/${brief}.md`, import.meta.url)), "utf8");
-    assert.match(content, /do not investigate outside your assigned boundary/i);
-    assert.match(content, /Do not build side experiments during proposal/);
-    if (brief !== "repository")
-      assert.match(content, /Trust the packet for orientation; read the diff for your scope directly\./);
-  }
-  const verifierBrief = await readFile(fileURLToPath(new URL("./review-briefs/verifier.md", import.meta.url)), "utf8");
-  assert.match(verifierBrief, /return exactly one verdict keyed by\s+finding id for every/i);
-  assert.match(verifierBrief, /Never build, test or run the reviewed\s+change, and never write an experiment of your own/);
-  assert.doesNotMatch(verifierBrief, /confirming experiment/i);
-  assert.match(verifierBrief, /Return the requested `verdicts` array:\s+exactly one structured verdict per assigned finding, each with its own\s+independent confidence integer from 0 to 100\./);
 });
 
 test("the deterministic input binds shipped role prose and project guidance into every judgement leg", async () => {
@@ -678,7 +622,14 @@ test("the deterministic input binds shipped role prose and project guidance into
   const judgementCalls = calls.filter((call) =>
     call.opts.label === "exploration" || call.opts.label?.startsWith("specialist-") || call.opts.label?.startsWith("verify-"));
   assert.ok(judgementCalls.every((call) => call.prompt.includes(marker)));
-  assert.match(judgementCalls.find((call) => call.opts.label?.startsWith("specialist-")).prompt, /MINOS_CORRECTNESS_EVIDENCE_V1/);
+  const specialist = judgementCalls.find((call) => call.opts.label?.startsWith("specialist-")).prompt;
+  assert.match(specialist, /^# Specialist review\n/);
+  assert.match(specialist, /## Your concern: logic\n\nWhether the change does the right thing when everything goes to plan\./);
+  assert.match(specialist, /- `security`: /);
+  assert.doesNotMatch(specialist, /- `logic`: /, "a specialist is not listed among the others");
+  assert.match(judgementCalls.find((call) => call.opts.label?.startsWith("verify-")).prompt, /^# Finding verifier\n/);
+  assert.match(judgementCalls.find((call) => call.opts.label === "exploration").prompt, /^# Review exploration\n[\s\S]*- `fit`: [\s\S]*- `tests`: /);
+  assert.ok(calls.every((call) => !/\{\{[a-z-]+\}\}/.test(call.prompt)), "every slot is filled");
 });
 
 test("the recorded pull-request description reaches every judgement leg with the declared-scope rule", async () => {
@@ -692,9 +643,9 @@ test("the recorded pull-request description reaches every judgement leg with the
     call.opts.label === "exploration" || call.opts.label?.startsWith("specialist-") || call.opts.label?.startsWith("verify-"));
   assert.ok(judgementCalls.length >= 3);
   for (const call of judgementCalls) {
-    assert.ok(call.prompt.includes(marker));
-    assert.match(call.prompt, /declared gap is not a defect of this change/);
-    assert.match(call.prompt, /never excuses incorrect behaviour/);
+    assert.ok(call.prompt.includes(`<pull-request-description title="Bridge a thread">\nNot in scope: ${marker}.\n</pull-request-description>`));
+    assert.match(call.prompt, /A gap the author declares out of scope is not a problem/);
+    assert.match(call.prompt, /never excuses wrong behaviour/);
   }
 });
 
@@ -791,7 +742,7 @@ test("the lifecycle prescribes the review-only workflow discipline", () => {
   assert.match(lifecycle, /Whenever you stop after a clean, converged pass[\s\S]*`printf 'clean\\n' > "\$MINOS_RUN_DIR\/lead-complete"`/);
   assert.match(lifecycle, /Minos authors no commits on the pull-request branch, so every head movement is the\s+author's[\s\S]*stop without publishing a review or\s+setting a status/);
   assert.match(lifecycle, /Classification is your judgement,\s+informed by the threshold rather than mechanically bound to it[\s\S]*Any gating\s+finding makes the verdict `request-changes`; none makes it `clean`/);
-  assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*never enter a review, a classification digest, or a run\s+outcome; the composer in step 6 sets them aside for the filing\s+destination, marked as unverified/);
+  assert.match(lifecycle, /`outOfScopeObservations`[\s\S]*unverified observations, not findings[\s\S]*`unsettledFindings`[\s\S]*Neither kind is a confirmed finding\. They never enter a\s+review, a classification digest, or a run outcome; the composer in step\s+6 sets them aside for the filing destination, marked as unverified/);
   assert.match(lifecycle, /compose-review-publication\.mjs[\s\S]*publication-plan\.json[\s\S]*Post the reviews in that order, one scripted review per entry/);
   assert.match(lifecycle, /compose-review-publication\.mjs" \\\s+"\$MINOS_RUN_DIR\/publication" "\$MINOS_ORIENTATION" "\$MINOS_REVIEW_THRESHOLD"/);
   assert.match(lifecycle, /A request-changes plan contains one review with the blocking findings\s+from both review stages and nothing else[\s\S]*A clean plan has no posts/);
@@ -912,4 +863,206 @@ test("identified null answer keeps reviewer settlement truthful", async () => {
   assert.equal(result.reviewers.find((entry) => entry.label === answeredLabel).status, "done");
   assert.ok(result.incomplete.includes(`agent ${answeredLabel} answered without usable output`));
   assert.ok(!result.incomplete.some((reason) => reason.includes("failed:")));
+});
+
+test("findings one fix would resolve are merged and verified once, with the group's other write-ups beside the primary", async (t) => {
+  const plan = [unit("logic", "logic"), unit("failure", "failure")];
+  const { result, calls } = await runScript(ARGS, responder({
+    exploration: explorationFixture({ plan }),
+    specialist: (label) => specialistResult([finding({
+      title: `${label} write-up`,
+      severity: label.includes("logic") ? "High" : "Low",
+      confidence: 70,
+      dependsOn: label.includes("logic") ? "" : "The queue redelivers after thirty seconds.",
+    })]),
+    merge: (_label, prompt) => {
+      const ids = findingsFromVerifierPrompt(prompt).map((entry) => entry.id);
+      return { groups: [{ findingIds: ids, primary: ids[0], sharedCause: "Guard the transition once." }] };
+    },
+  }));
+
+  const merge = calls.find((call) => call.opts.label === "merge");
+  assert.deepEqual(
+    findingsFromVerifierPrompt(merge.prompt).map(({ id, reportedBy, outsideConcern, severity, confidence }) =>
+      ({ id, reportedBy, outsideConcern, severity, confidence })),
+    [
+      { id: "specialist-1-logic-codex:1", reportedBy: "logic", outsideConcern: false, severity: undefined, confidence: undefined },
+      { id: "specialist-2-failure-codex:1", reportedBy: "failure", outsideConcern: false, severity: undefined, confidence: undefined },
+    ],
+  );
+  const verifiers = calls.filter((call) => call.opts.label?.startsWith("verify-"));
+  assert.equal(verifiers.length, 1);
+  assert.deepEqual(findingsFromVerifierPrompt(verifiers[0].prompt), [{
+    id: "specialist-1-logic-codex:1",
+    title: "specialist-1-logic-codex write-up",
+    path: "internal/x.go",
+    line: 3,
+    explanation: "the new branch admits an invalid state",
+    dependsOn: "The queue redelivers after thirty seconds.",
+    alsoReportedAs: [{ title: "specialist-2-failure-codex write-up", explanation: "the new branch admits an invalid state" }],
+  }]);
+  assert.equal(result.proposedFindings.length, 1);
+  assert.deepEqual(result.proposedFindings[0].mergedFrom.map(({ id }) => id), ["specialist-2-failure-codex:1"]);
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.equal(verdict.confirmedFindings.length, 1);
+});
+
+test("a grouping that loses or repeats a finding stops the review before verification", async (t) => {
+  const plan = [unit("logic", "logic"), unit("failure", "failure")];
+  for (const groups of [
+    (ids) => [{ findingIds: [ids[0]], primary: ids[0], sharedCause: "" }],
+    (ids) => [{ findingIds: ids, primary: ids[0], sharedCause: "" }, { findingIds: [ids[1]], primary: ids[1], sharedCause: "" }],
+    (ids) => [{ findingIds: ids, primary: "elsewhere", sharedCause: "" }],
+  ]) {
+    const { result, calls } = await runScript(ARGS, responder({
+      exploration: explorationFixture({ plan }),
+      merge: (_label, prompt) => ({ groups: groups(findingsFromVerifierPrompt(prompt).map((entry) => entry.id)) }),
+    }));
+    assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 0);
+    assert.deepEqual(result.proposedFindings, []);
+    assert.ok(result.incomplete.some((reason) => reason.startsWith("agent merge returned a grouping")));
+    const verdict = await adjudicateEnvelope(t, result);
+    assert.equal(verdict.status, "incomplete");
+  }
+});
+
+test("a problem a specialist meets outside its concern is verified like any finding, even from an inapplicable specialist", async () => {
+  const { result, calls } = await runScript(ARGS, responder({
+    specialist: () => specialistResult(
+      [finding({ title: "dropped with the inapplicable concern" })],
+      { status: "inapplicable", reason: "no ordinary-run logic changed" },
+      [],
+      [finding({ title: "unchecked error from the new write", line: 12 })],
+    ),
+  }));
+  assert.deepEqual(result.proposedFindings.map(({ title, outsideConcern }) => ({ title, outsideConcern })), [
+    { title: "unchecked error from the new write", outsideConcern: true },
+  ]);
+  assert.equal(calls.filter((call) => call.opts.label?.startsWith("verify-")).length, 1);
+  assert.equal(result.briefs[0].skipKind, "inapplicable");
+});
+
+test("a finding a verifier raises is verified by a later leg, and one the last round raises leaves the run incomplete", async (t) => {
+  let raisedCount = 0;
+  const { result, calls } = await runScript(ARGS, responder({
+    verify: (label, prompt) => ({
+      ...verifierResult(prompt),
+      newFindings: [finding({ title: `raised by ${label}`, line: 40 + (raisedCount += 1) })],
+    }),
+  }));
+  const verifierLabels = calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => call.opts.label);
+  assert.deepEqual(verifierLabels, ["verify-1-claude", "verify-round-2-1-codex", "verify-round-3-1-claude"]);
+  assert.deepEqual(
+    calls.filter((call) => call.opts.label?.startsWith("verify-")).map((call) => [call.opts.engine, call.opts.model]),
+    [["claude", "claude-opus-5-5"], ["codex", "gpt-6.2-astra"], ["claude", "claude-opus-5-5"]],
+    "each round is verified by the family that did not raise its findings",
+  );
+  assert.deepEqual(result.proposedFindings.map(({ id, proposingLabel, verifyLabel }) => ({ id, proposingLabel, verifyLabel })), [
+    { id: "specialist-1-logic-codex:1", proposingLabel: "specialist-1-logic-codex", verifyLabel: "verify-1-claude" },
+    { id: "verify-1-claude:raised:1", proposingLabel: "verify-1-claude", verifyLabel: "verify-round-2-1-codex" },
+    { id: "verify-round-2-1-codex:raised:1", proposingLabel: "verify-round-2-1-codex", verifyLabel: "verify-round-3-1-claude" },
+  ]);
+  assert.ok(result.proposedFindings.every((entry) => entry.proposingLabel.split("-").at(-1) !== entry.verifyLabel.split("-").at(-1)));
+  assert.deepEqual(result.uncheckedFindings.map(({ id, source }) => ({ id, source })), [
+    { id: "verify-round-3-1-claude:raised:1", source: "verification" },
+  ]);
+  assert.ok(result.incomplete.includes("verification stopped after 3 rounds with 1 finding(s) raised and not verified"));
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "incomplete");
+  assert.ok(verdict.incomplete.includes(
+    `finding "raised by verify-round-3-1-claude" has no complete verdict (raised in the last round of verification and never verified)`,
+  ));
+  assert.deepEqual(verdict.confirmedFindings, []);
+  assert.deepEqual(verdict.unsettledFindings, []);
+});
+
+test("findings verifiers raise in one round are merged before the next round verifies them", async (t) => {
+  const plan = [unit("logic", "logic"), unit("failure", "failure")];
+  const merges = [];
+  const { result, calls } = await runScript(ARGS, responder({
+    exploration: explorationFixture({ plan }),
+    specialist: (label) => specialistResult(Array.from({ length: label.includes("logic") ? 4 : 3 }, (_, index) =>
+      finding({ title: `${label} ${index}`, line: index + 1 }))),
+    merge: (label, prompt) => {
+      merges.push(label);
+      const ids = findingsFromVerifierPrompt(prompt).map((entry) => entry.id);
+      return label === "merge"
+        ? separateGroups(prompt)
+        : { groups: [{ findingIds: ids, primary: ids[0], sharedCause: "One fix." }] };
+    },
+    verify: (label, prompt) => ({
+      ...verifierResult(prompt),
+      newFindings: label.startsWith("verify-round-") ? [] : [finding({ title: "same defect both batches traced", line: 90 })],
+    }),
+  }));
+  assert.deepEqual(merges, ["merge", "merge-round-2"]);
+  const merged = calls.find((call) => call.opts.label === "merge-round-2");
+  assert.deepEqual(findingsFromVerifierPrompt(merged.prompt).map(({ id, reportedBy }) => ({ id, reportedBy })), [
+    { id: "verify-1-claude:raised:1", reportedBy: "verification" },
+    { id: "verify-2-claude:raised:1", reportedBy: "verification" },
+  ]);
+  const secondRound = calls.filter((call) => call.opts.label?.startsWith("verify-round-2-"));
+  assert.equal(secondRound.length, 1);
+  assert.equal(findingsFromVerifierPrompt(secondRound[0].prompt).length, 1);
+  const raised = result.proposedFindings.filter((entry) => entry.source === "verification");
+  assert.equal(raised.length, 1);
+  assert.deepEqual(raised[0].mergedFrom.map(({ id }) => id), ["verify-2-claude:raised:1"]);
+  assert.ok(result.requiredModelEvidence.some((leg) => leg.label === "merge-round-2" && leg.role === "merge"));
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.equal(verdict.confirmedFindings.length, 8);
+});
+
+test("an unsettled verdict reaches the verdict as an open question, never as a confirmed finding", async (t) => {
+  const { result } = await runScript(ARGS, responder({
+    verify: (_label, prompt) => verifierResult(prompt, () => ({
+      verdict: "unsettled",
+      severity: "Medium",
+      confidence: 50,
+      outsideFact: "",
+      wouldSettle: "Run the change against a stalled peer.",
+    })),
+  }));
+  const verdict = await adjudicateEnvelope(t, result);
+  assert.equal(verdict.status, "complete", verdict.incomplete.join("\n"));
+  assert.deepEqual(verdict.confirmedFindings, []);
+  assert.deepEqual(verdict.unsettledFindings.map(({ verdict: disposition, wouldSettle }) => ({ disposition, wouldSettle })), [
+    { disposition: "unsettled", wouldSettle: "Run the change against a stalled peer." },
+  ]);
+});
+
+test("slot syntax inside a pull-request description is carried as written, never filled", async () => {
+  const args = enumeratedArgs("aaa111", "bbb222", {
+    pullRequest: { title: "Template {{head}}", body: "Docs mention {{findings}} and {{unknown-slot}}." },
+  });
+  const { calls } = await runScript(args, responder());
+  for (const call of calls.filter((entry) => entry.opts.label !== "merge")) {
+    assert.ok(call.prompt.includes('<pull-request-description title="Template {{head}}">\nDocs mention {{findings}} and {{unknown-slot}}.\n</pull-request-description>'));
+  }
+});
+
+test("a prompt carrying a slot its stage never fills stops the workflow before any dispatch", async () => {
+  const calls = [];
+  for (const prompts of [
+    { ...ARGS.prompts, verifier: `${ARGS.prompts.verifier}\n{{concern-name}}` },
+    { ...ARGS.prompts, specialist: { ...ARGS.prompts.specialist, logic: undefined } },
+    { ...ARGS.prompts, merge: "" },
+  ]) {
+    await assert.rejects(
+      runScript({ ...ARGS, prompts }, (label) => { calls.push(label); return null; }),
+      /malformed the review prompts/,
+    );
+  }
+  assert.deepEqual(calls, []);
+});
+
+test("the exploration plan may name only a shipped concern", async () => {
+  assert.deepEqual(ARGS.concerns.map(({ name }) => name), ["failure", "fit", "logic", "security", "tests"]);
+  assert.deepEqual(ARGS.contracts.explorationSchema.properties.plan.items.properties.specialistType.enum, ["failure", "fit", "logic", "security", "tests"]);
+  const { result, calls } = await runScript(ARGS, responder({
+    exploration: explorationFixture({ plan: [unit("old", "correctness")] }),
+  }));
+  assert.equal(specialistCalls(calls).length, 0);
+  assert.deepEqual(result.incomplete, ["exploration returned a malformed review plan"]);
 });

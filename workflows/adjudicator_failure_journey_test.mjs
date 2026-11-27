@@ -91,7 +91,7 @@ function envelope() {
       verifyLabel: "verifier",
       rawVerifier: scenario === "missing-verdict"
         ? null
-        : { verdict: "upheld", confidence: 92, reason: "The defect is reachable." },
+        : { verdict: "confirmed", confidence: 92, severity: "High", reason: "The defect is reachable.", outsideFact: "", wouldSettle: "" },
     }],
     briefs: [],
     misconfigurations: [],

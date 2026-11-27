@@ -12,7 +12,8 @@
 // writes no review. Every other confirmed finding is advice, and goes to
 // the configured filing destination on either outcome, where the project
 // weighs it in its own time. So do the unverified observations reviewers
-// made outside the change, marked as unverified. One defect leaves the run
+// made outside the change, marked as unverified, and the findings a
+// verifier left unsettled, marked as open questions and never as defects. One defect leaves the run
 // once: the same site and title raised by both groups merge mechanically,
 // and findings the lead's decisions label as one defect merge on that
 // judgement, whatever their sites and titles.
@@ -245,8 +246,15 @@ const confirmedSites = new Set(confirmed.map(site));
 const observations = groups
   .flatMap((group) => group.verdict.outOfScopeObservations || [])
   .filter((observation) => !confirmedSites.has(site(observation)));
+// An unsettled finding is filed as unverified material is, on the same
+// terms as an observation.
+const unsettled = groups
+  .flatMap((group) => group.verdict.unsettledFindings || [])
+  .filter((finding) => !confirmedSites.has(site(finding)));
 const triageEntries = [
   ...advisory.map((finding) => ({ ...finding, kind: "advisory-finding" })),
+  ...unsettled.map(({ title, severity, path, line, explanation, outsideFact, wouldSettle }) =>
+    ({ kind: "unsettled-finding", title, severity, path, line, explanation, outsideFact, wouldSettle })),
   ...observations.map(({ title, path, line, explanation }) => ({ kind: "out-of-scope-observation", title, path, line, explanation })),
 ];
 for (const group of groups)
@@ -274,6 +282,7 @@ const planDocument = {
   triage: {
     entries: triagePath,
     advisory: triageEntries.filter((entry) => entry.kind === "advisory-finding").length,
+    unsettled: triageEntries.filter((entry) => entry.kind === "unsettled-finding").length,
     observations: triageEntries.filter((entry) => entry.kind === "out-of-scope-observation").length,
     misconfigurations: triageEntries.filter((entry) => entry.kind === "review-brief-misconfiguration").length,
     guidanceMisconfigurations: triageEntries.filter((entry) => entry.kind === "guidance-source-misconfiguration").length,

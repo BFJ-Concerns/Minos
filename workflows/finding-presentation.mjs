@@ -158,6 +158,14 @@ export function issueLogEntry(entry, attribution) {
       ` A reviewer noticed this outside the change under review; nobody checked it. ${attribution}.`
     );
   }
+  if (entry.kind === "unsettled-finding") {
+    const openFact = entry.outsideFact ? ` It rests on a fact the repository does not show: ${sentence(normaliseProse(entry.outsideFact, entry))}` : "";
+    const settle = entry.wouldSettle ? ` What would settle it: ${sentence(normaliseProse(entry.wouldSettle, entry))}` : "";
+    return (
+      `- **Unsettled · ${entry.severity}: ${normaliseProse(entry.title, entry)}** (\`${entry.path}:${entry.line}\`) — ${sentence(normaliseProse(entry.explanation, entry))}` +
+      `${openFact}${settle} A verifier could neither confirm nor refute this from the repository, so it is an open question, not a confirmed defect. ${attribution}.`
+    );
+  }
   if (entry.kind === "review-brief-misconfiguration") {
     return `- **Review brief misconfiguration: ${entry.title}** (\`${entry.brief}\`) — ${sentence(entry.reason)} ${attribution}.`;
   }

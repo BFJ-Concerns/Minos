@@ -455,9 +455,11 @@ write, matching the target rule above.)
 
    Any adjudicated verdict may also contain `outOfScopeObservations`.
    These are unverified observations, not findings, and carry no verifier
-   verdict. They never enter a review, a classification digest, or a run
-   outcome; the composer in step 6 sets them aside for the filing
-   destination, marked as unverified.
+   verdict. It may also contain `unsettledFindings`: findings a verifier
+   could neither confirm nor refute from the repository, each naming what
+   would settle it. Neither kind is a confirmed finding. They never enter a
+   review, a classification digest, or a run outcome; the composer in step
+   6 sets them aside for the filing destination, marked as unverified.
 
    Only a verdict whose `status` is `complete` may proceed. A missing
    result, incomplete leg, or missing or invalid verifier result yields
