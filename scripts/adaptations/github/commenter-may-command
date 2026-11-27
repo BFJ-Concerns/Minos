@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+github_authenticate "$1" "$2"
+
+# Prints true when GitHub shows the user with write access to the
+# repository (write, maintain or admin), false when it shows less.
+owner="$1"
+repo="$2"
+user="$3"
+
+api_with_status GET "/repos/${owner}/${repo}/collaborators/$(urlencode "$user")/permission" || exit 1
+case "$api_status_code" in
+  200)
+    printf '%s' "$api_status_body" | jq 'if type == "object" and (.permission | type) == "string" then .permission | IN("admin", "maintain", "write") else error("expected a permission object") end'
+    exit 0
+    ;;
+  404) printf 'false\n' ;;
+  *)
+    printf 'commenter permission read returned HTTP %s\n' "$api_status_code" >&2
+    exit 1
+    ;;
+esac

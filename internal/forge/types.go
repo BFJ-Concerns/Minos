@@ -29,6 +29,8 @@ const (
 	StatusError   StatusState = "error"
 )
 
+// Status is one commit status. CreatedAt is the forge's RFC 3339 time the
+// status was written, comparable with a comment's CreatedAt.
 type Status struct {
 	ID          int64       `json:"id"`
 	Provider    string      `json:"provider"`
@@ -37,6 +39,7 @@ type Status struct {
 	Creator     string      `json:"creator"`
 	Description string      `json:"description"`
 	TargetURL   string      `json:"target_url"`
+	CreatedAt   string      `json:"created_at"`
 }
 
 // Review is one submitted review. SubmittedAt is the forge's own RFC 3339
@@ -72,8 +75,10 @@ type ReviewThreadComment struct {
 // PullRequestComment is one comment in a pull request's conversation, apart
 // from any review or thread. CreatedAt is the forge's RFC 3339 time the
 // comment was written, comparable with a review's SubmittedAt: a comment
-// answers only what was already published when it was written.
+// answers only what was already published when it was written. ID names
+// the comment to the forge, so a reaction can be written on it.
 type PullRequestComment struct {
+	ID        int64  `json:"id"`
 	User      string `json:"user"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"created_at"`

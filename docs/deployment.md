@@ -450,6 +450,40 @@ A pull request excluded by the rules gets no new run or forge write.
 A run admitted earlier can still be in flight when the rules or pull
 request change.
 
+## Comment commands
+
+A conversation comment on an admitted pull request can ask for a review
+(`@<login> review`), a full review (`@<login> full review`) or that the pull
+request be skipped (`@<login> skip`). The mention is the forge's bot login,
+or on GitHub the App's slug without `[bot]`; it opens the comment's first
+non-empty line, and the command is the rest of that line. Only a user the
+forge shows with write access commands. GitHub reports that access
+directly. Forgejo answers a permission query about another user only to a
+repository administrator, so where the service account is not one, the
+repository's owner and every collaborator count as writers.
+
+Webhook deliveries and the sweep read the commands on every pass, once the
+admission rules pass, and react with `eyes` on each command in force:
+
+- The newest command decides between skip and review. While a skip is the
+  newest, the pull request is deferred as `skipped by comment command`,
+  whatever its head.
+- A review command waits until a run that started after it has left a
+  terminal result: an approving or request-changes review on any head, or
+  a clean or attention status on the current head or on the head the
+  `.reviewed/` record names. While it waits, it spends the current head's
+  completion marker, so the next pass starts a run.
+- The run it starts may not choose `no-review`. It is given a full review
+  alone where the command asked for one or the head already carries a
+  result, over which an increment would be empty. Otherwise the
+  repository's `push-inspection.outcomes` apply without `no-review`.
+
+A run's start is read from its `working` status, so a run already under way
+when the command arrived does not answer it. Commands need the forge to
+report each status's and review's time. The Forgejo token's
+`write:issue` scope covers the reactions; a GitHub App needs no permission
+beyond those listed above.
+
 ## How runs and the sweep behave
 
 Run units, run directories and continuation handoffs include the configured

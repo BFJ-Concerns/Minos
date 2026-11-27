@@ -72,10 +72,22 @@ type githubFixtureState struct {
 	changedFiles       []map[string]any
 	targetAfterFiles   string
 	statuses           []map[string]any
-	reviews            []map[string]any
-	reviewComments     map[int64][]map[string]any
+	// statusesAt are the statuses of earlier heads, by commit; any other
+	// commit is answered with statuses.
+	statusesAt     map[string][]map[string]any
+	reviews        []map[string]any
+	reviewComments map[int64][]map[string]any
 	// issueComments are the pull request's conversation comments.
 	issueComments []map[string]any
+	// commentReactions are the reactions on each conversation comment, by
+	// the comment's id.
+	commentReactions map[int64][]map[string]any
+	// permissions is the access GitHub shows for each user; a user absent
+	// from it is answered 404.
+	permissions map[string]string
+	// clock is the minutes past the fixture's epoch of the last time tick
+	// handed out, so statuses, reviews and comments interleave in order.
+	clock int
 	// reviewThreadPages are the raw GraphQL answers to successive
 	// review-thread queries; graphQLVariables records what each asked for.
 	graphQLPath       string
@@ -379,6 +391,10 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/branches/"):
 		writeFixtureJSON(s.t, w, map[string]any{"name": "main", "commit": map[string]any{"sha": s.baseTip}})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/commits/") && strings.HasSuffix(path, "/statuses"):
+		if earlier, kept := s.statusesAt[strings.TrimSuffix(strings.TrimPrefix(path, "/repos/acme/widgets/commits/"), "/statuses")]; kept {
+			writeFixtureArray(s.t, w, s.pagedCollection(r, earlier))
+			return
+		}
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.statuses))
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets/pulls/7/reviews":
 		if s.refuseReviewReads != 0 {
@@ -392,6 +408,18 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.reviewComments[id]))
 	case r.Method == http.MethodGet && path == "/repos/acme/widgets/issues/7/comments":
 		writeFixtureArray(s.t, w, s.pagedCollection(r, s.issueComments))
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/issues/comments/") && strings.HasSuffix(path, "/reactions"):
+		var id int64
+		fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(path, "/repos/acme/widgets/issues/comments/"), "/reactions"), "%d", &id)
+		writeFixtureArray(s.t, w, s.pagedCollection(r, s.commentReactions[id]))
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/acme/widgets/collaborators/") && strings.HasSuffix(path, "/permission"):
+		user := strings.TrimSuffix(strings.TrimPrefix(path, "/repos/acme/widgets/collaborators/"), "/permission")
+		permission, known := s.permissions[user]
+		if !known {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
+		writeFixtureJSON(s.t, w, map[string]any{"permission": permission, "user": map[string]any{"login": user}})
 	case r.Method == http.MethodPost && path == "/repos/acme/widgets/pulls/7/reviews":
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -423,8 +451,9 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 		// reader of html_url must take the fragment and nothing else.
 		s.reviews = append(s.reviews, map[string]any{
 			"id": id, "state": state, "commit_id": payload["commit_id"], "body": payload["body"],
-			"user":     map[string]any{"login": githubFixtureBotLogin},
-			"html_url": fmt.Sprintf("https://github.example/acme/widgets/pull/7#pullrequestreview-%d", id),
+			"user":         map[string]any{"login": githubFixtureBotLogin},
+			"html_url":     fmt.Sprintf("https://github.example/acme/widgets/pull/7#pullrequestreview-%d", id),
+			"submitted_at": s.tick(),
 		})
 		for _, raw := range comments {
 			comment := raw.(map[string]any)
@@ -435,6 +464,13 @@ func (s *githubFixtureState) handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, fmt.Sprintf(`{"message":"unexpected %s %s"}`, r.Method, path), http.StatusNotFound)
 	}
+}
+
+// tick advances the fixture's clock by a minute and returns the new time
+// as GitHub writes one. The caller holds the state's lock.
+func (s *githubFixtureState) tick() string {
+	s.clock++
+	return time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(s.clock) * time.Minute).Format(time.RFC3339)
 }
 
 // pagedCollection slices a collection by per_page and page as GitHub does,
@@ -1042,11 +1078,23 @@ func (s *githubFixtureState) handleOperations(w http.ResponseWriter, r *http.Req
 				http.Error(w, "invalid state", 422)
 				return true
 			}
-			record := map[string]any{"id": 1000 + len(s.writes), "creator": map[string]any{"login": githubFixtureBotLogin}}
+			record := map[string]any{"id": 1000 + len(s.writes), "creator": map[string]any{"login": githubFixtureBotLogin}, "created_at": s.tick()}
 			for key, value := range payload {
 				record[key] = value
 			}
 			s.statuses = append(s.statuses, record)
+			w.WriteHeader(201)
+			writeFixtureJSON(s.t, w, record)
+			return true
+		case r.Method == http.MethodPost && strings.HasPrefix(path, "/repos/acme/widgets/issues/comments/") && strings.HasSuffix(path, "/reactions"):
+			var id int64
+			fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(path, "/repos/acme/widgets/issues/comments/"), "/reactions"), "%d", &id)
+			content, _ := payload["content"].(string)
+			record := map[string]any{"id": 800 + len(s.writes), "content": content, "user": map[string]any{"login": githubFixtureBotLogin}}
+			if s.commentReactions == nil {
+				s.commentReactions = make(map[int64][]map[string]any)
+			}
+			s.commentReactions[id] = append(s.commentReactions[id], record)
 			w.WriteHeader(201)
 			writeFixtureJSON(s.t, w, record)
 			return true

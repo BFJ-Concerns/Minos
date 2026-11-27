@@ -159,12 +159,20 @@ latest_own_review_anchor() {
 # returns 0 present, 1 absent, 2 when the reactions could not be read. Pages
 # until an empty page (array or null), or until the forge repeats the previous page.
 reaction_present() {
-  reaction_path="/api/v1/repos/$1/$2/issues/$3/reactions"
+  reaction_present_at "/api/v1/repos/$1/$2/issues/$3/reactions" "$4" "$5"
+}
+
+# reaction_present_at is reaction_present over any reactions listing: the
+# pull request's own ($1 its path) or one of its comments'.
+reaction_present_at() {
+  reaction_path="$1"
+  reaction_content="$2"
+  reaction_login="$3"
   reaction_page=1
   reaction_previous=''
   while :; do
     reaction_current="$(api_read "${reaction_path}?limit=50&page=${reaction_page}" 2>/dev/null)" || return 2
-    if printf '%s' "$reaction_current" | json_match --arg content "$4" --arg login "$5" '
+    if printf '%s' "$reaction_current" | json_match --arg content "$reaction_content" --arg login "$reaction_login" '
       (if . == null then [] else . end) |
       if type != "array" or any(.[]; type != "object") then error("expected reactions array") else
         any(.[]; .content == $content and (.user.login // .user.username // "") == $login)
@@ -374,6 +382,6 @@ commit_statuses() {
   done
   printf '%s' "$status_all" | jq --arg provider forgejo '[.[] |
     if ((.id | type) != "number" or .id <= 0) then error("Forgejo status is missing a positive id") else
-      {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // "")}
+      {id, provider:$provider, context, state:(.status // .state), creator:(.creator.login // .creator.username // ""), description:(.description // ""), target_url:(.target_url // ""), created_at:(.created_at // "")}
     end] | sort_by(.id) | reverse'
 }

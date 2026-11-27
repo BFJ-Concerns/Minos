@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -159,6 +160,36 @@ func reconcilePullRequestSnapshot(ctx context.Context, cfg ServiceConfig, repo R
 		if result := adapter.RemoveMarker(ctx, guard, *terminal.marker); result.Outcome != forge.WriteApplied {
 			return ReconcileResult{}, fmt.Errorf("remove stale %s marker: %s: %s", terminal.role, result.Outcome, result.Reason)
 		}
+	}
+	botLogin := cfg.BotLogin(facts.Forge)
+	commands, err := readIssuedCommands(ctx, adapter, guard.Repository, snapshot.PullRequest, botLogin)
+	if err != nil {
+		return ReconcileResult{
+			Decision: ReconcileNothing, DeferralReason: "comment commands unavailable",
+			DeferralReasons: append([]string{"comment commands unavailable"}, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
+		}, fmt.Errorf("read comment commands: %w", err)
+	}
+	lastFinished := func() (headStatuses, error) {
+		return lastFinishedHeadStatuses(ctx, cfg, facts.Forge, adapter, guard)
+	}
+	effect, err := commandsInForce(commands, snapshot, lastFinished, botLogin, cfg.Service.StatusContext)
+	if err != nil {
+		return ReconcileResult{
+			Decision: ReconcileNothing, DeferralReason: "comment commands unavailable",
+			DeferralReasons: append([]string{"comment commands unavailable"}, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
+		}, fmt.Errorf("work out comment commands: %w", err)
+	}
+	acknowledgeCommands(ctx, adapter, guard, effect.inForce)
+	if effect.skipped {
+		return ReconcileResult{
+			Decision: ReconcileDecision(deferredDecisionPrefix + skippedByCommandReason), DeferralReason: skippedByCommandReason,
+			DeferralReasons: append([]string{skippedByCommandReason}, eligibility.reasons...), TerminalOutcome: eligibility.terminalOutcome,
+		}, nil
+	}
+	if effect.reviewRequested {
+		eligibility.completedRun = false
+		eligibility.reasons = slices.DeleteFunc(eligibility.reasons, func(reason string) bool { return reason == "completed-marker" })
+		repo.PushInspection.Outcomes = commandedOutcomes(repo.PushInspection.Outcomes, effect)
 	}
 	facts.HeadSHA = snapshot.HeadSHA
 	facts.BaseSHA = snapshot.TargetSHA

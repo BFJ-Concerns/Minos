@@ -1,0 +1,45 @@
+#!/usr/bin/env sh
+set -eu
+# shellcheck source-path=SCRIPTDIR
+. "$(dirname "$0")/common.sh"
+
+# Prints true when the forge shows the user with write access to the
+# repository, false when it shows less. Forgejo answers a permission query
+# about another user only to an administrator of the repository; to any
+# other login it shows only who the repository's owner and collaborators
+# are, and then the owner and every collaborator count as writers.
+owner="$1"
+repo="$2"
+user="$3"
+encoded="$(urlencode "$user")"
+
+api_with_status GET "/api/v1/repos/${owner}/${repo}/collaborators/${encoded}/permission" || exit 1
+case "$api_status_code" in
+  200)
+    printf '%s' "$api_status_body" | jq 'if type == "object" and (.permission | type) == "string" then .permission | IN("owner", "admin", "write") else error("expected a permission object") end'
+    exit 0
+    ;;
+  404)
+    printf 'false\n'
+    exit 0
+    ;;
+  403) ;;
+  *)
+    printf 'commenter permission read returned HTTP %s\n' "$api_status_code" >&2
+    exit 1
+    ;;
+esac
+
+if [ "$(printf '%s' "$user" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')" ]; then
+  printf 'true\n'
+  exit 0
+fi
+api_with_status GET "/api/v1/repos/${owner}/${repo}/collaborators/${encoded}" || exit 1
+case "$api_status_code" in
+  204) printf 'true\n' ;;
+  404) printf 'false\n' ;;
+  *)
+    printf 'collaborator read returned HTTP %s\n' "$api_status_code" >&2
+    exit 1
+    ;;
+esac

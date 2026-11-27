@@ -297,7 +297,7 @@ commit_statuses() {
   status_records="$(collect "/repos/$1/$2/commits/$3/statuses")" || return 1
   printf '%s' "$status_records" | jq --arg provider github '[.[] |
     if ((.id | type) != "number" or .id <= 0) then error("GitHub status is missing a positive id") else
-      {id, provider:$provider, context, state, creator:(.creator.login // ""), description:(.description // ""), target_url:(.target_url // "")}
+      {id, provider:$provider, context, state, creator:(.creator.login // ""), description:(.description // ""), target_url:(.target_url // ""), created_at:(.created_at // "")}
     end] | sort_by(.id) | reverse'
 }
 
@@ -311,8 +311,14 @@ web_base() {
 
 # Lookup helpers distinguish absence (1) from an unreadable forge (2).
 reaction_id() {
-  reaction_records="$(collect "/repos/$1/$2/issues/$3/reactions" 2>/dev/null)" || return 2
-  reaction_found="$(printf '%s' "$reaction_records" | jq -er --arg content "$4" --arg login "$5" '
+  reaction_id_at "/repos/$1/$2/issues/$3/reactions" "$4" "$5"
+}
+
+# reaction_id_at is reaction_id over any reactions listing: the pull
+# request's own ($1 its path) or one of its comments'.
+reaction_id_at() {
+  reaction_records="$(collect "$1" 2>/dev/null)" || return 2
+  reaction_found="$(printf '%s' "$reaction_records" | jq -er --arg content "$2" --arg login "$3" '
     if any(.[]; type != "object") then error("expected reaction objects") else
       [.[] | select(.content == $content and .user.login == $login)] |
       if length == 0 then empty else
@@ -324,6 +330,10 @@ reaction_id() {
 
 reaction_present() {
   reaction_id "$@" >/dev/null
+}
+
+reaction_present_at() {
+  reaction_id_at "$@" >/dev/null
 }
 
 # The page anchor of the newest review this login left on the given head,

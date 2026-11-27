@@ -97,6 +97,25 @@ separate comment review. Defects reviewers noticed outside the change are
 filed marked as unverified, but only to a file or issue destination: with the
 default comment-review destination they are not posted anywhere.
 
+### Commands in a comment
+
+Anyone the forge shows with write access to the repository can steer Minos
+from the pull request's conversation. The comment's first line is the
+service's login as a mention, followed by the command and nothing else
+(on GitHub the App's slug, without `[bot]`, is enough):
+
+| Comment | Effect |
+|---------|--------|
+| `@minos review` | Reviews the current head again, even one Minos has already finished on, and never answers with no review |
+| `@minos full review` | Reviews the whole pull request rather than the increment since the last review |
+| `@minos skip` | Starts no review until a later review command; one already running carries on |
+
+Minos reacts with `eyes` on a command it has taken, and the command takes
+effect on the next pass: at once where a webhook delivers the comment, by
+the next sweep otherwise. A command on a pull request outside the
+repository's admission rules, a draft included, is ignored until the pull
+request is admitted.
+
 Reviewers treat the pull request's description as the author's account of
 the change. Where it explicitly puts something out of scope and the project
 guidance doesn't contradict it, a finding about the missing piece is neither
